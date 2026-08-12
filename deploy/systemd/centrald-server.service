@@ -1,0 +1,41 @@
+[Unit]
+Description=CentralD management server
+Documentation=https://github.com/BurntToasters/centrald
+After=network-online.target postgresql.service
+Wants=network-online.target
+ConditionPathExists=/etc/centrald/server.toml
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/centrald-server --config /etc/centrald/server.toml run
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=centrald
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+ProtectHostname=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/etc/centrald /var/lib/centrald /run/centrald
+
+[Install]
+WantedBy=multi-user.target

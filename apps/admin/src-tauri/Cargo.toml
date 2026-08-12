@@ -1,0 +1,42 @@
+[package]
+name = "centrald-admin"
+description = "CentralD desktop administration application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "centrald_admin"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "centrald-admin"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+centrald-common = { path = "../../../crates/centrald-common" }
+centrald-protocol = { path = "../../../crates/centrald-protocol" }
+chrono.workspace = true
+fs2.workspace = true
+prost-types.workspace = true
+rcgen.workspace = true
+secrecy.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-updater.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+toml.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

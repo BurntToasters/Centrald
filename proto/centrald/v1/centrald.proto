@@ -1,0 +1,356 @@
+syntax = "proto3";
+
+package centrald.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service EnrollmentService {
+  rpc EnrollClient(EnrollClientRequest) returns (EnrollmentResponse);
+  rpc EnrollAdmin(EnrollAdminRequest) returns (EnrollmentResponse);
+}
+
+service ClientService {
+  rpc ControlStream(stream ClientFrame) returns (stream ServerFrame);
+  rpc ActivateIdentity(ActivateIdentityRequest) returns (OperationResult);
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+  rpc ReplaceIdentity(ReplaceIdentityRequest) returns (OperationResult);
+}
+
+service AdminService {
+  rpc ListTargets(ListTargetsRequest) returns (ListTargetsResponse);
+  rpc CreateEnrollmentKey(CreateEnrollmentKeyRequest) returns (CreateEnrollmentKeyResponse);
+  rpc ListEnrollmentKeys(ListEnrollmentKeysRequest) returns (ListEnrollmentKeysResponse);
+  rpc RevokeEnrollmentKey(RevokeEnrollmentKeyRequest) returns (OperationResult);
+  rpc RevokeIdentity(RevokeIdentityRequest) returns (OperationResult);
+  rpc ActivateAdminIdentity(ActivateIdentityRequest) returns (OperationResult);
+  rpc RenewAdminCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
+  rpc StartJob(StartJobRequest) returns (Job);
+  rpc StreamJob(StreamJobRequest) returns (stream JobEvent);
+  rpc BeginElevation(BeginElevationRequest) returns (ElevationChallenge);
+  rpc OpenShell(stream AdminShellFrame) returns (stream AdminShellFrame);
+  rpc GetServerSettings(GetServerSettingsRequest) returns (ServerSettings);
+  rpc UpdateServerSettings(UpdateServerSettingsRequest) returns (ServerSettings);
+}
+
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+enum IdentityRole {
+  IDENTITY_ROLE_UNSPECIFIED = 0;
+  IDENTITY_ROLE_CLIENT = 1;
+  IDENTITY_ROLE_ADMIN = 2;
+}
+
+message EnrollClientRequest {
+  string enrollment_key = 1;
+  bytes csr_pem = 2;
+  string hostname = 3;
+  string os = 4;
+  string architecture = 5;
+  ProtocolVersion protocol = 6;
+}
+
+message EnrollAdminRequest {
+  string enrollment_key = 1;
+  bytes csr_pem = 2;
+  string name = 3;
+  bytes elevation_public_key = 4;
+  ProtocolVersion protocol = 5;
+}
+
+message EnrollmentResponse {
+  string identity_id = 1;
+  IdentityRole role = 2;
+  bytes certificate_chain_pem = 3;
+  string client_endpoint = 4;
+  string admin_endpoint = 5;
+  bytes grant_signing_public_key = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+message RenewCertificateRequest {
+  bytes csr_pem = 1;
+  ProtocolVersion protocol = 2;
+}
+
+message RenewCertificateResponse {
+  bytes certificate_chain_pem = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message ActivateIdentityRequest {
+  string identity_id = 1;
+  ProtocolVersion protocol = 2;
+}
+
+message ReplaceIdentityRequest {
+  string replacement_identity_id = 1;
+  string reason = 2;
+  ProtocolVersion protocol = 3;
+}
+
+message ClientHello {
+  string identity_id = 1;
+  string hostname = 2;
+  string os = 3;
+  string os_version = 4;
+  string architecture = 5;
+  string client_version = 6;
+  ProtocolVersion protocol = 7;
+  repeated string capabilities = 8;
+  string boot_id = 9;
+}
+
+message ClientFrame {
+  oneof payload {
+    ClientHello hello = 1;
+    Heartbeat heartbeat = 2;
+    JobEvent job_event = 3;
+    ShellFrame shell = 4;
+    JobDeliveryAck job_delivery_ack = 5;
+  }
+}
+
+message ServerFrame {
+  oneof payload {
+    Job job = 1;
+    ShellFrame shell = 2;
+    bytes signed_grant = 3;
+    HeartbeatAck heartbeat_ack = 4;
+  }
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp sent_at = 1;
+  uint64 uptime_seconds = 2;
+  uint64 memory_total_bytes = 3;
+  uint64 memory_used_bytes = 4;
+}
+
+message HeartbeatAck {
+  google.protobuf.Timestamp server_time = 1;
+  uint32 next_interval_seconds = 2;
+}
+
+enum JobKind {
+  JOB_KIND_UNSPECIFIED = 0;
+  JOB_KIND_RESTART_CLIENT_SERVICE = 1;
+  JOB_KIND_RESTART_MACHINE = 2;
+  JOB_KIND_CHECK_OS_UPDATES = 3;
+  JOB_KIND_APPLY_OS_UPDATES = 4;
+  JOB_KIND_UPDATE_CLIENT = 5;
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_DISPATCHED = 2;
+  JOB_STATE_ACKNOWLEDGED = 3;
+  JOB_STATE_RUNNING = 4;
+  JOB_STATE_SUCCEEDED = 5;
+  JOB_STATE_FAILED = 6;
+  JOB_STATE_CANCELED = 7;
+  JOB_STATE_TIMED_OUT = 8;
+}
+
+message Job {
+  string id = 1;
+  string target_id = 2;
+  JobKind kind = 3;
+  JobState state = 4;
+  bytes parameters_json = 5;
+  string idempotency_key = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  string delivery_id = 8;
+}
+
+message JobDeliveryAck {
+  string job_id = 1;
+  string delivery_id = 2;
+}
+
+message JobEvent {
+  string job_id = 1;
+  uint64 sequence = 2;
+  JobState state = 3;
+  bytes output = 4;
+  bool stderr = 5;
+  int32 exit_code = 6;
+  bool terminal = 7;
+}
+
+message StartJobRequest {
+  string request_id = 1;
+  string target_id = 2;
+  JobKind kind = 3;
+  bytes parameters_json = 4;
+  string reason = 5;
+}
+
+message StreamJobRequest {
+  string job_id = 1;
+  uint64 from_sequence = 2;
+  bool follow = 3;
+}
+
+message CreateEnrollmentKeyRequest {
+  IdentityRole role = 1;
+  string name = 2;
+  uint32 expires_in_seconds = 3;
+}
+
+message CreateEnrollmentKeyResponse {
+  string id = 1;
+  string enrollment_key = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ListEnrollmentKeysRequest {
+  IdentityRole role = 1;
+  bool include_inactive = 2;
+}
+
+message EnrollmentKeySummary {
+  string id = 1;
+  IdentityRole role = 2;
+  string name = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp consumed_at = 6;
+  google.protobuf.Timestamp revoked_at = 7;
+  string revoked_reason = 8;
+}
+
+message ListEnrollmentKeysResponse {
+  repeated EnrollmentKeySummary keys = 1;
+}
+
+message RevokeEnrollmentKeyRequest {
+  string enrollment_key_id = 1;
+  string reason = 2;
+}
+
+message RevokeIdentityRequest {
+  string identity_id = 1;
+  string reason = 2;
+  bool force_last_admin = 3;
+}
+
+message ListTargetsRequest {}
+
+message ListTargetsResponse {
+  repeated TargetSummary targets = 1;
+}
+
+message TargetSummary {
+  string id = 1;
+  string name = 2;
+  string os = 3;
+  string architecture = 4;
+  string version = 5;
+  google.protobuf.Timestamp last_seen = 6;
+  bool online = 7;
+  bool server = 8;
+}
+
+message BeginElevationRequest {
+  string target_id = 1;
+  string operation = 2;
+  string reason = 3;
+}
+
+message ElevationChallenge {
+  string id = 1;
+  bytes nonce = 2;
+  bytes context_hash = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+enum ShellPrivilege {
+  SHELL_PRIVILEGE_UNSPECIFIED = 0;
+  SHELL_PRIVILEGE_LOW = 1;
+  SHELL_PRIVILEGE_ELEVATED = 2;
+}
+
+message ShellOpen {
+  string session_id = 1;
+  string target_id = 2;
+  ShellPrivilege privilege = 3;
+  string reason = 4;
+  string challenge_id = 5;
+  bytes challenge_signature = 6;
+  uint32 columns = 7;
+  uint32 rows = 8;
+}
+
+message ShellData {
+  string session_id = 1;
+  uint64 sequence = 2;
+  bytes data = 3;
+}
+
+message ShellResize {
+  string session_id = 1;
+  uint32 columns = 2;
+  uint32 rows = 3;
+}
+
+message ShellClose {
+  string session_id = 1;
+  string reason = 2;
+  int32 exit_code = 3;
+}
+
+message ShellFrame {
+  oneof payload {
+    ShellOpen open = 1;
+    ShellData data = 2;
+    ShellResize resize = 3;
+    ShellClose close = 4;
+  }
+}
+
+message AdminShellFrame {
+  ShellFrame shell = 1;
+}
+
+message GetServerSettingsRequest {}
+
+message UpdateServerSettingsRequest {
+  string expected_revision = 1;
+  ServerSettings settings = 2;
+}
+
+message ServerSettings {
+  string revision = 1;
+  string instance_id = 2;
+  string public_host = 3;
+  string enrollment_listen = 4;
+  string client_listen = 5;
+  string admin_listen = 6;
+  uint32 database_max_connections = 7;
+  uint32 heartbeat_interval_seconds = 8;
+  uint32 offline_after_seconds = 9;
+  uint32 job_ttl_seconds = 10;
+  uint32 shell_idle_timeout_seconds = 11;
+  uint32 max_shell_frame_bytes = 12;
+  bool updates_enabled = 13;
+  string update_channel = 14;
+  string update_manifest_url = 15;
+  uint32 update_check_interval_seconds = 16;
+  bool update_allow_prerelease = 17;
+  string data_dir = 18;
+  string local_socket = 19;
+  string database_url_env = 20;
+  string database_environment_file = 21;
+  string root_cert_path = 22;
+  repeated string local_only_fields = 23;
+  bool restart_required = 24;
+}
+
+message OperationResult {
+  bool success = 1;
+  string message = 2;
+}

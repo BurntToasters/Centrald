@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CentralD Admin",
+  "version": "0.1.0-alpha.1",
+  "identifier": "dev.burnttoast.centrald.admin",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../.. run dev:admin:web",
+    "beforeBuildCommand": "npm --prefix ../.. run build:admin:web",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "font-src": "'self'",
+        "img-src": "'self' asset: http://asset.localhost",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'"
+      },
+      "capabilities": [
+        "default"
+      ]
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "CentralD Admin",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Secure LAN device management",
+    "longDescription": "CentralD administration console for securely managing enrolled devices on trusted networks."
+  }
+}

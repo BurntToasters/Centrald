@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux QA
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            protobuf-compiler
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Verify tracked build configuration
+        run: npm run config:check
+      - name: Run repository QA
+        run: npm run qa
+
+  windows:
+    name: Windows compile checks
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Install Rust targets
+        shell: pwsh
+        run: rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+      - name: Check Windows x64 workspace
+        run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      - name: Check managed client and Admin on Windows ARM64
+        run: cargo check --locked --target aarch64-pc-windows-msvc -p centrald-client -p centrald-admin

@@ -1,0 +1,16 @@
+/target/
+/node_modules/
+**/node_modules/
+/dist/
+/release/
+/coverage/
+/.env
+/.centrald-dev/
+/apps/admin/dist/
+/apps/admin/src-tauri/target/
+*.pfx
+*.p12
+*.key
+*.pem
+!config/*.pem.example
+.DS_Store

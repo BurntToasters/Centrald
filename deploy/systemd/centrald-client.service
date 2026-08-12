@@ -1,0 +1,39 @@
+[Unit]
+Description=CentralD managed client
+Documentation=https://github.com/BurntToasters/centrald
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/centrald-client/configurations/current.pointer
+
+[Service]
+Type=exec
+User=centrald
+Group=centrald
+ExecStart=/usr/bin/centrald-client daemon
+Restart=always
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+ProtectHostname=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/centrald-client /var/lib/centrald-client.lock
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux x64 artifacts
+    runs-on: ubuntu-24.04
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils \
+            dpkg-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            protobuf-compiler \
+            xz-utils
+      - run: npm ci
+      - run: npm run config:check
+      - name: Build signed Linux artifacts
+        run: node scripts/build.js --target linux-x64 --native --signed
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: centrald-linux-x64
+          path: dist/linux-x64/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x64 and ARM64 artifacts
+    runs-on: windows-2022
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - run: npm ci
+      - run: npm run config:check
+      - name: Build signed Windows x64 artifacts
+        run: node scripts/build.js --target windows-x64 --signed
+      - name: Build signed Windows ARM64 artifacts
+        run: node scripts/build.js --target windows-arm64 --signed
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: centrald-windows-x64
+          path: dist/windows-x64/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: centrald-windows-arm64
+          path: dist/windows-arm64/*
+          if-no-files-found: error
+
+  publish:
+    name: Verify, sign, and publish
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CENTRALD_RELEASE_PUBLISH: YES
+      CENTRALD_GITHUB_IMMUTABLE_RELEASES: YES
+      CENTRALD_MINISIGN_UNPROTECTED_KEY: YES
+      MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.16.0
+          cache: npm
+      - name: Install verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            minisign \
+            protobuf-compiler
+      - run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: centrald-linux-x64
+          path: dist/linux-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: centrald-windows-x64
+          path: dist/windows-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: centrald-windows-arm64
+          path: dist/windows-arm64
+      - name: Materialize ephemeral Minisign key
+        shell: bash
+        run: |
+          test -n "$MINISIGN_SECRET_KEY_B64"
+          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 --decode > "$RUNNER_TEMP/centrald-minisign.key"
+          chmod 0600 "$RUNNER_TEMP/centrald-minisign.key"
+          echo "MINISIGN_SECRET_KEY_FILE=$RUNNER_TEMP/centrald-minisign.key" >> "$GITHUB_ENV"
+      - name: Assemble release artifacts
+        run: npm run release:assemble
+      - name: Sign and verify every artifact
+        run: npm run release:sign
+      - name: Generate immutable release manifests
+        run: npm run release:manifests
+      - name: Publish GitHub releases
+        run: npm run release:publish
+      - name: Remove ephemeral signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/centrald-minisign.key"

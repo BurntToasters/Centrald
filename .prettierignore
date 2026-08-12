@@ -1,0 +1,8 @@
+Cargo.lock
+target
+node_modules
+dist
+release
+coverage
+apps/admin/src-tauri/gen
+AGENTS.md

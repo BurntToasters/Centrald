@@ -1,0 +1,174 @@
+---
+import { getCollection, render, type CollectionEntry } from "astro:content";
+import BaseLayout from "./BaseLayout.astro";
+
+interface Props {
+  entry: CollectionEntry<"docs">;
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+
+const all = (await getCollection("docs")).sort(
+  (left, right) => left.data.order - right.data.order,
+);
+const index = all.findIndex((candidate) => candidate.id === entry.id);
+const previous = index > 0 ? all[index - 1] : null;
+const next = index >= 0 && index < all.length - 1 ? all[index + 1] : null;
+
+const groups: { name: string; items: typeof all }[] = [];
+for (const item of all) {
+  const group = groups.find((candidate) => candidate.name === item.data.group);
+  if (group) {
+    group.items.push(item);
+  } else {
+    groups.push({ name: item.data.group, items: [item] });
+  }
+}
+---
+
+<BaseLayout
+  title={`${entry.data.title} - CentralD`}
+  description={entry.data.description}
+>
+  <div class="docs-layout">
+    <aside class="docs-sidebar" aria-label="Documentation">
+      <nav>
+        {
+          groups.map((group) => (
+            <div class="docs-group">
+              <p class="docs-group-title">{group.name}</p>
+              <ul>
+                {group.items.map((item) => (
+                  <li>
+                    <a
+                      href={`/docs/${item.id}`}
+                      aria-current={item.id === entry.id ? "page" : undefined}
+                    >
+                      {item.data.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </nav>
+    </aside>
+    <main class="docs-content">
+      <article class="prose">
+        <h1>{entry.data.title}</h1>
+        <Content />
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+        {
+          previous ? (
+            <a class="docs-pager-link" href={`/docs/${previous.id}`}>
+              <span>Previous</span>
+              {previous.data.title}
+            </a>
+          ) : (
+            <span />
+          )
+        }
+        {
+          next ? (
+            <a
+              class="docs-pager-link docs-pager-next"
+              href={`/docs/${next.id}`}
+            >
+              <span>Next</span>
+              {next.data.title}
+            </a>
+          ) : (
+            <span />
+          )
+        }
+      </nav>
+    </main>
+  </div>
+</BaseLayout>
+
+<style>
+  .docs-layout {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 1.5rem;
+    display: grid;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    gap: 3rem;
+    align-items: start;
+  }
+  .docs-sidebar {
+    position: sticky;
+    top: 4.5rem;
+  }
+  .docs-group {
+    margin-bottom: 1.25rem;
+  }
+  .docs-group-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 0.4rem;
+  }
+  .docs-sidebar ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .docs-sidebar a {
+    display: block;
+    padding: 0.3rem 0.6rem;
+    border-radius: 0.4rem;
+    font-size: 0.92rem;
+    color: var(--text);
+  }
+  .docs-sidebar a:hover {
+    background: var(--surface);
+  }
+  .docs-sidebar a[aria-current="page"] {
+    background: var(--surface);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .docs-content {
+    min-width: 0;
+  }
+  .docs-pager {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 3rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.5rem;
+  }
+  .docs-pager-link {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    max-width: 45%;
+  }
+  .docs-pager-link span {
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .docs-pager-next {
+    text-align: right;
+    margin-left: auto;
+  }
+  @media (max-width: 768px) {
+    .docs-layout {
+      grid-template-columns: 1fr;
+    }
+    .docs-sidebar {
+      position: static;
+    }
+  }
+</style>

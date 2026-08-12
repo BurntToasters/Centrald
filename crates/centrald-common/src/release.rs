@@ -122,7 +122,9 @@ impl ReleaseManifestV1 {
         if self.protocol_major == 0 {
             return Err(ManifestError::Protocol);
         }
-        validate_https_base(&self.repository).map_err(|_| ManifestError::Repository)?;
+        if validate_https_base(&self.repository).is_err() {
+            return Err(ManifestError::Repository);
+        }
         if self.artifacts.is_empty() {
             return Err(ManifestError::Empty);
         }
@@ -163,12 +165,11 @@ fn validate_artifact(artifact: &ReleaseArtifact) -> Result<(), ManifestError> {
         return Err(ManifestError::Digest);
     }
 
-    let artifact_url = validate_immutable_url(&artifact.url).map_err(|_| ManifestError::Url)?;
-    if artifact_url
-        .path_segments()
-        .and_then(|segments| segments.last())
-        != Some(artifact.filename.as_str())
-    {
+    if validate_immutable_url(&artifact.url).is_err() {
+        return Err(ManifestError::Url);
+    }
+    let artifact_last = artifact.url.split('/').next_back().map(str::to_owned);
+    if artifact_last.as_deref() != Some(artifact.filename.as_str()) {
         return Err(ManifestError::Filename);
     }
 
@@ -176,10 +177,12 @@ fn validate_artifact(artifact: &ReleaseArtifact) -> Result<(), ManifestError> {
         .signature_url
         .as_ref()
         .ok_or(ManifestError::SignatureUrl)?;
-    let signature =
-        validate_immutable_url(signature_url).map_err(|_| ManifestError::SignatureUrl)?;
+    if validate_immutable_url(signature_url).is_err() {
+        return Err(ManifestError::SignatureUrl);
+    }
     let expected = format!("{}.minisig", artifact.filename);
-    if signature.path_segments().and_then(|segments| segments.last()) != Some(expected.as_str()) {
+    let signature_last = signature_url.split('/').next_back().map(str::to_owned);
+    if signature_last.as_deref() != Some(expected.as_str()) {
         return Err(ManifestError::SignatureUrl);
     }
     Ok(())

@@ -31,13 +31,15 @@ fs2 = "0.4"
 hex = "0.4"
 hostname = "0.4"
 humantime = "2"
+minisign = "0.7"
 pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 prost = "0.14"
 prost-types = "0.14"
+portable-pty = "0.9"
 rand = "0.9"
 rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 rpassword = "7"
 rustix = { version = "1.1.4", features = ["fs"] }
 secrecy = { version = "0.10", features = ["serde"] }
@@ -61,8 +63,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 url = "2"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 zeroize = { version = "1", features = ["derive"] }
 x509-parser = "0.18"
+pam = "0.8"
+zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 
 centrald-common = { path = "crates/centrald-common" }
 centrald-pki = { path = "crates/centrald-pki" }

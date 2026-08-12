@@ -34,6 +34,12 @@ struct LocalAuditEnvelope {
     checksum_sha256: String,
 }
 
+/// Returns the fixed journal pathname derived from the server configuration.
+///
+/// # Errors
+///
+/// Returns an error when the configuration path has no usable parent
+/// directory.
 pub fn journal_path(config_path: &Path) -> Result<PathBuf> {
     let parent = config_path
         .parent()
@@ -43,8 +49,13 @@ pub fn journal_path(config_path: &Path) -> Result<PathBuf> {
 }
 
 /// Appends a non-secret, durable server-local audit record. The journal is
-/// intentionally usable while PostgreSQL is unavailable and is reconciled at
+/// intentionally usable while `PostgreSQL` is unavailable and is reconciled at
 /// daemon startup.
+///
+/// # Errors
+///
+/// Returns an error when the journal path is unsafe or the record cannot be
+/// serialized, appended, or synced.
 pub fn record(
     config_path: &Path,
     action: &str,
@@ -91,9 +102,14 @@ pub fn record(
     Ok(())
 }
 
-/// Reconciles the offline/local journal into the PostgreSQL hash chain. A
+/// Reconciles the offline/local journal into the `PostgreSQL` hash chain. A
 /// record ID is checked before insertion so a crash after database commit but
 /// before journal deletion is idempotent.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe, a record fails validation, or
+/// the database reconciliation fails.
 pub async fn reconcile(pool: &PgPool, config_path: &Path) -> Result<usize> {
     let path = journal_path(config_path)?;
     if !path.exists() {
@@ -109,17 +125,23 @@ pub async fn reconcile(pool: &PgPool, config_path: &Path) -> Result<usize> {
     let raw = recover_torn_final_record(&path)?;
     let mut records = Vec::new();
     for (index, line) in raw.split(|byte| *byte == b'\n').enumerate() {
-        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let envelope: LocalAuditEnvelope = serde_json::from_slice(line)
             .with_context(|| format!("parse committed local audit journal record {}", index + 1))?;
         if envelope.version != 1 {
-            bail!("unsupported local audit journal record version on line {}", index + 1);
+            bail!(
+                "unsupported local audit journal record version on line {}",
+                index + 1
+            );
         }
         let expected = record_checksum(&envelope.record)?;
         if envelope.checksum_sha256 != expected {
-            bail!("local audit journal checksum mismatch on committed record {}", index + 1);
+            bail!(
+                "local audit journal checksum mismatch on committed record {}",
+                index + 1
+            );
         }
         records.push(envelope.record);
     }
@@ -135,10 +157,11 @@ pub async fn reconcile(pool: &PgPool, config_path: &Path) -> Result<usize> {
         .await?;
     let mut inserted = 0_usize;
     for record in records {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM audit_entries WHERE id = $1)")
-            .bind(record.id)
-            .fetch_one(&mut *transaction)
-            .await?;
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM audit_entries WHERE id = $1)")
+                .bind(record.id)
+                .fetch_one(&mut *transaction)
+                .await?;
         if exists {
             continue;
         }
@@ -159,7 +182,8 @@ fn record_checksum(record: &LocalAuditRecord) -> Result<String> {
 }
 
 fn recover_torn_final_record(path: &Path) -> Result<Vec<u8>> {
-    let raw = fs::read(path).with_context(|| format!("read local audit journal {}", path.display()))?;
+    let raw =
+        fs::read(path).with_context(|| format!("read local audit journal {}", path.display()))?;
     if raw.is_empty() || raw.last() == Some(&b'\n') {
         return Ok(raw);
     }
@@ -170,10 +194,7 @@ fn recover_torn_final_record(path: &Path) -> Result<Vec<u8>> {
         .map_or(0, |index| index + 1);
     let tail = &raw[complete_len..];
     let parent = path.parent().context("local audit journal has no parent")?;
-    let quarantine = parent.join(format!(
-        ".centrald-local-audit-torn-{}.bin",
-        Uuid::now_v7()
-    ));
+    let quarantine = parent.join(format!(".centrald-local-audit-torn-{}.bin", Uuid::now_v7()));
     write_new_file(&quarantine, tail, true).with_context(|| {
         format!(
             "preserve torn final local audit record at {}",
@@ -202,11 +223,17 @@ async fn append_record(
     transaction: &mut Transaction<'_, Postgres>,
     record: &LocalAuditRecord,
 ) -> Result<()> {
-    let previous_hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1",
+    let previous_hash: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1")
+            .fetch_optional(&mut **transaction)
+            .await?;
+    // Normalize to Postgres microsecond precision so read-back rows reproduce
+    // the canonical bytes during verified audit export.
+    let created_at = DateTime::from_timestamp(
+        record.created_at.timestamp(),
+        record.created_at.timestamp_subsec_micros() * 1000,
     )
-    .fetch_optional(&mut **transaction)
-    .await?;
+    .unwrap_or(record.created_at);
     let canonical = serde_json::to_vec(&serde_json::json!({
         "id": record.id,
         "actorId": null,
@@ -216,7 +243,7 @@ async fn append_record(
         "outcome": &record.outcome,
         "metadata": &record.metadata,
         "previousHash": previous_hash.as_ref().map(hex::encode),
-        "createdAt": record.created_at,
+        "createdAt": created_at,
     }))?;
     let entry_hash = Sha256::digest(&canonical).to_vec();
     sqlx::query(
@@ -231,7 +258,7 @@ async fn append_record(
     .bind(&record.metadata)
     .bind(previous_hash)
     .bind(entry_hash)
-    .bind(record.created_at)
+    .bind(created_at)
     .execute(&mut **transaction)
     .await?;
     Ok(())

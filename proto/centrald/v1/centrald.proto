@@ -283,6 +283,20 @@ message ShellOpen {
   bytes challenge_signature = 6;
   uint32 columns = 7;
   uint32 rows = 8;
+  // OS account requested for the shell; empty selects the platform default
+  // (the managed service account for low shells, root/SYSTEM for elevated).
+  string account_user = 9;
+  // One-time OS account password. Never stored, logged, or persisted by the
+  // server; the client forwards it only to the local broker for validation
+  // and immediate zeroization.
+  bytes account_password = 10;
+  // When set, the broker stores the validated credentials in the operating
+  // system vault (DPAPI / Secret Service) for later sessions.
+  bool save_credentials = 11;
+  // The exact session-parameter JSON the server bound into the shell grant
+  // (privilege, account, frame/timeout bounds). The client forwards these
+  // bytes to the broker, which verifies the grant's parameter hash.
+  bytes parameters_json = 12;
 }
 
 message ShellData {
@@ -348,6 +362,11 @@ message ServerSettings {
   string root_cert_path = 22;
   repeated string local_only_fields = 23;
   bool restart_required = 24;
+  // Latest release version verified by the server's update check (empty when
+  // none has been verified); update_available reports whether it exceeds the
+  // running server version.
+  string update_latest_version = 25;
+  bool update_available = 26;
 }
 
 message OperationResult {

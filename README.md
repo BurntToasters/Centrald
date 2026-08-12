@@ -11,14 +11,17 @@ reset with the destructive command documented below.
 
 Current version: `0.1.0-alpha.1`.
 
+Documentation lives at <https://centrald.dev>; the rendered pages are generated
+from the `docs/` directory by the Astro site in [`site/`](site/).
+
 ## Target platforms
 
-| Component | Supported build targets |
-| --- | --- |
-| Server | Ubuntu Server 24.04 x86_64; Ubuntu Server 26.04 x86_64 is a target |
-| Client | Linux x86_64, Windows x86_64, Windows ARM64 |
-| Admin | Linux x86_64 AppImage, Windows x86_64/ARM64 NSIS |
-| Database | PostgreSQL |
+| Component | Supported build targets                                            |
+| --------- | ------------------------------------------------------------------ |
+| Server    | Ubuntu Server 24.04 x86_64; Ubuntu Server 26.04 x86_64 is a target |
+| Client    | Linux x86_64, Windows x86_64, Windows ARM64                        |
+| Admin     | Linux x86_64 AppImage, Windows x86_64/ARM64 NSIS                   |
+| Database  | PostgreSQL                                                         |
 
 CentralD is intended for private LAN or VPN deployment. Do not expose an alpha
 server directly to the public Internet.
@@ -34,11 +37,12 @@ sudo centrald-server config
 sudo centrald-client enroll
 ```
 
-`initial-setup` creates the database, PKI, and first Admin access key. On a normal
-systemd package installation it also enables and starts `centrald-server.service`.
-The TUI puts routine enrollment and health tasks first; network, database, PKI,
-and storage controls remain available under clearly marked advanced menus. See
-[`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the novice walkthrough.
+`initial-setup` creates the database, PKI, and first Admin access key. On a
+normal systemd package installation it also enables and starts
+`centrald-server.service`. The TUI puts routine enrollment and health tasks
+first; network, database, PKI, and storage controls remain available under
+clearly marked advanced menus. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md)
+for the novice walkthrough.
 
 ## End-to-end setup
 
@@ -57,9 +61,8 @@ role-management privileges; a destination-pinned local postgres administrator
 creates its one owned database. Setup refuses to adopt a non-empty
 `/var/lib/centrald` data root. It validates the host, database, paths, and
 listeners before writing anything. It creates the database schema, an offline
-root recovery bundle,
-role-specific online issuers, the server identity, and the first one-time Admin
-access key.
+root recovery bundle, role-specific online issuers, the server identity, and the
+first one-time Admin access key.
 
 Non-interactive setup remains available for automation:
 
@@ -88,8 +91,10 @@ The local guided console works even when the daemon is stopped. It provides all
 persisted settings and local-only security operations, including:
 
 - listener, timing, update policy, database-pool, and audit settings;
-- package-managed fixed security paths for configuration, database secrets, PKI, runtime state, and sockets;
-- safe server TLS-name rotation and guided online-issuer rotation using the offline root recovery bundle;
+- package-managed fixed security paths for configuration, database secrets, PKI,
+  runtime state, and sockets;
+- safe server TLS-name rotation and guided online-issuer rotation using the
+  offline root recovery bundle;
 - client invitations, Admin access keys, identity listing, and revocation;
 - health and diagnostic summaries.
 
@@ -98,9 +103,9 @@ location, and destructive reset remain server-local by design. The desktop app
 can manage clients and non-secret runtime settings, but it cannot make itself an
 Admin or change these trust anchors.
 
-On a normal packaged systemd installation, `initial-setup` enables and starts the
-service automatically. If setup reports that service startup was skipped or failed,
-run:
+On a normal packaged systemd installation, `initial-setup` enables and starts
+the service automatically. If setup reports that service startup was skipped or
+failed, run:
 
 ```text
 sudo systemctl enable --now centrald-server
@@ -129,13 +134,14 @@ consumed transactionally once. For automation on Unix, use an absolute,
 root-owned, private `--key-file`; on every platform, a secret manager may use
 piped `--key-stdin`. These automation forms use the server embedded in the
 invitation unless `--server` is explicitly supplied, so they do not stop for a
-second prompt.
-CentralD intentionally does not accept invitation values in process arguments.
+second prompt. CentralD intentionally does not accept invitation values in
+process arguments.
 
 The Linux package creates an unprivileged `centrald` service account. Client
-identity data is stored only under `/var/lib/centrald-client`, separate from server
-state. Successful enrollment publishes `current.pointer` and enables/starts the
-client service; `rescue --repair` never trusts a configuration-provided repair root.
+identity data is stored only under `/var/lib/centrald-client`, separate from
+server state. Successful enrollment publishes `current.pointer` and
+enables/starts the client service; `rescue --repair` never trusts a
+configuration-provided repair root.
 
 ### 4. Enroll the Admin app
 
@@ -147,7 +153,8 @@ the brokered terminal subsystem is implemented.
 
 The Admin app renews its mTLS identity before expiry and currently provides:
 
-- basic server/client identity, platform, version, health, and last-seen inventory;
+- basic server/client identity, platform, version, health, and last-seen
+  inventory;
 - one-time client invitation creation;
 - client and pending client-invitation revocation;
 - typed job submission for supported operations;
@@ -196,15 +203,15 @@ used by Rust builds and release tooling. Supported keys are:
 Private keys, database URLs, API tokens, and passwords are rejected as unknown
 keys and must never be added to this file.
 
-GitHub defaults use immutable artifacts under
-`/releases/download/v<version>/`. Stable manifests are read from
-`/releases/latest/download/`; non-stable GitHub channels use one atomic commit
-on the mutable `centrald-channels` branch through `raw.githubusercontent.com`.
-Channel publication is monotonic by Semantic Versioning and refuses same-version
-byte replacement. `npm run release:publish-channel` retries by downloading and
-verifying the exact manifests already attached to the immutable version release,
-not by regenerating them. Generic HTTPS/S3-compatible origins can provide
-equivalent `/<channel>/latest/` and versioned layouts.
+GitHub defaults use immutable artifacts under `/releases/download/v<version>/`.
+Stable manifests are read from `/releases/latest/download/`; non-stable GitHub
+channels use one atomic commit on the mutable `centrald-channels` branch through
+`raw.githubusercontent.com`. Channel publication is monotonic by Semantic
+Versioning and refuses same-version byte replacement.
+`npm run release:publish-channel` retries by downloading and verifying the exact
+manifests already attached to the immutable version release, not by regenerating
+them. Generic HTTPS/S3-compatible origins can provide equivalent
+`/<channel>/latest/` and versioned layouts.
 
 ## Development and release
 
@@ -226,11 +233,30 @@ The Ubuntu 24.04 Docker builder provides a reproducible unsigned Linux build.
 Signed releases run as native Linux and Windows jobs so Tauri signing secrets
 are never sent as Docker build arguments. Every distributable receives a
 Minisign `.minisig`; Admin AppImage/NSIS artifacts additionally receive Tauri
-`.sig` files. Version releases are created as drafts, verified, and published once without asset replacement. The release manifest references only immutable artifact and
-Minisign URLs.
+`.sig` files. Version releases are created as drafts, verified, and published
+once without asset replacement. The release manifest references only immutable
+artifact and Minisign URLs.
 
 See [Operations](docs/OPERATIONS.md), [Releases](docs/RELEASES.md), and
 [Architecture](docs/ARCHITECTURE.md).
+
+## Documentation site
+
+The `site/` folder is a static Astro 7 site deployed to Cloudflare Pages at
+<https://centrald.dev>. It renders the repository `docs/` (and `SECURITY.md`)
+into a navigable documentation site.
+
+```text
+npm run site:dev    # local development server
+npm run site:check  # astro check (types + templates)
+npm run site:build  # sync docs and produce site/dist
+```
+
+Cloudflare Pages is configured with root directory `site`, build command
+`npm ci && npm run build`, and output directory `dist`. Set the Pages
+`NODE_VERSION` environment variable to `22.16.0` (Astro 7 requires Node 22.12+).
+The build always re-syncs `docs/*.md` into `site/src/content/docs` first, so
+`docs/` remains the single source of truth; the sync output is gitignored.
 
 ## License
 

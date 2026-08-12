@@ -26,11 +26,15 @@ pub enum DatabaseError {
 pub enum DatabaseAdminError {
     #[error("database URL is invalid or does not identify a dedicated PostgreSQL database")]
     InvalidUrl,
-    #[error("ambient PostgreSQL environment variables are not allowed because they can override connection options: {0}")]
+    #[error(
+        "ambient PostgreSQL environment variables are not allowed because they can override connection options: {0}"
+    )]
     UnsafeEnvironment(String),
     #[error("refusing destructive operation on PostgreSQL maintenance or template database")]
     ProtectedDatabase,
-    #[error("the configured PostgreSQL database already exists; initial-setup requires a new dedicated database")]
+    #[error(
+        "the configured PostgreSQL database already exists; initial-setup requires a new dedicated database"
+    )]
     AlreadyExists,
     #[error("the configured PostgreSQL database is missing: {0}")]
     MissingDatabase(String),
@@ -83,7 +87,7 @@ pub fn resolve_database_url(config: &ServerConfig) -> Result<SecretString, Datab
 
 /// Resolves the database URL only from the instance-bound, root-protected
 /// environment file. Destructive operations use this path so a caller's process
-/// environment cannot redirect them to another otherwise valid CentralD clone.
+/// environment cannot redirect them to another otherwise valid `CentralD` clone.
 ///
 /// # Errors
 ///
@@ -112,9 +116,7 @@ fn parse_database_environment(
     let mut lines = normalized.lines();
     let marker = lines.next().ok_or(DatabaseConfigError::Invalid)?;
     let assignment = lines.next().ok_or(DatabaseConfigError::Invalid)?;
-    if lines.next().is_some()
-        || marker != database_environment_marker(config.server.instance_id)
-    {
+    if lines.next().is_some() || marker != database_environment_marker(config.server.instance_id) {
         return Err(DatabaseConfigError::Invalid);
     }
     let (name, value) = assignment
@@ -126,22 +128,25 @@ fn parse_database_environment(
     Ok(SecretString::from(value.to_owned()))
 }
 
-
-/// Serializes the root-only PostgreSQL environment file with an instance-bound
+/// Serializes the root-only `PostgreSQL` environment file with an instance-bound
 /// ownership marker. The URL must already have been validated and is never
 /// logged by this helper.
+#[must_use]
 pub fn database_environment_contents(instance_id: Uuid, name: &str, value: &str) -> String {
-    format!("{}\n{name}={value}\n", database_environment_marker(instance_id))
+    format!(
+        "{}\n{name}={value}\n",
+        database_environment_marker(instance_id)
+    )
 }
 
 fn database_environment_marker(instance_id: Uuid) -> String {
     format!("{DATABASE_ENV_MARKER_PREFIX}{instance_id}")
 }
 
-/// Connects to the dedicated CentralD database, validates ownership, and
+/// Connects to the dedicated `CentralD` database, validates ownership, and
 /// applies embedded schema migrations.
 ///
-/// Ownership is bound twice: a PostgreSQL database comment and the singleton
+/// Ownership is bound twice: a `PostgreSQL` database comment and the singleton
 /// `centrald_installation` row must both match the configured server instance.
 /// This prevents a mistyped URL from migrating or later deleting another
 /// application's database.
@@ -171,7 +176,7 @@ pub async fn connect_and_migrate(
 }
 
 /// Creates a brand-new dedicated database, migrates it, and binds it to one
-/// CentralD server instance.
+/// `CentralD` server instance.
 ///
 /// Existing databases are never adopted, even when empty. The operator must
 /// choose a new database name, which keeps `--nuke` from ever treating an
@@ -180,7 +185,7 @@ pub async fn connect_and_migrate(
 /// # Errors
 ///
 /// Returns an error for unsafe URLs, an existing target database, insufficient
-/// PostgreSQL privileges, connection failures, or migration failures.
+/// `PostgreSQL` privileges, connection failures, or migration failures.
 pub async fn ensure_database_and_migrate(
     url: &str,
     max_connections: u32,
@@ -191,18 +196,20 @@ pub async fn ensure_database_and_migrate(
     let mut maintenance = PgConnection::connect(target.maintenance_url.as_str())
         .await
         .map_err(DatabaseAdminError::Maintenance)?;
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)",
-    )
-    .bind(&target.database_name)
-    .fetch_one(&mut maintenance)
-    .await
-    .map_err(DatabaseAdminError::Maintenance)?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(&target.database_name)
+            .fetch_one(&mut maintenance)
+            .await
+            .map_err(DatabaseAdminError::Maintenance)?;
     if exists {
         return Err(DatabaseAdminError::AlreadyExists);
     }
 
-    let create = format!("CREATE DATABASE {}", quote_identifier(&target.database_name));
+    let create = format!(
+        "CREATE DATABASE {}",
+        quote_identifier(&target.database_name)
+    );
     sqlx::query(&create)
         .execute(&mut maintenance)
         .await
@@ -239,12 +246,11 @@ pub async fn ensure_database_and_migrate(
         cleanup_new_database(url, instance_id).await;
         return Err(DatabaseAdminError::Migrate(error));
     }
-    if let Err(error) = sqlx::query(
-        "INSERT INTO centrald_installation (singleton, instance_id) VALUES (TRUE, $1)",
-    )
-    .bind(instance_id)
-    .execute(&pool)
-    .await
+    if let Err(error) =
+        sqlx::query("INSERT INTO centrald_installation (singleton, instance_id) VALUES (TRUE, $1)")
+            .bind(instance_id)
+            .execute(&pool)
+            .await
     {
         pool.close().await;
         cleanup_new_database(url, instance_id).await;
@@ -312,12 +318,11 @@ pub async fn migrate_precreated_database(
         pool.close().await;
         return Err(DatabaseAdminError::Migrate(error));
     }
-    if let Err(error) = sqlx::query(
-        "INSERT INTO centrald_installation (singleton, instance_id) VALUES (TRUE, $1)",
-    )
-    .bind(instance_id)
-    .execute(&pool)
-    .await
+    if let Err(error) =
+        sqlx::query("INSERT INTO centrald_installation (singleton, instance_id) VALUES (TRUE, $1)")
+            .bind(instance_id)
+            .execute(&pool)
+            .await
     {
         pool.close().await;
         return Err(DatabaseAdminError::Ownership(format!(
@@ -327,12 +332,12 @@ pub async fn migrate_precreated_database(
     Ok(InitializedDatabase { pool })
 }
 
-/// Verifies both CentralD database ownership markers without changing the database.
+/// Verifies both `CentralD` database ownership markers without changing the database.
 ///
 /// # Errors
 ///
 /// Returns an error when the database is missing, its comment does not match,
-/// the installation row does not match, or PostgreSQL cannot be reached.
+/// the installation row does not match, or `PostgreSQL` cannot be reached.
 pub async fn verify_owned_database(
     url: &str,
     instance_id: Uuid,
@@ -351,20 +356,24 @@ pub async fn verify_owned_database(
     Ok(target.database_name)
 }
 
-/// Returns the validated database name from a PostgreSQL URL without exposing
+/// Returns the validated database name from a `PostgreSQL` URL without exposing
 /// credentials.
+///
+/// # Errors
+///
+/// Returns an error when the URL is unsafe or the database name is protected.
 pub fn database_name_from_url(url: &str) -> Result<String, DatabaseAdminError> {
     let target = parse_target(url)?;
     reject_protected_database(&target.database_name)?;
     Ok(target.database_name)
 }
 
-/// Drops a database only after both CentralD ownership markers match.
+/// Drops a database only after both `CentralD` ownership markers match.
 ///
 /// # Errors
 ///
 /// Returns an error for unsafe names, a missing/mismatched ownership marker,
-/// connection failures, or when PostgreSQL refuses the destructive operation.
+/// connection failures, or when `PostgreSQL` refuses the destructive operation.
 pub async fn drop_owned_database(
     url: &str,
     instance_id: Uuid,
@@ -377,6 +386,11 @@ pub async fn drop_owned_database(
 /// Removes a database created by the current setup attempt. This is used only
 /// for rollback after the database comment has been written but before setup is
 /// committed. It still requires the comment to match the instance ID.
+///
+/// # Errors
+///
+/// Returns an error when the database is missing, its comment does not match,
+/// or the database cannot be dropped.
 pub async fn rollback_setup_database(
     url: &str,
     instance_id: Uuid,
@@ -476,12 +490,11 @@ async fn verify_database_comment(
 }
 
 async fn verify_installation_row(pool: &PgPool, instance_id: Uuid) -> Result<(), String> {
-    let stored: Option<Uuid> = sqlx::query_scalar(
-        "SELECT instance_id FROM centrald_installation WHERE singleton = TRUE",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| format!("read centrald_installation marker: {error}"))?;
+    let stored: Option<Uuid> =
+        sqlx::query_scalar("SELECT instance_id FROM centrald_installation WHERE singleton = TRUE")
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| format!("read centrald_installation marker: {error}"))?;
     match stored {
         Some(value) if value == instance_id => Ok(()),
         Some(_) => Err("centrald_installation belongs to another server instance".to_owned()),
@@ -495,14 +508,19 @@ struct DatabaseTarget {
     maintenance_url: Url,
 }
 
-/// Validates the structural and transport-security policy for a PostgreSQL URL.
+/// Validates the structural and transport-security policy for a `PostgreSQL` URL.
 ///
 /// Connection identity is taken only from the authority/path portion of the URL.
 /// Query parameters that can override host, user, password, or database are
 /// rejected because SQLx/libpq otherwise permit them to disagree with the fields
-/// CentralD uses for ownership and destructive-operation checks. Remote TCP
+/// `CentralD` uses for ownership and destructive-operation checks. Remote TCP
 /// databases must use `sslmode=verify-full`; loopback development connections may
 /// use another explicit or default mode.
+///
+/// # Errors
+///
+/// Returns an error when the URL is structurally invalid, uses an unsafe query
+/// parameter, or violates the transport-security policy.
 pub fn validate_database_url_policy(value: &str) -> Result<(), DatabaseAdminError> {
     if value.contains(char::is_whitespace) {
         return Err(DatabaseAdminError::InvalidUrl);
@@ -533,14 +551,19 @@ pub fn validate_database_url_policy(value: &str) -> Result<(), DatabaseAdminErro
         if !seen.insert(key.to_string()) {
             return Err(DatabaseAdminError::InvalidUrl);
         }
+        #[allow(clippy::match_same_arms)]
         match key.as_ref() {
             "sslmode" => sslmode = Some(value.to_string()),
-            "sslrootcert" | "sslcert" | "sslkey" | "application_name"
+            "sslrootcert"
+            | "sslcert"
+            | "sslkey"
+            | "application_name"
             | "statement-cache-capacity" => {}
             // SQLx/libpq accept these as query parameters and they can override
-            // the authority/path fields CentralD validates above.
-            "user" | "password" | "passfile" | "host" | "hostaddr" | "port"
-            | "dbname" | "options" => return Err(DatabaseAdminError::InvalidUrl),
+            // the authority/path fields CentralD validates above. The explicit
+            // deny list stays on contiguous lines so it reads as one policy.
+            #[rustfmt::skip]
+            "user" | "password" | "passfile" | "host" | "hostaddr" | "port" | "dbname" | "options" => return Err(DatabaseAdminError::InvalidUrl),
             _ => return Err(DatabaseAdminError::InvalidUrl),
         }
     }
@@ -549,7 +572,9 @@ pub fn validate_database_url_policy(value: &str) -> Result<(), DatabaseAdminErro
 
     let host = parsed.host_str().ok_or(DatabaseAdminError::InvalidUrl)?;
     let loopback = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<std::net::IpAddr>().is_ok_and(|address| address.is_loopback());
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
     if !loopback && sslmode.as_deref() != Some("verify-full") {
         return Err(DatabaseAdminError::InvalidUrl);
     }
@@ -689,14 +714,15 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            validate_database_url_policy("postgresql://user:secret@db/centrald").is_err()
-        );
+        assert!(validate_database_url_policy("postgresql://user:secret@db/centrald").is_err());
     }
 
     #[test]
     fn ownership_comment_is_instance_bound() {
         let id = Uuid::nil();
-        assert_eq!(database_comment(id), "centrald-instance:00000000-0000-0000-0000-000000000000");
+        assert_eq!(
+            database_comment(id),
+            "centrald-instance:00000000-0000-0000-0000-000000000000"
+        );
     }
 }

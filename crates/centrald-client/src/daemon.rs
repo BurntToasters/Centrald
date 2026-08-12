@@ -9,15 +9,14 @@ use centrald_protocol::v1::client_frame;
 use centrald_protocol::v1::client_service_client::ClientServiceClient;
 use centrald_protocol::v1::server_frame;
 use centrald_protocol::v1::{
-    ActivateIdentityRequest, ClientFrame, ClientHello, Heartbeat, Job, JobDeliveryAck,
-    JobEvent, JobState, ProtocolVersion, RenewCertificateRequest, ReplaceIdentityRequest,
+    ActivateIdentityRequest, ClientFrame, ClientHello, Heartbeat, Job, JobDeliveryAck, JobEvent,
+    JobState, ProtocolVersion, RenewCertificateRequest, ReplaceIdentityRequest,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use ed25519_dalek::VerifyingKey;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use rcgen::{
-    CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair,
-    KeyUsagePurpose,
+    CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
@@ -30,6 +29,12 @@ use crate::state_lock::ClientStateLock;
 
 /// Validates the active configuration and credential files before a service
 /// manager is told that the daemon is running.
+///
+/// # Errors
+///
+/// Returns an error when no enrolled configuration can be loaded, the
+/// configuration fails validation, or a client credential is not a regular,
+/// non-empty file.
 pub fn validate_startup_state() -> Result<()> {
     let _state_lock = ClientStateLock::acquire()
         .context("wait for CentralD client state publication to finish")?;
@@ -45,7 +50,10 @@ pub fn validate_startup_state() -> Result<()> {
             .symlink_metadata()
             .with_context(|| format!("inspect client credential {}", path.display()))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            bail!("client credential is not a regular file: {}", path.display());
+            bail!(
+                "client credential is not a regular file: {}",
+                path.display()
+            );
         }
         if std::fs::metadata(path)?.len() == 0 {
             bail!("client credential is empty: {}", path.display());
@@ -161,12 +169,12 @@ async fn finalize_active_publication(config: &ClientConfig) -> Result<()> {
         }
         return Err(error.context("activate the persisted client identity"));
     }
-    if let Some((_path, previous)) = crate::enrollment::previous_active_config(&config.data_dir)? {
-        if previous.identity_id != config.identity_id {
-            replace_previous_identity(&previous, config.identity_id)
-                .await
-                .context("complete authenticated reenrollment replacement")?;
-        }
+    if let Some((_path, previous)) = crate::enrollment::previous_active_config(&config.data_dir)?
+        && previous.identity_id != config.identity_id
+    {
+        replace_previous_identity(&previous, config.identity_id)
+            .await
+            .context("complete authenticated reenrollment replacement")?;
     }
     crate::enrollment::commit_active_config(&config.data_dir)
         .context("finalize recovered client credential pointer")
@@ -199,6 +207,7 @@ async fn connect_once(
     let grant_verification_key = VerifyingKey::from_public_key_pem(&grant_verification_pem)
         .context("parse server grant verification key")?;
     let mut grants = HashMap::<Uuid, SignedGrant>::new();
+    let mut shells = HashMap::<Uuid, ShellRelay>::new();
     let renewal_delay = (config.certificate_expires_at
         - ChronoDuration::days(CERTIFICATE_RENEWAL_WINDOW_DAYS)
         - Utc::now())
@@ -261,8 +270,8 @@ async fn connect_once(
                     Some(server_frame::Payload::Job(job)) => {
                         handle_job(&sender, job, &mut grants).await?;
                     }
-                    Some(server_frame::Payload::Shell(_)) => {
-                        bail!("server sent shell data without a negotiated shell session");
+                    Some(server_frame::Payload::Shell(frame)) => {
+                        handle_shell_frame(&sender, frame, &mut grants, &mut shells).await?;
                     }
                     None => bail!("server sent an empty control frame"),
                 }
@@ -274,6 +283,7 @@ async fn connect_once(
 const CERTIFICATE_RENEWAL_WINDOW_DAYS: i64 = 30;
 const MAX_PENDING_GRANTS: usize = 128;
 
+#[allow(clippy::too_many_lines)]
 async fn renew_certificate_if_needed(config: &ClientConfig) -> Result<bool> {
     if config.certificate_expires_at
         > Utc::now() + ChronoDuration::days(CERTIFICATE_RENEWAL_WINDOW_DAYS)
@@ -328,17 +338,14 @@ async fn renew_certificate_if_needed(config: &ClientConfig) -> Result<bool> {
     replacement.root_ca = identity_dir.join("root-ca.pem");
     replacement.grant_signing_public_key = identity_dir.join("grant-signing-public.pem");
     replacement.certificate_expires_at = expires_at;
-    let config_path = config
-        .data_dir
-        .join("configurations")
-        .join(format!(
-            "client-{}-{generation_id}.toml",
-            config.identity_id
-        ));
+    let config_path = config.data_dir.join("configurations").join(format!(
+        "client-{}-{generation_id}.toml",
+        config.identity_id
+    ));
     replacement.validate()?;
     replacement.validate_storage_path(&config_path)?;
-    let serialized = toml::to_string_pretty(&replacement)
-        .context("serialize renewed client configuration")?;
+    let serialized =
+        toml::to_string_pretty(&replacement).context("serialize renewed client configuration")?;
 
     let root_ca = std::fs::read(&config.root_ca)
         .with_context(|| format!("read {}", config.root_ca.display()))?;
@@ -352,42 +359,33 @@ async fn renew_certificate_if_needed(config: &ClientConfig) -> Result<bool> {
             &response.certificate_chain_pem,
             false,
         )?;
-        write_new_file(
-            &replacement.identity_key,
-            identity_key.serialize_pem().as_bytes(),
-            true,
-        )?;
+        // The serialized key is written to its root-owned file, then the
+        // in-memory PEM is wiped rather than left as plaintext after renewal.
+        let serialized_key = zeroize::Zeroizing::new(identity_key.serialize_pem());
+        write_new_file(&replacement.identity_key, serialized_key.as_bytes(), true)?;
         write_new_file(&replacement.root_ca, &root_ca, false)?;
         write_new_file(
             &replacement.grant_signing_public_key,
             &grant_signing_public_key,
             false,
         )?;
-        crate::enrollment::secure_renewed_generation(
-            &replacement.data_dir,
-            &identity_dir,
-        )?;
+        crate::enrollment::secure_renewed_generation(&replacement.data_dir, &identity_dir)?;
         write_new_file(&config_path, serialized.as_bytes(), true)?;
-        crate::enrollment::secure_renewed_configuration(
-            &replacement.data_dir,
-            &config_path,
-        )?;
+        crate::enrollment::secure_renewed_configuration(&replacement.data_dir, &config_path)?;
         Ok::<(), anyhow::Error>(())
     })();
     if let Err(error) = persistence {
         crate::enrollment::cleanup_failed_generation(&identity_dir, &config_path);
         return Err(error.context("persist renewed client identity generation"));
     }
-    let publication = match crate::enrollment::publish_active_config(
-        &replacement.data_dir,
-        &config_path,
-    ) {
-        Ok(publication) => publication,
-        Err(error) => {
-            crate::enrollment::cleanup_failed_generation(&identity_dir, &config_path);
-            return Err(error.context("publish renewed client credential generation"));
-        }
-    };
+    let publication =
+        match crate::enrollment::publish_active_config(&replacement.data_dir, &config_path) {
+            Ok(publication) => publication,
+            Err(error) => {
+                crate::enrollment::cleanup_failed_generation(&identity_dir, &config_path);
+                return Err(error.context("publish renewed client credential generation"));
+            }
+        };
     if let Err(error) = ensure_identity_active(&replacement).await {
         if let Err(rollback_error) = publication.rollback() {
             return Err(error.context(format!(
@@ -418,7 +416,9 @@ async fn handle_job(
     let job_kind = centrald_protocol::v1::JobKind::try_from(job.kind)
         .context("server sent an invalid job kind")?;
     let expected_operation = match job_kind {
-        centrald_protocol::v1::JobKind::RestartClientService => GrantOperation::RestartClientService,
+        centrald_protocol::v1::JobKind::RestartClientService => {
+            GrantOperation::RestartClientService
+        }
         centrald_protocol::v1::JobKind::RestartMachine => GrantOperation::RestartMachine,
         centrald_protocol::v1::JobKind::CheckOsUpdates => GrantOperation::CheckOsUpdates,
         centrald_protocol::v1::JobKind::ApplyOsUpdates => GrantOperation::ApplyOsUpdates,
@@ -441,18 +441,482 @@ async fn handle_job(
         })
         .await
         .context("acknowledge verified job delivery")?;
+    // The first event must arrive before the server's execution-start lease
+    // expires, so report that execution is starting before the (possibly long)
+    // broker round trip.
+    //
     // Sequence zero is the server-created dispatch marker. Client-originated
-    // execution events start at one so the first terminal broker-disabled
-    // result satisfies the server's strictly increasing event contract.
+    // execution events start at one so the first running/terminal result
+    // satisfies the server's strictly increasing event contract.
     send_job_event(
         sender,
         &job.id,
         1,
-        JobState::Failed,
-        b"privileged broker handoff is not enabled in this build",
-        true,
+        JobState::Running,
+        b"executing via the privileged broker",
+        false,
     )
-    .await
+    .await?;
+    let request = crate::broker::BrokerRequest {
+        signed_grant: grant,
+        parameters_json: job.parameters_json,
+    };
+    let result = crate::broker::submit_request(&request).await;
+    match result {
+        Ok(crate::broker::WireResult::Ok { response }) if response.success => {
+            send_job_event(
+                sender,
+                &job.id,
+                2,
+                JobState::Succeeded,
+                &response.output,
+                true,
+            )
+            .await?;
+        }
+        Ok(crate::broker::WireResult::Ok { response }) => {
+            send_job_event(sender, &job.id, 2, JobState::Failed, &response.output, true).await?;
+        }
+        Ok(crate::broker::WireResult::Error { message }) => {
+            send_job_event(
+                sender,
+                &job.id,
+                2,
+                JobState::Failed,
+                message.as_bytes(),
+                true,
+            )
+            .await?;
+        }
+        Err(error) => {
+            send_job_event(
+                sender,
+                &job.id,
+                2,
+                JobState::Failed,
+                error.to_string().as_bytes(),
+                true,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// One active shell session relay on the client: a bounded channel into the
+/// broker connection task plus a completion flag for stale-session pruning.
+struct ShellRelay {
+    to_broker: mpsc::Sender<crate::broker_session::SessionWireFrame>,
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Maximum concurrent shell sessions relayed by one daemon connection.
+const MAX_SHELL_SESSIONS: usize = 8;
+
+/// Handles one server shell frame: opens, relays, or closes a broker session.
+///
+/// # Errors
+///
+/// Returns an error only for protocol violations that must terminate the
+/// control stream; session-level failures are reported to the server as
+/// shell close frames.
+async fn handle_shell_frame(
+    sender: &mpsc::Sender<ClientFrame>,
+    frame: centrald_protocol::v1::ShellFrame,
+    grants: &mut HashMap<Uuid, SignedGrant>,
+    shells: &mut HashMap<Uuid, ShellRelay>,
+) -> Result<()> {
+    let Some(payload) = frame.payload else {
+        bail!("server sent an empty shell frame");
+    };
+    match payload {
+        centrald_protocol::v1::shell_frame::Payload::Open(open) => {
+            open_shell_session(sender, open, grants, shells).await
+        }
+        centrald_protocol::v1::shell_frame::Payload::Data(data) => {
+            relay_shell_data(shells, &data).await
+        }
+        centrald_protocol::v1::shell_frame::Payload::Resize(resize) => {
+            relay_shell_resize(shells, resize).await
+        }
+        centrald_protocol::v1::shell_frame::Payload::Close(close) => {
+            relay_shell_close(shells, close).await
+        }
+    }
+}
+
+async fn open_shell_session(
+    sender: &mpsc::Sender<ClientFrame>,
+    open: centrald_protocol::v1::ShellOpen,
+    grants: &mut HashMap<Uuid, SignedGrant>,
+    shells: &mut HashMap<Uuid, ShellRelay>,
+) -> Result<()> {
+    let session_id: Uuid = open
+        .session_id
+        .parse()
+        .context("server sent an invalid shell session ID")?;
+    if open.columns == 0 || open.rows == 0 || open.columns > 500 || open.rows > 500 {
+        bail!("server sent an invalid shell size");
+    }
+    let Some(grant) = grants.remove(&session_id) else {
+        send_shell_close(
+            sender,
+            session_id,
+            "server did not provide a shell-operation grant",
+        )
+        .await?;
+        return Ok(());
+    };
+    let expected_operation = match centrald_protocol::v1::ShellPrivilege::try_from(open.privilege) {
+        Ok(centrald_protocol::v1::ShellPrivilege::Low) => GrantOperation::OpenLowShell,
+        Ok(centrald_protocol::v1::ShellPrivilege::Elevated) => GrantOperation::OpenElevatedShell,
+        _ => {
+            send_shell_close(
+                sender,
+                session_id,
+                "server requested an invalid shell privilege",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    if grant.grant.job_or_session_id != session_id
+        || grant.grant.operation != expected_operation
+        || grant.grant.nonce != session_id.to_string()
+    {
+        send_shell_close(
+            sender,
+            session_id,
+            "shell grant does not match the requested session",
+        )
+        .await?;
+        return Ok(());
+    }
+    if !shells.contains_key(&session_id) && shells.len() >= MAX_SHELL_SESSIONS {
+        // Prune relays whose broker connection already ended before enforcing
+        // the cap, so ended sessions do not leak capacity.
+        shells.retain(|_, relay| !relay.ended.load(std::sync::atomic::Ordering::Relaxed));
+        if shells.len() >= MAX_SHELL_SESSIONS {
+            send_shell_close(
+                sender,
+                session_id,
+                "the client shell-session limit was reached",
+            )
+            .await?;
+            return Ok(());
+        }
+    }
+    let (to_broker, from_daemon) = mpsc::channel::<crate::broker_session::SessionWireFrame>(16);
+    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    shells.insert(
+        session_id,
+        ShellRelay {
+            to_broker: to_broker.clone(),
+            ended: ended.clone(),
+        },
+    );
+    if let Err(error) =
+        spawn_broker_session(sender, session_id, &open, grant, from_daemon, ended).await
+    {
+        shells.remove(&session_id);
+        send_shell_close(
+            sender,
+            session_id,
+            &format!("broker session failed: {error}"),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn spawn_broker_session(
+    sender: &mpsc::Sender<ClientFrame>,
+    session_id: Uuid,
+    open: &centrald_protocol::v1::ShellOpen,
+    grant: SignedGrant,
+    from_daemon: mpsc::Receiver<crate::broker_session::SessionWireFrame>,
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let open_frame = crate::broker_session::SessionWireFrame::Open {
+        grant,
+        parameters_base64: STANDARD.encode(&open.parameters_json),
+        columns: open.columns,
+        rows: open.rows,
+        account_user: open.account_user.clone(),
+        account_password_base64: STANDARD.encode(&open.account_password),
+        save_credentials: open.save_credentials,
+    };
+    #[cfg(unix)]
+    let connection = {
+        let stream = tokio::net::UnixStream::connect(crate::broker::BROKER_SOCKET_PATH)
+            .await
+            .with_context(|| {
+                format!(
+                    "connect to {}; is the privileged broker running?",
+                    crate::broker::BROKER_SOCKET_PATH
+                )
+            })?;
+        stream.into_std().context("convert broker connection")?
+    };
+    #[cfg(windows)]
+    let connection = {
+        let stream = tokio::task::spawn_blocking(crate::windows_ffi::connect_pipe_client)
+            .await
+            .context("broker pipe worker failed")??;
+        crate::windows_ffi::PipeStream::new(stream)
+    };
+    let sender_for_task = sender.clone();
+    tokio::task::spawn_blocking(move || {
+        let outcome = crate::daemon::shell_relay_loop(
+            connection,
+            &sender_for_task,
+            from_daemon,
+            &open_frame,
+            session_id,
+        );
+        ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Err(error) = outcome {
+            tracing::warn!(%session_id, %error, "shell session relay failed");
+        }
+    });
+    Ok(())
+}
+
+/// Runs the blocking broker-connection relay for one shell session: forwards
+/// daemon frames to the broker and broker frames to the control stream.
+fn shell_relay_loop<S>(
+    connection: S,
+    sender: &mpsc::Sender<ClientFrame>,
+    mut from_daemon: mpsc::Receiver<crate::broker_session::SessionWireFrame>,
+    open_frame: &crate::broker_session::SessionWireFrame,
+    session_id: Uuid,
+) -> Result<()>
+where
+    S: crate::broker_session::DuplexStream + 'static,
+{
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let mut writer = connection
+        .try_duplicate()
+        .map_err(|_| anyhow::anyhow!("could not duplicate the broker session connection"))?;
+    let mut reader = connection;
+    let open_bytes = serde_json::to_vec(&open_frame)?;
+    crate::broker_session::write_frame(&mut writer, &open_bytes)?;
+    let send_thread = std::thread::spawn(move || {
+        while let Some(frame) = from_daemon.blocking_recv() {
+            let Ok(bytes) = serde_json::to_vec(&frame) else {
+                break;
+            };
+            if crate::broker_session::write_frame(&mut writer, &bytes).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        let frame_bytes = match crate::broker_session::read_frame(
+            &mut reader,
+            crate::broker_session::MAX_SESSION_WIRE_FRAME_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = send_shell_close_blocking(
+                    sender,
+                    session_id,
+                    &format!("broker session ended: {error}"),
+                );
+                break;
+            }
+        };
+        let frame =
+            match serde_json::from_slice::<crate::broker_session::SessionWireFrame>(&frame_bytes) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let _ = send_shell_close_blocking(
+                        sender,
+                        session_id,
+                        &format!("broker sent a malformed frame: {error}"),
+                    );
+                    break;
+                }
+            };
+        let terminal = match frame {
+            crate::broker_session::SessionWireFrame::Data { data_base64 } => {
+                let Ok(data) = STANDARD.decode(&data_base64) else {
+                    let _ = send_shell_close_blocking(
+                        sender,
+                        session_id,
+                        "broker sent invalid session data",
+                    );
+                    break;
+                };
+                let frame = centrald_protocol::v1::ShellFrame {
+                    payload: Some(centrald_protocol::v1::shell_frame::Payload::Data(
+                        centrald_protocol::v1::ShellData {
+                            session_id: session_id.to_string(),
+                            sequence: 0,
+                            data,
+                        },
+                    )),
+                };
+                if sender
+                    .blocking_send(ClientFrame {
+                        payload: Some(client_frame::Payload::Shell(frame)),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                false
+            }
+            crate::broker_session::SessionWireFrame::Close { reason, .. } => {
+                let _ = send_shell_close_blocking(sender, session_id, &reason);
+                true
+            }
+            crate::broker_session::SessionWireFrame::Error { message } => {
+                let _ = send_shell_close_blocking(sender, session_id, &message);
+                true
+            }
+            crate::broker_session::SessionWireFrame::Opened { .. }
+            | crate::broker_session::SessionWireFrame::Open { .. }
+            | crate::broker_session::SessionWireFrame::Resize { .. } => false,
+        };
+        if terminal {
+            break;
+        }
+    }
+    let _ = send_thread.join();
+    Ok(())
+}
+
+fn send_shell_close_blocking(
+    sender: &mpsc::Sender<ClientFrame>,
+    session_id: Uuid,
+    reason: &str,
+) -> Result<()> {
+    let frame = centrald_protocol::v1::ShellFrame {
+        payload: Some(centrald_protocol::v1::shell_frame::Payload::Close(
+            centrald_protocol::v1::ShellClose {
+                session_id: session_id.to_string(),
+                reason: reason.to_owned(),
+                exit_code: 1,
+            },
+        )),
+    };
+    sender
+        .blocking_send(ClientFrame {
+            payload: Some(client_frame::Payload::Shell(frame)),
+        })
+        .context("send shell close to the control stream")
+}
+
+async fn send_shell_close(
+    sender: &mpsc::Sender<ClientFrame>,
+    session_id: Uuid,
+    reason: &str,
+) -> Result<()> {
+    let frame = centrald_protocol::v1::ShellFrame {
+        payload: Some(centrald_protocol::v1::shell_frame::Payload::Close(
+            centrald_protocol::v1::ShellClose {
+                session_id: session_id.to_string(),
+                reason: reason.to_owned(),
+                exit_code: 1,
+            },
+        )),
+    };
+    sender
+        .send(ClientFrame {
+            payload: Some(client_frame::Payload::Shell(frame)),
+        })
+        .await
+        .context("send shell close to the control stream")
+}
+
+async fn relay_shell_data(
+    shells: &mut HashMap<Uuid, ShellRelay>,
+    data: &centrald_protocol::v1::ShellData,
+) -> Result<()> {
+    let session_id: Uuid = data
+        .session_id
+        .parse()
+        .context("server sent an invalid shell session ID")?;
+    let Some(relay) = shells.get(&session_id) else {
+        // A frame for a session the client already closed races with the
+        // server's relay; dropping it must not kill the control stream.
+        tracing::warn!(%session_id, "ignored shell data for an unknown session");
+        return Ok(());
+    };
+    if data.data.len() > crate::broker_session::MAX_SESSION_WIRE_FRAME_BYTES {
+        bail!("server sent an oversized shell data frame");
+    }
+    let frame = crate::broker_session::SessionWireFrame::Data {
+        data_base64: {
+            use base64::Engine as _;
+            use base64::engine::general_purpose::STANDARD;
+            STANDARD.encode(&data.data)
+        },
+    };
+    if relay.to_broker.send(frame).await.is_err() {
+        bail!("shell session relay ended");
+    }
+    Ok(())
+}
+
+async fn relay_shell_close(
+    shells: &mut HashMap<Uuid, ShellRelay>,
+    close: centrald_protocol::v1::ShellClose,
+) -> Result<()> {
+    let session_id: Uuid = close
+        .session_id
+        .parse()
+        .context("server sent an invalid shell session ID")?;
+    let Some(relay) = shells.remove(&session_id) else {
+        return Ok(());
+    };
+    let _ = relay
+        .to_broker
+        .send(crate::broker_session::SessionWireFrame::Close {
+            reason: if close.reason.is_empty() {
+                "operator closed the terminal".to_owned()
+            } else {
+                close.reason
+            },
+            exit_code: close.exit_code,
+        })
+        .await;
+    Ok(())
+}
+
+async fn relay_shell_resize(
+    shells: &mut HashMap<Uuid, ShellRelay>,
+    resize: centrald_protocol::v1::ShellResize,
+) -> Result<()> {
+    let session_id: Uuid = resize
+        .session_id
+        .parse()
+        .context("server sent an invalid shell session ID")?;
+    if resize.columns == 0 || resize.rows == 0 || resize.columns > 500 || resize.rows > 500 {
+        bail!("server sent an invalid shell size");
+    }
+    let Some(relay) = shells.get(&session_id) else {
+        tracing::warn!(%session_id, "ignored shell resize for an unknown session");
+        return Ok(());
+    };
+    if relay
+        .to_broker
+        .send(crate::broker_session::SessionWireFrame::Resize {
+            columns: resize.columns,
+            rows: resize.rows,
+        })
+        .await
+        .is_err()
+    {
+        bail!("shell session relay ended");
+    }
+    Ok(())
 }
 
 async fn send_job_event(
@@ -480,12 +944,20 @@ async fn send_job_event(
 }
 
 pub(crate) async fn client_channel(config: &ClientConfig) -> Result<Channel> {
-    let certificate = std::fs::read(&config.identity_cert)
-        .with_context(|| format!("read {}", config.identity_cert.display()))?;
-    let private_key = std::fs::read(&config.identity_key)
-        .with_context(|| format!("read {}", config.identity_key.display()))?;
-    let root = std::fs::read(&config.root_ca)
-        .with_context(|| format!("read {}", config.root_ca.display()))?;
+    // tonic copies the PEM bytes into its TLS identity, so our intermediate
+    // buffers are wiped on drop rather than left as plaintext key material.
+    let certificate = zeroize::Zeroizing::new(
+        std::fs::read(&config.identity_cert)
+            .with_context(|| format!("read {}", config.identity_cert.display()))?,
+    );
+    let private_key = zeroize::Zeroizing::new(
+        std::fs::read(&config.identity_key)
+            .with_context(|| format!("read {}", config.identity_key.display()))?,
+    );
+    let root = zeroize::Zeroizing::new(
+        std::fs::read(&config.root_ca)
+            .with_context(|| format!("read {}", config.root_ca.display()))?,
+    );
     Endpoint::from_shared(config.endpoint.clone())
         .context("invalid client endpoint")?
         .connect_timeout(Duration::from_secs(10))
@@ -493,8 +965,8 @@ pub(crate) async fn client_channel(config: &ClientConfig) -> Result<Channel> {
         .tls_config(
             ClientTlsConfig::new()
                 .domain_name(config.server_name.clone())
-                .ca_certificate(Certificate::from_pem(root))
-                .identity(Identity::from_pem(certificate, private_key)),
+                .ca_certificate(Certificate::from_pem(&*root))
+                .identity(Identity::from_pem(&*certificate, &*private_key)),
         )
         .context("configure client mTLS")?
         .connect()
@@ -529,7 +1001,7 @@ fn client_hello(config: &ClientConfig) -> ClientHello {
             major: centrald_protocol::PROTOCOL_MAJOR,
             minor: centrald_protocol::PROTOCOL_MINOR,
         }),
-        capabilities: vec!["heartbeat".into()],
+        capabilities: vec!["heartbeat".into(), "typed_jobs".into()],
         boot_id: boot_id(),
     }
 }
@@ -550,7 +1022,10 @@ pub(crate) async fn ensure_identity_active(config: &ClientConfig) -> Result<()> 
         .context("activate client identity")?
         .into_inner();
     if !response.success {
-        bail!("server rejected client identity activation: {}", response.message);
+        bail!(
+            "server rejected client identity activation: {}",
+            response.message
+        );
     }
     Ok(())
 }
@@ -579,11 +1054,15 @@ pub(crate) async fn replace_previous_identity(
         .context("replace previous client identity")?
         .into_inner();
     if !response.success {
-        bail!("server rejected previous-identity replacement: {}", response.message);
+        bail!(
+            "server rejected previous-identity replacement: {}",
+            response.message
+        );
     }
     Ok(())
 }
 
+#[allow(clippy::items_after_statements)]
 fn boot_id() -> String {
     #[cfg(target_os = "linux")]
     if let Ok(value) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {

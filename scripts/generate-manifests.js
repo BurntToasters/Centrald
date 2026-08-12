@@ -9,7 +9,9 @@ import { ensureGeneratedDirectory } from "./lib/safe-path.js";
 const root = process.cwd();
 const options = parseArguments(process.argv.slice(2));
 const config = loadBuildConfig(root);
-const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(root, "package.json"), "utf8"),
+);
 const version = packageJson.version;
 const artifactsDir = path.resolve(root, options.artifactsDir);
 const outputDir = path.resolve(root, options.outputDir);
@@ -115,9 +117,10 @@ function describeArtifact(file, expectedVersion, buildConfig) {
     return null;
   }
   const filename = path.basename(file);
-  const match = /^centrald-(server|client|admin)_(.+)_(linux|windows)_(x86_64|aarch64)\.(deb|msi|exe|AppImage|zip|tar\.gz)$/u.exec(
-    filename,
-  );
+  const match =
+    /^centrald-(server|client|admin)_(.+)_(linux|windows)_(x86_64|aarch64)\.(deb|msi|exe|AppImage|zip|tar\.gz)$/u.exec(
+      filename,
+    );
   if (!match) return null;
   const [, component, version, os, architecture, extension] = match;
   if (version !== expectedVersion) {
@@ -245,7 +248,9 @@ function buildTauriManifest({
       "windows-aarch64",
     ]) {
       if (!platforms[platform]) {
-        throw new Error(`Missing signed Admin updater artifact for ${platform}`);
+        throw new Error(
+          `Missing signed Admin updater artifact for ${platform}`,
+        );
       }
     }
   }

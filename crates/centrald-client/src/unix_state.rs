@@ -14,8 +14,8 @@ use anyhow::{Context, Result, bail};
 use centrald_common::config::ClientConfig;
 use rustix::fd::OwnedFd;
 use rustix::fs::{
-    AtFlags, FileType, Gid, Mode, OFlags, Uid, fchmod, fchown, fstat, fsync, mkdirat,
-    open, openat, unlinkat,
+    AtFlags, FileType, Gid, Mode, OFlags, Uid, fchmod, fchown, fstat, fsync, mkdirat, open, openat,
+    unlinkat,
 };
 use rustix::io::Errno;
 use uuid::Uuid;
@@ -38,7 +38,6 @@ struct StateHandles {
     service_uid: Uid,
     service_gid: Gid,
 }
-
 
 /// Reads the authoritative active configuration through fixed-root, no-follow
 /// descriptors. This is used by privileged repair so an untrusted pathname is
@@ -187,11 +186,7 @@ pub(crate) fn cleanup_enrollment_generation(
             generations,
             &generation_id.to_string(),
         )?;
-    } else if remove_at_if_present(
-        &state.configurations,
-        configuration_name,
-        AtFlags::empty(),
-    )? {
+    } else if remove_at_if_present(&state.configurations, configuration_name, AtFlags::empty())? {
         fsync(&state.configurations).context("synchronize configuration cleanup")?;
     }
     Ok(())
@@ -375,9 +370,8 @@ fn regular_flags() -> OFlags {
 }
 
 fn open_directory(parent: &OwnedFd, name: &str) -> Result<OwnedFd> {
-    open_directory_optional(parent, name)?.with_context(|| {
-        format!("protected client directory component {name} does not exist")
-    })
+    open_directory_optional(parent, name)?
+        .with_context(|| format!("protected client directory component {name} does not exist"))
 }
 
 fn open_directory_optional(parent: &OwnedFd, name: &str) -> Result<Option<OwnedFd>> {
@@ -387,8 +381,9 @@ fn open_directory_optional(parent: &OwnedFd, name: &str) -> Result<Option<OwnedF
             Ok(Some(descriptor))
         }
         Err(Errno::NOENT) => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("open protected client directory component {name}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("open protected client directory component {name}"))
+        }
     }
 }
 
@@ -409,7 +404,8 @@ fn require_type(descriptor: &OwnedFd, expected: FileType, label: &str) -> Result
 }
 
 fn require_root_ancestor(descriptor: &OwnedFd, label: &str) -> Result<()> {
-    let metadata = fstat(descriptor).with_context(|| format!("inspect trusted ancestor {label}"))?;
+    let metadata =
+        fstat(descriptor).with_context(|| format!("inspect trusted ancestor {label}"))?;
     if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
         || metadata.st_uid != 0
         || metadata.st_gid != 0
@@ -444,17 +440,14 @@ fn assign(
     Ok(())
 }
 
-
 fn read_bounded_utf8(descriptor: OwnedFd, maximum: usize, label: &str) -> Result<String> {
     require_type(&descriptor, FileType::RegularFile, label)?;
-    let metadata = fstat(&descriptor)
-        .with_context(|| format!("inspect protected client file {label}"))?;
+    let metadata =
+        fstat(&descriptor).with_context(|| format!("inspect protected client file {label}"))?;
     if metadata.st_nlink != 1 {
         bail!("protected client file {label} has more than one hard link");
     }
-    let limit = u64::try_from(maximum)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
+    let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
     let mut bytes = Vec::with_capacity(maximum.min(4096));
     std::fs::File::from(descriptor)
         .take(limit)
@@ -463,8 +456,7 @@ fn read_bounded_utf8(descriptor: OwnedFd, maximum: usize, label: &str) -> Result
     if bytes.len() > maximum {
         bail!("protected client file {label} exceeds its size limit");
     }
-    String::from_utf8(bytes)
-        .with_context(|| format!("protected client file {label} is not UTF-8"))
+    String::from_utf8(bytes).with_context(|| format!("protected client file {label} is not UTF-8"))
 }
 
 fn open_or_create_service_directory(
@@ -491,12 +483,7 @@ fn open_or_create_service_directory(
     Ok(descriptor)
 }
 
-fn create_service_directory(
-    parent: &OwnedFd,
-    name: &str,
-    owner: Uid,
-    group: Gid,
-) -> Result<()> {
+fn create_service_directory(parent: &OwnedFd, name: &str, owner: Uid, group: Gid) -> Result<()> {
     mkdirat(parent, name, Mode::from_raw_mode(SERVICE_DIRECTORY_MODE))
         .with_context(|| format!("create new client generation directory {name}"))?;
     let descriptor = open_directory(parent, name)?;
@@ -570,8 +557,9 @@ fn remove_at_if_present(parent: &OwnedFd, name: &str, flags: AtFlags) -> Result<
     match unlinkat(parent, name, flags) {
         Ok(()) => Ok(true),
         Err(Errno::NOENT) => Ok(false),
-        Err(error) => Err(error)
-            .with_context(|| format!("remove protected client component {name}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("remove protected client component {name}"))
+        }
     }
 }
 

@@ -13,7 +13,10 @@ ExecStart=/usr/bin/centrald-server --config /etc/centrald/server.toml run
 Restart=on-failure
 RestartSec=5s
 RuntimeDirectory=centrald
-RuntimeDirectoryMode=0700
+# /run/centrald is shared with the broker and the unprivileged client daemon;
+# the server socket itself is mode 0600, so the world-readable directory does
+# not expose it.
+RuntimeDirectoryMode=0755
 UMask=0077
 NoNewPrivileges=true
 CapabilityBoundingSet=

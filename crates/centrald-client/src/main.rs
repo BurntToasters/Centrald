@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use centrald_client::cli::{ClientCli, ClientCommand};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -28,8 +28,12 @@ async fn main() -> Result<()> {
         ClientCommand::Restart => centrald_client::rescue::restart_client_service(),
         ClientCommand::Rescue(args) => centrald_client::rescue::run(args).await,
         ClientCommand::Daemon => centrald_client::daemon::run().await,
-        ClientCommand::PrivilegedBroker => bail!("privileged broker transport is not initialized"),
+        ClientCommand::PrivilegedBroker => centrald_client::broker::run().await,
         #[cfg(windows)]
         ClientCommand::WindowsService => centrald_client::windows_service::run_dispatcher(),
+        #[cfg(windows)]
+        ClientCommand::WindowsServiceBroker => {
+            centrald_client::windows_service::run_broker_dispatcher()
+        }
     }
 }

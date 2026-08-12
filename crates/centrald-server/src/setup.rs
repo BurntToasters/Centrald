@@ -24,6 +24,7 @@ pub const DATA_ROOT_MARKER: &str = ".centrald-data-root";
 pub const DATA_ROOT_MARKER_PREFIX: &str = "centrald-data-root-v1:";
 const SETUP_RECOVERY_JOURNAL: &str = ".centrald-initial-setup-recovery.json";
 
+#[must_use]
 pub fn data_root_marker_contents(instance_id: Uuid) -> String {
     format!("{DATA_ROOT_MARKER_PREFIX}{instance_id}\n")
 }
@@ -87,7 +88,7 @@ impl SetupPaths {
 }
 
 /// Validates every setup option and output path without creating files or
-/// changing PostgreSQL. This must run before a managed local role/database is
+/// changing `PostgreSQL`. This must run before a managed local role/database is
 /// provisioned so interrupted-setup rollback can remove only paths that were
 /// proven absent before the first external mutation.
 ///
@@ -106,9 +107,14 @@ pub fn preflight(options: &SetupOptions) -> Result<()> {
 /// mode instead of inheriting the invoking shell's umask. Existing directories
 /// are accepted only when they already satisfy the setup ownership boundary.
 ///
-/// This function performs no PostgreSQL mutation and creates no credential
+/// This function performs no `PostgreSQL` mutation and creates no credential
 /// file. A crash after this step therefore leaves only empty directories that a
 /// subsequent `initial-setup` can safely reuse.
+///
+/// # Errors
+///
+/// Returns an error when a setup directory cannot be created or an existing
+/// directory does not satisfy the setup ownership boundary.
 pub fn prepare_directories(options: &SetupOptions) -> Result<()> {
     let paths = SetupPaths::new(&options.data_dir);
     let mut parents = setup_targets(options, &paths)
@@ -144,8 +150,7 @@ fn ensure_setup_directory(path: &Path, label: &str) -> Result<()> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("inspect {label} {}", path.display()));
+            return Err(error).with_context(|| format!("inspect {label} {}", path.display()));
         }
     }
 
@@ -164,8 +169,7 @@ fn ensure_setup_directory(path: &Path, label: &str) -> Result<()> {
                 return ensure_setup_directory(path, label);
             }
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("create {label} {}", path.display()));
+                return Err(error).with_context(|| format!("create {label} {}", path.display()));
             }
         }
     }
@@ -177,8 +181,7 @@ fn ensure_setup_directory(path: &Path, label: &str) -> Result<()> {
                 return ensure_setup_directory(path, label);
             }
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("create {label} {}", path.display()));
+                return Err(error).with_context(|| format!("create {label} {}", path.display()));
             }
         }
     }
@@ -293,7 +296,12 @@ pub fn rollback_failed_setup(options: &SetupOptions) -> Result<()> {
 /// Removes the exact filesystem outputs that may have been published by an
 /// interrupted setup. This recovery path intentionally needs no database URL or
 /// other secret; all paths are either package-fixed or were recorded before the
-/// first managed PostgreSQL mutation.
+/// first managed `PostgreSQL` mutation.
+///
+/// # Errors
+///
+/// Returns an error when an output cannot be removed or a replacement symlink
+/// or non-file output is encountered.
 pub fn rollback_interrupted_setup_files(
     config_path: &Path,
     recovery_key_output: &Path,
@@ -302,14 +310,9 @@ pub fn rollback_interrupted_setup_files(
 ) -> Result<()> {
     let paths = SetupPaths::new(data_dir);
     let mut failures = Vec::new();
-    for target in setup_target_paths(
-        config_path,
-        recovery_key_output,
-        environment_file,
-        &paths,
-    )
-    .into_iter()
-    .rev()
+    for target in setup_target_paths(config_path, recovery_key_output, environment_file, &paths)
+        .into_iter()
+        .rev()
     {
         match target.symlink_metadata() {
             Ok(metadata) if metadata.file_type().is_symlink() => failures.push(format!(
@@ -346,7 +349,10 @@ fn preflight_data_root(data_dir: &Path) -> Result<()> {
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        bail!("setup data root must be a real directory: {}", data_dir.display());
+        bail!(
+            "setup data root must be a real directory: {}",
+            data_dir.display()
+        );
     }
     #[cfg(unix)]
     {
@@ -371,7 +377,10 @@ fn preflight_data_root(data_dir: &Path) -> Result<()> {
                 .symlink_metadata()
                 .with_context(|| format!("inspect setup recovery state {}", path.display()))?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!("setup recovery state is not a regular file: {}", path.display());
+                bail!(
+                    "setup recovery state is not a regular file: {}",
+                    path.display()
+                );
             }
             #[cfg(unix)]
             {
@@ -390,7 +399,10 @@ fn preflight_data_root(data_dir: &Path) -> Result<()> {
                 .symlink_metadata()
                 .with_context(|| format!("inspect setup PKI directory {}", path.display()))?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                bail!("setup PKI path must be a real directory: {}", path.display());
+                bail!(
+                    "setup PKI path must be a real directory: {}",
+                    path.display()
+                );
             }
             #[cfg(unix)]
             {
@@ -423,6 +435,10 @@ fn preflight_data_root(data_dir: &Path) -> Result<()> {
 /// Removes only empty package-created setup directories after all generated
 /// files and any recovery journal have been retired. No recursive deletion is
 /// performed.
+///
+/// # Errors
+///
+/// Returns an error when an empty setup directory cannot be removed.
 pub fn remove_empty_setup_directories(data_dir: &Path) -> Result<()> {
     let pki_dir = data_dir.join("pki");
     remove_empty_setup_directory(&pki_dir, "setup PKI directory")?;
@@ -433,10 +449,15 @@ fn remove_empty_setup_directory(path: &Path, label: &str) -> Result<()> {
     let metadata = match path.symlink_metadata() {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).with_context(|| format!("inspect {label} {}", path.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspect {label} {}", path.display()));
+        }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        bail!("refusing to remove non-directory {label}: {}", path.display());
+        bail!(
+            "refusing to remove non-directory {label}: {}",
+            path.display()
+        );
     }
     if std::fs::read_dir(path)
         .with_context(|| format!("list {label} {}", path.display()))?
@@ -481,19 +502,18 @@ fn preflight_targets(options: &SetupOptions, paths: &SetupPaths) -> Result<()> {
     Ok(())
 }
 
-
 fn validate_clean_absolute_path(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!("setup output paths must be absolute: {}", path.display());
     }
     let display = path.to_string_lossy();
     let has_dot_component = display
-        .split(|character| matches!(character, '/' | '\\'))
+        .split(['/', '\\'])
         .any(|component| matches!(component, "." | ".."));
     if has_dot_component
-        || path.components().any(|component| {
-            matches!(component, Component::ParentDir | Component::Prefix(_))
-        })
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
     {
         bail!(
             "setup output paths must not contain relative or platform-prefix components: {}",
@@ -516,7 +536,10 @@ fn validate_setup_ancestor_ownership(path: &Path) -> Result<()> {
             Ok(metadata) => {
                 found_existing = true;
                 if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    bail!("setup ancestor must be a real directory: {}", ancestor.display());
+                    bail!(
+                        "setup ancestor must be a real directory: {}",
+                        ancestor.display()
+                    );
                 }
                 if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
                     bail!(
@@ -526,7 +549,9 @@ fn validate_setup_ancestor_ownership(path: &Path) -> Result<()> {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("inspect {}", ancestor.display())),
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect {}", ancestor.display()));
+            }
         }
         current = ancestor.parent();
     }
@@ -538,6 +563,7 @@ fn validate_setup_ancestor_ownership(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn validate_setup_ancestor_ownership(_path: &Path) -> Result<()> {
     Ok(())
 }
@@ -610,7 +636,10 @@ fn build_config(options: &SetupOptions, paths: &SetupPaths) -> ServerConfig {
         runtime: RuntimeSection {
             heartbeat_interval_seconds: 30,
             offline_after_seconds: 90,
-            job_ttl_seconds: 15 * 60,
+            // Job TTL must comfortably exceed the longest broker round trip
+            // (up to 15 minutes for package operations) so a terminal event
+            // is never rejected as "job expired" after the operation ran.
+            job_ttl_seconds: 60 * 60,
             shell_idle_timeout_seconds: 15 * 60,
             max_shell_frame_bytes: 64 * 1024,
         },
@@ -727,7 +756,9 @@ fn validate_options(options: &SetupOptions) -> Result<()> {
         bail!("packaged CentralD setup requires database secret file {SERVER_DATABASE_ENV_FILE}");
     }
     if options.database_url_env != SERVER_DATABASE_URL_ENV {
-        bail!("packaged CentralD setup requires database environment variable {SERVER_DATABASE_URL_ENV}");
+        bail!(
+            "packaged CentralD setup requires database environment variable {SERVER_DATABASE_URL_ENV}"
+        );
     }
     if options.recovery_key_output.starts_with(&options.data_dir) {
         bail!("offline root recovery key must be stored outside the server data directory");
@@ -739,16 +770,20 @@ const fn unspecified(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
 }
 
-
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn setup_paths_reject_relative_components() {
         assert!(validate_clean_absolute_path(Path::new("/etc/centrald/server.toml")).is_ok());
         assert!(validate_clean_absolute_path(Path::new("etc/centrald/server.toml")).is_err());
-        assert!(validate_clean_absolute_path(Path::new("/etc/../var/lib/centrald/server.toml")).is_err());
+        assert!(
+            validate_clean_absolute_path(Path::new("/etc/../var/lib/centrald/server.toml"))
+                .is_err()
+        );
         assert!(validate_clean_absolute_path(Path::new("/etc/./centrald/server.toml")).is_err());
     }
 }

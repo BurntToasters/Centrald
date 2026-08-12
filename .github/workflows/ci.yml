@@ -27,6 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libayatana-appindicator3-dev \
+            libpam0g-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
@@ -54,5 +55,9 @@ jobs:
         run: rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
       - name: Check Windows x64 workspace
         run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
+      - name: Run workspace unit tests on Windows
+        run: cargo test --workspace --locked
       - name: Check managed client and Admin on Windows ARM64
-        run: cargo check --locked --target aarch64-pc-windows-msvc -p centrald-client -p centrald-admin
+        run:
+          cargo check --locked --target aarch64-pc-windows-msvc -p
+          centrald-client -p centrald-admin

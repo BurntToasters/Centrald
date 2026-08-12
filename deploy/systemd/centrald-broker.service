@@ -1,0 +1,48 @@
+[Unit]
+Description=CentralD privileged operation broker
+Documentation=https://github.com/BurntToasters/centrald
+# The broker has nothing to do until a client identity exists, and an
+# unenrolled machine must not enter a restart loop.
+ConditionPathExists=/var/lib/centrald-client/configurations/current.pointer
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/centrald-client privileged-broker
+Restart=on-failure
+RestartSec=2s
+# /run/centrald is shared with the unprivileged client daemon, which must be
+# able to traverse it to reach the broker socket.
+RuntimeDirectory=centrald
+RuntimeDirectoryMode=0755
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# The broker performs network downloads for OS update checks/applies and
+# CentralD release installation, in addition to local socket and systemd/D-Bus
+# control.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+ProtectHostname=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+# ProtectSystem=strict is intentionally omitted: the broker must run
+# apt-get/dpkg package maintenance that writes /usr, /etc, and /var/lib/dpkg.
+# Authorization comes from the verified server-signed grants over the
+# peer-credential-checked local socket.
+ReadWritePaths=/var/lib/centrald-broker /run/centrald
+
+[Install]
+WantedBy=multi-user.target

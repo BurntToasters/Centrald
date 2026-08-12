@@ -1,6 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 type AvailableUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
 
@@ -85,12 +95,53 @@ type ServerSettings = {
   rootCertPath: string;
   localOnlyFields: string[];
   restartRequired: boolean;
+  updateLatestVersion: string;
+  updateAvailable: boolean;
 };
 
 type EnrollmentForm = {
   accessKey: string;
   connectionOverride: string;
 };
+
+type ElevationChallenge = Readonly<{
+  id: string;
+  nonce: string;
+  contextHash: string;
+  expiresAt: string;
+  challengeSignature: string;
+}>;
+
+type ShellOpenResult = Readonly<{
+  handle: string;
+}>;
+
+type ShellEvent =
+  | Readonly<{ type: "data"; sessionId: string; data: string }>
+  | Readonly<{
+      type: "close";
+      sessionId: string;
+      reason: string;
+      exitCode: number;
+    }>
+  | Readonly<{ type: "error"; message: string }>;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
 
 type Section = "overview" | "devices" | "terminal" | "settings";
 
@@ -156,51 +207,7 @@ export function App() {
       .catch((reason: unknown) => setError(String(reason)));
   }, []);
 
-  useEffect(() => {
-    if (!selectedId) return;
-    setLoadingTargets(true);
-    setError(null);
-    void invoke<Target[]>("list_targets", { profileId: selectedId })
-      .then((loaded) => {
-        setTargets(loaded);
-        setTerminalTarget((current) => current || loaded[0]?.id || "");
-      })
-      .catch((reason: unknown) => setError(String(reason)))
-      .finally(() => setLoadingTargets(false));
-  }, [selectedId]);
-
-  useEffect(() => {
-    if (!selectedId) return;
-    void refreshClientInvitations(selectedId);
-  }, [selectedId]);
-
-  useEffect(() => {
-    if (!selectedId || section !== "settings") return;
-    setError(null);
-    void invoke<ServerSettings>("get_server_settings", {
-      profileId: selectedId,
-    })
-      .then(setSettings)
-      .catch((reason: unknown) => setError(String(reason)));
-  }, [section, selectedId]);
-
-  async function refreshTargets() {
-    if (!selectedId) return;
-    setLoadingTargets(true);
-    setError(null);
-    try {
-      setTargets(
-        await invoke<Target[]>("list_targets", { profileId: selectedId }),
-      );
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setLoadingTargets(false);
-    }
-  }
-
-  async function refreshClientInvitations(profileId = selectedId) {
-    if (!profileId) return;
+  const refreshClientInvitations = useCallback(async (profileId: string) => {
     try {
       setClientInvitations(
         await invoke<EnrollmentKey[]>("list_client_invitations", {
@@ -211,6 +218,56 @@ export function App() {
     } catch (reason) {
       setError(String(reason));
     }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    void loadTargets(selectedId);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    void invoke<EnrollmentKey[]>("list_client_invitations", {
+      profileId: selectedId,
+      includeInactive: false,
+    })
+      .then(setClientInvitations)
+      .catch((reason: unknown) => setError(String(reason)));
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    void loadSettings(selectedId);
+  }, [section, selectedId]);
+
+  async function loadTargets(profileId: string) {
+    setLoadingTargets(true);
+    setError(null);
+    try {
+      const loaded = await invoke<Target[]>("list_targets", { profileId });
+      setTargets(loaded);
+      setTerminalTarget((current) => current || loaded[0]?.id || "");
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoadingTargets(false);
+    }
+  }
+
+  async function loadSettings(profileId: string) {
+    setError(null);
+    try {
+      setSettings(
+        await invoke<ServerSettings>("get_server_settings", { profileId }),
+      );
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function refreshTargets() {
+    if (!selectedId) return;
+    await loadTargets(selectedId);
   }
 
   async function submitEnrollment(event: FormEvent<HTMLFormElement>) {
@@ -261,6 +318,7 @@ export function App() {
     kind: string,
     label: string,
     confirmMessage?: string,
+    parameters?: Record<string, unknown>,
   ) {
     if (!selectedId) return;
     if (confirmMessage && !window.confirm(confirmMessage)) return;
@@ -272,6 +330,7 @@ export function App() {
         targetId: target.id,
         kind,
         reason: `${label} requested from CentralD Admin`,
+        parametersJson: JSON.stringify(parameters ?? {}),
       });
       setNotice(`${label} queued for ${target.name}. Job ${job.id}.`);
     } catch (reason) {
@@ -610,16 +669,19 @@ export function App() {
                 busy={busy}
                 invitations={clientInvitations}
                 loading={loadingTargets}
+                latestVersion={settings?.updateLatestVersion ?? ""}
                 onCreateInvitation={() => setShowInvitation(true)}
                 onJob={queueJob}
                 onRevoke={revokeTarget}
                 onRevokeInvitation={revokeInvitation}
                 targets={targets}
+                updatesEnabled={settings?.updatesEnabled ?? false}
               />
             )}
 
             {section === "terminal" && (
               <TerminalPanel
+                profileId={selectedId}
                 selectedTarget={terminalTarget}
                 targets={targets}
                 onTargetChange={setTerminalTarget}
@@ -971,15 +1033,18 @@ function GettingStarted() {
 function Devices({
   busy,
   invitations,
+  latestVersion,
   loading,
   onCreateInvitation,
   onJob,
   onRevoke,
   onRevokeInvitation,
   targets,
+  updatesEnabled,
 }: Readonly<{
   busy: boolean;
   invitations: readonly EnrollmentKey[];
+  latestVersion: string;
   loading: boolean;
   onCreateInvitation: () => void;
   onJob: (
@@ -987,10 +1052,12 @@ function Devices({
     kind: string,
     label: string,
     confirmMessage?: string,
+    parameters?: Record<string, unknown>,
   ) => Promise<void>;
   onRevoke: (target: Target) => Promise<void>;
   onRevokeInvitation: (invitation: EnrollmentKey) => Promise<void>;
   targets: readonly Target[];
+  updatesEnabled: boolean;
 }>) {
   return (
     <>
@@ -999,8 +1066,8 @@ function Devices({
           <p className="eyebrow">Managed endpoints</p>
           <h3>Devices</h3>
           <p>
-            Inventory and enrollment are active. Privileged maintenance actions
-            stay disabled until the broker is enabled.
+            Inventory, enrollment, and typed maintenance jobs are active on
+            clients that report the broker capability.
           </p>
         </div>
         <button
@@ -1053,8 +1120,8 @@ function Devices({
                 </span>
                 <span className="row-actions">
                   <button
-                    disabled
-                    title="Unavailable until the privileged client broker is enabled."
+                    disabled={busy}
+                    title="Restarts the installed agent service through the privileged client broker."
                     onClick={() =>
                       void onJob(
                         target,
@@ -1067,14 +1134,54 @@ function Devices({
                     Restart agent
                   </button>
                   <button
-                    disabled
-                    title="Unavailable until the privileged client broker is enabled."
+                    disabled={busy}
+                    title="Checks for OS package updates through the privileged client broker."
                     onClick={() =>
                       void onJob(target, "check-os-updates", "OS update check")
                     }
                     type="button"
                   >
                     Check updates
+                  </button>
+                  <button
+                    disabled={busy}
+                    title="Applies available OS package updates through the privileged client broker."
+                    onClick={() =>
+                      void onJob(
+                        target,
+                        "apply-os-updates",
+                        "Apply OS updates",
+                        `Apply all available OS package updates on ${target.name}?`,
+                      )
+                    }
+                    type="button"
+                  >
+                    Apply updates
+                  </button>
+                  <button
+                    disabled={busy || !updatesEnabled || !latestVersion}
+                    title={
+                      updatesEnabled
+                        ? "Installs the server-verified CentralD release on this device."
+                        : "Release updates are disabled on this server."
+                    }
+                    onClick={() => {
+                      const version = window.prompt(
+                        `Approved CentralD version to install on ${target.name}:`,
+                        latestVersion,
+                      );
+                      if (!version?.trim()) return;
+                      void onJob(
+                        target,
+                        "update-client",
+                        "CentralD client update",
+                        `Install CentralD ${version.trim()} on ${target.name}?`,
+                        { expectedVersion: version.trim() },
+                      );
+                    }}
+                    type="button"
+                  >
+                    Update CentralD
                   </button>
                   <button
                     className="danger-text"
@@ -1146,29 +1253,162 @@ function Devices({
 
 function TerminalPanel({
   onTargetChange,
+  profileId,
   selectedTarget,
   targets,
 }: Readonly<{
   onTargetChange: (value: string) => void;
+  profileId: string | null;
   selectedTarget: string;
   targets: readonly Target[];
 }>) {
+  const [privilege, setPrivilege] = useState<"low" | "elevated">("low");
+  const [accountUser, setAccountUser] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [saveCredentials, setSaveCredentials] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [terminalStatus, setTerminalStatus] = useState<string | null>(null);
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const terminalRef = useRef<HTMLDivElement | null>(null);
+  const sessionRef = useRef<{ handle: string; terminal: Terminal } | null>(
+    null,
+  );
+  const fitAddonRef = useRef<FitAddon | null>(null);
+
+  const terminalReady = Boolean(profileId && selectedTarget);
+
+  async function openTerminal() {
+    if (!profileId || !selectedTarget) return;
+    setOpening(true);
+    setTerminalStatus("opening secure terminal...");
+    try {
+      const columns = fitAddonRef.current
+        ? Math.max(
+            2,
+            Math.min(500, fitAddonRef.current.proposeDimensions()?.cols ?? 80),
+          )
+        : 80;
+      const rows = fitAddonRef.current
+        ? Math.max(
+            2,
+            Math.min(500, fitAddonRef.current.proposeDimensions()?.rows ?? 24),
+          )
+        : 24;
+      let challengeId = "";
+      let challengeSignature = "";
+      if (privilege === "elevated") {
+        const challenge = await invoke<ElevationChallenge>("begin_elevation", {
+          profileId,
+          targetId: selectedTarget,
+          operation: "open_shell",
+          reason: "operator requested an elevated terminal",
+        });
+        challengeId = challenge.id;
+        challengeSignature = challenge.challengeSignature;
+      }
+      const channel = new Channel<ShellEvent>();
+      const { handle } = await invoke<ShellOpenResult>("open_shell", {
+        profileId,
+        targetId: selectedTarget,
+        privilege,
+        columns,
+        rows,
+        reason: "operator requested a terminal",
+        accountUser,
+        accountPassword,
+        saveCredentials,
+        challengeId,
+        challengeSignature,
+        channel,
+      });
+      if (sessionRef.current) {
+        sessionRef.current.terminal.dispose();
+        sessionRef.current = null;
+      }
+      const terminal = new Terminal({
+        cursorBlink: true,
+        convertEol: true,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fontSize: 13,
+        scrollback: 5000,
+      });
+      const fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      fitAddonRef.current = fitAddon;
+      if (terminalRef.current) {
+        terminal.open(terminalRef.current);
+        fitAddon.fit();
+      }
+      sessionRef.current = { handle, terminal };
+      setSessionOpen(true);
+      terminal.onData((data) => {
+        void invoke("shell_input", {
+          handle,
+          data: bytesToBase64(new TextEncoder().encode(data)),
+        }).catch((error: unknown) => {
+          setTerminalStatus(String(error));
+        });
+      });
+      terminal.onResize(({ cols, rows: newRows }) => {
+        void invoke("shell_resize", {
+          handle,
+          columns: cols,
+          rows: newRows,
+        }).catch((error: unknown) => {
+          setTerminalStatus(String(error));
+        });
+      });
+      channel.onmessage = (event) => {
+        if (event.type === "data") {
+          const bytes = base64ToBytes(event.data);
+          terminal.write(bytes);
+        } else if (event.type === "close") {
+          setSessionOpen(false);
+          setTerminalStatus(`Session closed: ${event.reason || "ended"}`);
+        } else if (event.type === "error") {
+          setSessionOpen(false);
+          setTerminalStatus(`Session error: ${event.message}`);
+        }
+      };
+      setTerminalStatus("secure terminal connected");
+    } catch (error) {
+      setTerminalStatus(String(error));
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  function closeTerminal() {
+    const session = sessionRef.current;
+    if (!session) return;
+    void invoke("shell_close", { handle: session.handle }).catch(
+      () => undefined,
+    );
+    session.terminal.dispose();
+    sessionRef.current = null;
+    setSessionOpen(false);
+    setTerminalStatus("terminal closed");
+  }
+
   return (
     <>
       <div className="page-heading">
         <div>
           <p className="eyebrow">Interactive access</p>
           <h3>Terminal</h3>
-          <p>SSH-like PTY sessions will appear here after broker hardening.</p>
+          <p>
+            Real PTY/ConPTY sessions run through the privileged broker with
+            bounded frames, idle and absolute timeouts, and per-session OS
+            account authentication.
+          </p>
         </div>
-        <span className="status-pill pending">Unavailable in this alpha</span>
       </div>
       <div className="terminal-layout">
         <section className="panel terminal-connect">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">Read-only readiness</p>
-              <h4>Select a future session target</h4>
+              <p className="eyebrow">Session setup</p>
+              <h4>Open a managed terminal</h4>
             </div>
           </div>
           <label>
@@ -1185,33 +1425,85 @@ function TerminalPanel({
               ))}
             </select>
           </label>
-          <button className="button primary" disabled type="button">
-            Terminal unavailable
-          </button>
+          <label>
+            Privilege
+            <select
+              onChange={(event) =>
+                setPrivilege(
+                  event.target.value === "elevated" ? "elevated" : "low",
+                )
+              }
+              value={privilege}
+            >
+              <option value="low">Low (managed service account)</option>
+              <option value="elevated">Elevated (root / SYSTEM)</option>
+            </select>
+          </label>
+          <label>
+            OS account
+            <input
+              autoComplete="off"
+              onChange={(event) => setAccountUser(event.target.value)}
+              placeholder={privilege === "elevated" ? "root" : "centrald"}
+              value={accountUser}
+            />
+          </label>
+          <label>
+            OS account password
+            <input
+              autoComplete="off"
+              onChange={(event) => setAccountPassword(event.target.value)}
+              type="password"
+              value={accountPassword}
+            />
+          </label>
+          <label className="checkbox-row">
+            <input
+              checked={saveCredentials}
+              onChange={(event) => setSaveCredentials(event.target.checked)}
+              type="checkbox"
+            />
+            Save the validated credentials in this machine's OS vault
+          </label>
+          <div className="row-actions">
+            <button
+              className="button primary"
+              disabled={!terminalReady || opening}
+              onClick={() => void openTerminal()}
+              type="button"
+            >
+              {opening ? "Opening..." : "Open terminal"}
+            </button>
+            <button
+              disabled={!sessionOpen}
+              onClick={closeTerminal}
+              type="button"
+            >
+              Close terminal
+            </button>
+          </div>
           <p className="form-help">
-            CentralD does not request an operating-system username or password
-            until the PTY/ConPTY broker, per-session authentication, bounded
-            streaming, and OS credential-vault integration are implemented.
+            Credentials are validated by the broker against the OS account and
+            are never stored by the server.
+            {
+              " Credential saving stores the password in the operating-system vault (Windows DPAPI or the Linux Secret Service) only."
+            }
           </p>
+          {terminalStatus ? (
+            <p className="terminal-status">{terminalStatus}</p>
+          ) : null}
         </section>
-        <section className="terminal-window" aria-label="Terminal preview">
+        <section className="terminal-window" aria-label="Secure terminal">
           <div className="terminal-chrome">
             <span />
             <span />
             <span />
             <strong>centrald secure terminal</strong>
           </div>
-          <div className="terminal-body">
-            <p>CentralD transient PTY relay</p>
+          <div className="terminal-body" ref={terminalRef}>
             <p className="terminal-muted">
-              Disabled: no credentials are collected and no command fallback is
-              exposed.
+              Open a session to connect the xterm view to the remote PTY.
             </p>
-            <p>
-              <span className="terminal-prompt">centrald&gt;</span> brokered PTY
-              support is not initialized
-            </p>
-            <span className="terminal-cursor" aria-hidden="true" />
           </div>
         </section>
       </div>
@@ -1346,16 +1638,14 @@ function SettingsPanel({
               onChange={(value) => onPatch({ databaseMaxConnections: value })}
             />
             <NumberField
-              disabled
-              help="Unavailable until the PTY/ConPTY broker ships."
+              help="Closes a shell session after this long without input or output."
               label="Shell idle timeout"
               min={30}
               value={settings.shellIdleTimeoutSeconds}
               onChange={(value) => onPatch({ shellIdleTimeoutSeconds: value })}
             />
             <NumberField
-              disabled
-              help="Unavailable until the PTY/ConPTY broker ships."
+              help="Per-frame terminal byte limit enforced by the server and broker."
               label="Max shell frame bytes"
               min={1024}
               value={settings.maxShellFrameBytes}
@@ -1419,6 +1709,20 @@ function SettingsPanel({
               server.
             </span>
           </label>
+          {settings.updateLatestVersion ? (
+            <p className="field-hint">
+              Latest verified release: CentralD {settings.updateLatestVersion}
+              {settings.updateAvailable
+                ? " (newer than this server)"
+                : " (matches this server)"}
+              . The Devices page installs only this server-verified version.
+            </p>
+          ) : (
+            <p className="field-hint">
+              No release manifest has been verified yet; the Devices page stays
+              disabled until the server checks the feed.
+            </p>
+          )}
           <label className="checkbox-row">
             <input
               checked={settings.updateAllowPrerelease}

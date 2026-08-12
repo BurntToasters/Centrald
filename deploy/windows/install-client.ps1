@@ -7,7 +7,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $serviceName = "CentralDClient"
+$brokerServiceName = "CentralDBroker"
 $serviceIdentity = "NT SERVICE\$serviceName"
+$brokerIdentity = "LocalSystem"
 $ProgramFilesDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
 $ProgramDataDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $SystemDirectory = [Environment]::SystemDirectory
@@ -253,6 +255,24 @@ if ($null -ne $existing) {
   }
 }
 
+$existingBroker = Get-Service -Name $brokerServiceName -ErrorAction SilentlyContinue
+$brokerWasRunning = $false
+$previousBrokerStartValue = $null
+$previousBrokerDelayedAuto = $false
+$brokerRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$brokerServiceName"
+if ($null -ne $existingBroker) {
+  $brokerWasRunning = $existingBroker.Status -ne "Stopped"
+  $brokerCim = Get-CimInstance Win32_Service -Filter "Name='$brokerServiceName'"
+  if ($null -eq $brokerCim -or -not [string]::Equals($brokerCim.StartName, $brokerIdentity, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "An existing CentralDBroker service is not owned by the expected LocalSystem account; refusing to replace it."
+  }
+  if (Test-Path -LiteralPath $brokerRegistryPath) {
+    $brokerConfig = Get-ItemProperty -LiteralPath $brokerRegistryPath
+    $previousBrokerStartValue = $brokerConfig.Start
+    $previousBrokerDelayedAuto = $brokerConfig.DelayedAutoStart -eq 1
+  }
+}
+
 New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
 Assert-NoReparseAncestors -Path $InstallDirectory
@@ -281,11 +301,16 @@ if ($StartAfterInstall -and -not $KeepManualStart) {
 }
 
 $createdService = $false
+$createdBrokerService = $false
 $hadPreviousBinary = Test-Path -LiteralPath $destination -PathType Leaf
 try {
   if ($null -ne $existing -and $existing.Status -ne "Stopped") {
     Stop-Service -Name $serviceName -Force
     $existing.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+  }
+  if ($null -ne $existingBroker -and $existingBroker.Status -ne "Stopped") {
+    Stop-Service -Name $brokerServiceName -Force
+    $existingBroker.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
   }
 
   Set-CentralDTreeAcl -Path $InstallDirectory
@@ -318,6 +343,30 @@ try {
   }
   Invoke-NativeChecked $ScExe sidtype $serviceName unrestricted
 
+  $brokerQuotedBinary = '"{0}" windows-service-broker' -f $destination
+  $brokerStart = "demand"
+  if ($enrolled) {
+    $brokerStart = "delayed-auto"
+  }
+  if ($null -eq $existingBroker) {
+    Invoke-NativeChecked $ScExe create $brokerServiceName `
+      "binPath= $brokerQuotedBinary" `
+      "start= $brokerStart" `
+      "obj= $brokerIdentity" `
+      "DisplayName= CentralD Broker"
+    $createdBrokerService = $true
+  } else {
+    Invoke-NativeChecked $ScExe config $brokerServiceName `
+      "binPath= $brokerQuotedBinary" `
+      "start= $brokerStart" `
+      "obj= $brokerIdentity" `
+      "DisplayName= CentralD Broker"
+  }
+  Invoke-NativeChecked $ScExe description $brokerServiceName "Privileged CentralD operation broker"
+  Invoke-NativeChecked $ScExe failure $brokerServiceName `
+    "reset= 86400" `
+    "actions= restart/5000/restart/15000/restart/60000"
+
   Set-CentralDTreeAcl -Path $InstallDirectory -ServiceRights ReadAndExecute
   Set-CentralDTreeAcl -Path $DataDirectory -ServiceRights Modify
 
@@ -339,6 +388,10 @@ try {
   if ($shouldStart) {
     Start-Service -Name $serviceName
   }
+  $shouldStartBroker = $StartAfterInstall -or ($brokerWasRunning -and $enrolled)
+  if ($shouldStartBroker) {
+    Start-Service -Name $brokerServiceName
+  }
   if (Test-Path -LiteralPath $backupBinary) {
     Remove-Item -LiteralPath $backupBinary -Force
   }
@@ -346,6 +399,9 @@ try {
   $failure = $_
   if ($createdService) {
     try { Invoke-NativeChecked $ScExe delete $serviceName } catch { Write-Warning $_ }
+  }
+  if ($createdBrokerService) {
+    try { Invoke-NativeChecked $ScExe delete $brokerServiceName } catch { Write-Warning $_ }
   }
   if (Test-Path -LiteralPath $destination) {
     try { Remove-Item -LiteralPath $destination -Force } catch { Write-Warning $_ }
@@ -364,6 +420,18 @@ try {
       Invoke-NativeChecked $ScExe config $serviceName "start= $restoreStart"
       if ($wasRunning -and $enrolled) { Start-Service -Name $serviceName }
     } catch { Write-Warning "CentralD service rollback was incomplete: $_" }
+  }
+  if ($null -ne $existingBroker) {
+    try {
+      $restoreBrokerStart = "demand"
+      switch ($previousBrokerStartValue) {
+        2 { $restoreBrokerStart = $(if ($previousBrokerDelayedAuto) { "delayed-auto" } else { "auto" }) }
+        4 { $restoreBrokerStart = "disabled" }
+        default { $restoreBrokerStart = "demand" }
+      }
+      Invoke-NativeChecked $ScExe config $brokerServiceName "start= $restoreBrokerStart"
+      if ($brokerWasRunning -and $enrolled) { Start-Service -Name $brokerServiceName }
+    } catch { Write-Warning "CentralD broker service rollback was incomplete: $_" }
   }
   try {
     if ($manualStartMarkerExisted) {
@@ -388,6 +456,7 @@ try {
 }
 
 Write-Host "CentralD Client installed as $serviceIdentity with start mode $desiredStart."
+Write-Host "CentralD Broker installed as LocalSystem."
 if ($enrolled) {
   Write-Host "This client is already enrolled. Confirm the CentralDClient service is running with: Get-Service CentralDClient"
 } else {

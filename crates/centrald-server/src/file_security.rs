@@ -22,16 +22,34 @@ pub enum SecureReadClass {
 /// inaccessible to group/other users. Validation happens on the opened
 /// descriptor (`O_NOFOLLOW`) rather than a separate metadata snapshot followed
 /// by a pathname read.
+///
+/// # Errors
+///
+/// Returns an error when the path is not absolute, has an unsafe ancestor,
+/// cannot be opened, fails the ownership/permission checks, or exceeds
+/// `maximum_bytes`.
 pub fn read_root_private_text(path: &Path, maximum_bytes: u64, label: &str) -> Result<String> {
     read_secure_text(path, SecureReadClass::PrivateRoot, maximum_bytes, label)
 }
 
 /// Reads root-owned public trust material (certificates / public keys).
+///
+/// # Errors
+///
+/// Returns an error when the path is not absolute, has an unsafe ancestor,
+/// cannot be opened, fails the ownership/permission checks, or exceeds
+/// `maximum_bytes`.
 pub fn read_root_public_text(path: &Path, maximum_bytes: u64, label: &str) -> Result<String> {
     read_secure_text(path, SecureReadClass::PublicRootTrust, maximum_bytes, label)
 }
 
 /// Validates a root-owned private server file without returning its contents.
+///
+/// # Errors
+///
+/// Returns an error when the path is not absolute, has an unsafe ancestor,
+/// cannot be opened, fails the ownership/permission checks, or exceeds
+/// `maximum_bytes`.
 pub fn validate_root_private_file(path: &Path, maximum_bytes: u64, label: &str) -> Result<()> {
     let _ = read_secure_bytes(path, SecureReadClass::PrivateRoot, maximum_bytes, label)?;
     Ok(())
@@ -78,7 +96,10 @@ fn read_secure_bytes(
             .metadata()
             .with_context(|| format!("inspect {label} {}", path.display()))?;
         if !metadata.is_file() {
-            bail!("{label} must be a regular non-symbolic-link file: {}", path.display());
+            bail!(
+                "{label} must be a regular non-symbolic-link file: {}",
+                path.display()
+            );
         }
         if metadata.uid() != 0 {
             bail!("{label} must be owned by root: {}", path.display());
@@ -94,7 +115,10 @@ fn read_secure_bytes(
         match class {
             SecureReadClass::PrivateRoot => {
                 if metadata.nlink() != 1 {
-                    bail!("{label} must have exactly one hard link: {}", path.display());
+                    bail!(
+                        "{label} must have exactly one hard link: {}",
+                        path.display()
+                    );
                 }
                 if mode & 0o077 != 0 {
                     bail!(
@@ -117,7 +141,8 @@ fn read_secure_bytes(
         let mut bytes = Vec::new();
         file.take(limit)
             .read_to_end(&mut bytes)
-            .with_context(|| format!("read {label} {}", path.display()))?;        if bytes.is_empty() || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
+            .with_context(|| format!("read {label} {}", path.display()))?;
+        if bytes.is_empty() || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
             bail!(
                 "{label} size is outside the supported 1..={maximum_bytes} byte range: {}",
                 path.display()
@@ -136,20 +161,28 @@ fn read_secure_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn rejects_relative_paths() {
-        let error = read_root_private_text(Path::new("relative.key"), 1024, "test key")
-            .expect_err("relative paths must fail closed");
+        let Err(error) = read_root_private_text(Path::new("relative.key"), 1024, "test key") else {
+            panic!("relative paths must fail closed")
+        };
         assert!(error.to_string().contains("absolute"));
     }
 
     #[test]
     fn rejects_missing_private_files() {
+        #[cfg(target_os = "linux")]
         let path = PathBuf::from("/tmp/centrald-missing-audit12-private.key");
-        let error = read_root_private_text(&path, 1024, "test key")
-            .expect_err("missing files must fail closed");
+        #[cfg(not(target_os = "linux"))]
+        let path = {
+            let mut path = std::env::temp_dir();
+            path.push("centrald-missing-audit12-private.key");
+            path
+        };
+        let Err(error) = read_root_private_text(&path, 1024, "test key") else {
+            panic!("missing files must fail closed")
+        };
         let message = format!("{error:#}");
         assert!(
             message.contains("open")

@@ -143,10 +143,10 @@ pub fn replace_file_atomically(
     }
 }
 
-/// Removes the oldest CentralD sibling backups while retaining the newest
+/// Removes the oldest `CentralD` sibling backups while retaining the newest
 /// `retain` files.
 ///
-/// Backup names contain UUIDv7 values, so lexical filename ordering is also
+/// Backup names contain `UUIDv7` values, so lexical filename ordering is also
 /// chronological ordering for backups produced by this module.
 ///
 /// # Errors
@@ -288,6 +288,11 @@ pub fn write_new_file(path: &Path, contents: &[u8], private: bool) -> Result<(),
 /// Rejects any existing parent component that is a symbolic link or, on
 /// Windows, any reparse point. Missing parents are permitted so the caller may
 /// create them only after the nearest existing ancestor has been validated.
+///
+/// # Errors
+///
+/// Returns an error for unsafe ancestors, non-directory ancestors, and failed
+/// filesystem inspections.
 pub fn validate_no_symlink_ancestors(path: &Path) -> Result<(), SecureFileError> {
     let mut current = path.parent();
     while let Some(ancestor) = current {
@@ -396,12 +401,18 @@ mod tests {
         let path = root.join("server.toml");
         write_new_file(&path, b"old", true).expect("initial file should be creatable");
         replace_file_atomically(&path, b"new", true).expect("replacement should succeed");
-        assert_eq!(fs::read(&path).expect("replacement should be readable"), b"new");
+        assert_eq!(
+            fs::read(&path).expect("replacement should be readable"),
+            b"new"
+        );
         assert_eq!(
             fs::read_dir(&root)
                 .expect("root should be readable")
                 .filter_map(Result::ok)
-                .filter(|entry| entry.file_name().to_string_lossy().contains("centrald-backup"))
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("centrald-backup"))
                 .count(),
             0
         );
@@ -419,11 +430,19 @@ mod tests {
         for value in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
             replace_file_with_backup(&path, value, true).expect("replacement should succeed");
         }
-        assert_eq!(prune_file_backups(&path, 2).expect("pruning should succeed"), 1);
+        assert_eq!(
+            prune_file_backups(&path, 2).expect("pruning should succeed"),
+            1
+        );
         let remaining = fs::read_dir(&root)
             .expect("root should be readable")
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().contains("centrald-backup"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("centrald-backup")
+            })
             .count();
         assert_eq!(remaining, 2);
         fs::remove_dir_all(root).expect("root cleanup");

@@ -12,6 +12,14 @@ const MAX_REPLAY_ENTRIES: usize = 4096;
 const MAX_PARAMETERS_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// Hard bound for a single broker-wire request (the signed grant plus exact
+/// parameter bytes).
+pub const MAX_WIRE_REQUEST_BYTES: usize = 16 * 1024;
+/// Hard bound for a single broker-wire response. Operation output is capped at
+/// 64 KiB but JSON encoding of raw bytes expands roughly 4x, so the encoded
+/// response bound is sized to fit the maximum legal encoded output.
+pub const MAX_WIRE_RESPONSE_BYTES: usize = 384 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrokerRequest {
@@ -93,10 +101,10 @@ impl GrantVerifier {
             return Err(BrokerError::Replay);
         }
         self.order.push_back(grant.grant.id);
-        if self.order.len() > MAX_REPLAY_ENTRIES {
-            if let Some(expired_id) = self.order.pop_front() {
-                self.consumed.remove(&expired_id);
-            }
+        if self.order.len() > MAX_REPLAY_ENTRIES
+            && let Some(expired_id) = self.order.pop_front()
+        {
+            self.consumed.remove(&expired_id);
         }
         Ok(())
     }

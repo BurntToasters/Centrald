@@ -15,15 +15,13 @@ use centrald_server::db::{
     connect_and_migrate, ensure_database_and_migrate, migrate_precreated_database,
     resolve_database_url,
 };
-use centrald_server::manage::{create_enrollment_key as create_key, require_root};
 use centrald_server::local_postgres;
-use centrald_server::setup_recovery;
+use centrald_server::manage::{create_enrollment_key as create_key, require_root};
 use centrald_server::services::{
     AdminRpc, ClientRpc, EnrollmentRpc, RuntimeState, run_maintenance, run_update_checks,
 };
-use centrald_server::setup::{
-    SetupOptions, initialize, preflight, prepare_directories,
-};
+use centrald_server::setup::{SetupOptions, initialize, preflight, prepare_directories};
+use centrald_server::setup_recovery;
 use centrald_server::wizard::{collect as collect_setup, print_completion};
 use clap::Parser;
 use secrecy::ExposeSecret;
@@ -36,6 +34,7 @@ const CLIENT_MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const ADMIN_MAX_MESSAGE_BYTES: usize = 512 * 1024;
 
 #[tokio::main]
+#[allow(clippy::large_futures)]
 async fn main() -> Result<()> {
     let cli = ServerCli::parse();
     if cli.no_color {
@@ -46,10 +45,7 @@ async fn main() -> Result<()> {
     if cli.yes_i_want_to_do_this && !cli.nuke {
         bail!("--yes-i-want-to-do-this is valid only with --nuke");
     }
-    let is_initial_setup = matches!(
-        cli.command.as_ref(),
-        Some(ServerCommand::InitialSetup(_))
-    );
+    let is_initial_setup = matches!(cli.command.as_ref(), Some(ServerCommand::InitialSetup(_)));
     if !is_initial_setup && !cli.nuke {
         setup_recovery::prepare_for_normal_command(&cli.config_path).await?;
     }
@@ -64,13 +60,11 @@ async fn main() -> Result<()> {
         None
     };
 
-    if cli.nuke {
-        if setup_recovery::reset_interrupted_setup_for_nuke(&cli.config_path).await? {
-            println!("Interrupted CentralD setup permanently reset.");
-            println!("  Removed the generated PostgreSQL role/database and partial setup files.");
-            println!("No published CentralD installation remained.");
-            return Ok(());
-        }
+    if cli.nuke && setup_recovery::reset_interrupted_setup_for_nuke(&cli.config_path).await? {
+        println!("Interrupted CentralD setup permanently reset.");
+        println!("  Removed the generated PostgreSQL role/database and partial setup files.");
+        println!("No published CentralD installation remained.");
+        return Ok(());
     }
 
     if cli.config_path.exists() {
@@ -80,6 +74,8 @@ async fn main() -> Result<()> {
             .context("recover interrupted audited settings update")?;
         centrald_server::manage::recover_interrupted_online_issuer_rotation(&cli.config_path)
             .context("recover interrupted online issuer rotation")?;
+        centrald_server::manage::recover_interrupted_root_replacement(&cli.config_path)
+            .context("recover interrupted offline root replacement")?;
         centrald_server::manage::recover_interrupted_tls_rotation(&cli.config_path)
             .context("recover interrupted server TLS rotation")?;
     }
@@ -129,6 +125,7 @@ async fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(config_path: &Path) -> Result<()> {
     require_root()?;
     let mut config = ServerConfig::load(config_path)?;
@@ -223,12 +220,21 @@ async fn run(config_path: &Path) -> Result<()> {
         let retirement_probe_config = config.clone();
         tokio::spawn(async move {
             match verify_tls_listeners_before_retirement(&retirement_probe_config).await {
-                Ok(()) => match centrald_server::manage::retire_completed_tls_rotation(&retirement_config) {
-                    Ok(true) => info!("retired previous server TLS rollback material after all listener TLS probes succeeded"),
-                    Ok(false) => {}
-                    Err(error) => tracing::warn!(%error, "could not retire previous server TLS rollback material"),
-                },
-                Err(error) => tracing::warn!(%error, "keeping server TLS/PKI rollback material because listener health probes did not all succeed"),
+                Ok(()) => {
+                    match centrald_server::manage::retire_completed_tls_rotation(&retirement_config)
+                    {
+                        Ok(true) => info!(
+                            "retired previous server TLS rollback material after all listener TLS probes succeeded"
+                        ),
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "could not retire previous server TLS rollback material");
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "keeping server TLS/PKI rollback material because listener health probes did not all succeed");
+                }
             }
         });
     }
@@ -380,7 +386,7 @@ fn probe_destination(address: SocketAddr) -> String {
     }
 }
 
-
+#[allow(clippy::too_many_lines)]
 async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     require_root()?;
     let _setup_mutation_lock = setup_recovery::acquire_setup_mutation_lock()?;
@@ -401,28 +407,30 @@ async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     // Prove every output is absent and every ancestor is safe before creating
     // the managed PostgreSQL role. Recovery may remove only these preflighted
     // targets after an interrupted setup.
-    preflight(&options).context(
-        "validate every setup output before changing PostgreSQL",
-    )?;
+    preflight(&options).context("validate every setup output before changing PostgreSQL")?;
     prepare_directories(&options)
         .context("create private server setup directories before changing PostgreSQL")?;
     let managed_role = options.managed_local_role.clone();
     setup_recovery::begin_setup(&options)
         .context("create crash-recovery state before PostgreSQL provisioning")?;
     if let Some(role) = managed_role.as_deref() {
-        if let Err(error) = local_postgres::provision_role(
-            role,
-            &options.database_url,
-            options.instance_id,
-        ) {
-            return Err(setup_failure(&options, error.context("provision the generated local PostgreSQL role")).await);
+        if let Err(error) =
+            local_postgres::provision_role(role, &options.database_url, options.instance_id)
+        {
+            return Err(setup_failure(
+                &options,
+                error.context("provision the generated local PostgreSQL role"),
+            )
+            .await);
         }
-        if let Err(error) = local_postgres::provision_database(
-            role,
-            &options.database_url,
-            options.instance_id,
-        ) {
-            return Err(setup_failure(&options, error.context("provision the generated local PostgreSQL database")).await);
+        if let Err(error) =
+            local_postgres::provision_database(role, &options.database_url, options.instance_id)
+        {
+            return Err(setup_failure(
+                &options,
+                error.context("provision the generated local PostgreSQL database"),
+            )
+            .await);
         }
     }
 
@@ -435,8 +443,8 @@ async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     let config = match ServerConfig::load(config_path) {
         Ok(config) => config,
         Err(error) => {
-            let error = anyhow::Error::new(error)
-                .context("load newly generated server configuration");
+            let error =
+                anyhow::Error::new(error).context("load newly generated server configuration");
             return Err(setup_failure(&options, error).await);
         }
     };
@@ -458,16 +466,20 @@ async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     let database = match database_result {
         Ok(database) => database,
         Err(error) => {
-            let error = anyhow::Error::new(error)
-                .context("create and migrate the CentralD database");
+            let error =
+                anyhow::Error::new(error).context("create and migrate the CentralD database");
             return Err(setup_failure(&options, error).await);
         }
     };
-    if let Some(role) = managed_role.as_deref() {
-        if let Err(error) = local_postgres::harden_role(role, options.instance_id) {
-            database.pool.close().await;
-            return Err(setup_failure(&options, error.context("secure the generated local PostgreSQL role")).await);
-        }
+    if let Some(role) = managed_role.as_deref()
+        && let Err(error) = local_postgres::harden_role(role, options.instance_id)
+    {
+        database.pool.close().await;
+        return Err(setup_failure(
+            &options,
+            error.context("secure the generated local PostgreSQL role"),
+        )
+        .await);
     }
     let admin = match create_key(
         &database.pool,
@@ -491,11 +503,9 @@ async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     database.pool.close().await;
 
     if let Err(error) = setup_recovery::mark_committed(config_path) {
-        return Err(setup_failure(
-            &options,
-            error.context("mark PostgreSQL setup committed"),
-        )
-        .await);
+        return Err(
+            setup_failure(&options, error.context("mark PostgreSQL setup committed")).await,
+        );
     }
     if let Err(error) = setup_recovery::retire_committed(config_path) {
         tracing::warn!(
@@ -518,7 +528,7 @@ async fn setup_failure(options: &SetupOptions, error: anyhow::Error) -> anyhow::
     }
 }
 
-
+#[allow(clippy::unused_async)]
 async fn packaged_local_socket_reachable() -> bool {
     #[cfg(unix)]
     {
@@ -598,7 +608,6 @@ async fn try_start_packaged_service(config_path: &Path) -> String {
         ),
     }
 }
-
 
 async fn create_enrollment_key(
     config_path: &Path,

@@ -1,8 +1,6 @@
 {
   "bundle": {
-    "targets": [
-      "nsis"
-    ],
+    "targets": ["nsis"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

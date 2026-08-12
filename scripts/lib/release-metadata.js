@@ -11,7 +11,9 @@ export function releaseTimestamp(environment = process.env) {
   if (explicit) {
     const milliseconds = Date.parse(explicit);
     if (!Number.isFinite(milliseconds)) {
-      throw new Error("CENTRALD_RELEASE_TIMESTAMP must be a valid RFC 3339 timestamp");
+      throw new Error(
+        "CENTRALD_RELEASE_TIMESTAMP must be a valid RFC 3339 timestamp",
+      );
     }
     return new Date(milliseconds).toISOString();
   }
@@ -19,11 +21,15 @@ export function releaseTimestamp(environment = process.env) {
   const epoch = environment.SOURCE_DATE_EPOCH;
   if (epoch !== undefined && epoch !== "") {
     if (!/^(?:0|[1-9]\d*)$/u.test(epoch)) {
-      throw new Error("SOURCE_DATE_EPOCH must be a non-negative integer number of seconds");
+      throw new Error(
+        "SOURCE_DATE_EPOCH must be a non-negative integer number of seconds",
+      );
     }
     const milliseconds = Number(epoch) * 1000;
     if (!Number.isSafeInteger(milliseconds)) {
-      throw new Error("SOURCE_DATE_EPOCH is outside the supported JavaScript date range");
+      throw new Error(
+        "SOURCE_DATE_EPOCH is outside the supported JavaScript date range",
+      );
     }
     const date = new Date(milliseconds);
     if (Number.isNaN(date.valueOf())) {
@@ -75,11 +81,20 @@ export function compareSemver(left, right) {
 
 export function parseSemver(value) {
   const match = SEMVER.exec(value);
-  if (!match) throw new Error(`Invalid Semantic Versioning value ${JSON.stringify(value)}`);
+  if (!match)
+    throw new Error(
+      `Invalid Semantic Versioning value ${JSON.stringify(value)}`,
+    );
   const prerelease = match[4]?.split(".") ?? [];
   for (const identifier of prerelease) {
-    if (/^\d+$/u.test(identifier) && identifier.length > 1 && identifier.startsWith("0")) {
-      throw new Error(`Numeric prerelease identifiers cannot contain leading zeroes: ${value}`);
+    if (
+      /^\d+$/u.test(identifier) &&
+      identifier.length > 1 &&
+      identifier.startsWith("0")
+    ) {
+      throw new Error(
+        `Numeric prerelease identifiers cannot contain leading zeroes: ${value}`,
+      );
     }
   }
   return {

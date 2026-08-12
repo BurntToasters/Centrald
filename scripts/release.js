@@ -242,9 +242,14 @@ function publishChannelOnly() {
       "Stable updates are served by the immutable latest version release; there is no mutable stable channel branch to publish.",
     );
   }
-  const entries = immutableReleaseChannelEntries(expectedTag, config.releaseChannel);
+  const entries = immutableReleaseChannelEntries(
+    expectedTag,
+    config.releaseChannel,
+  );
   publishMutableChannelManifests(config.releaseChannel, entries);
-  console.log(`Published CentralD ${config.releaseChannel} channel manifests for v${version}.`);
+  console.log(
+    `Published CentralD ${config.releaseChannel} channel manifests for v${version}.`,
+  );
 }
 
 function requirePublishEnvironment() {
@@ -321,7 +326,9 @@ function verifyDraftAssets(tag, files) {
   const repository = githubRepositorySlug(config.repoUrl);
   const release = ghApiJson("GET", `repos/${repository}/releases/tags/${tag}`);
   if (!release.draft) {
-    throw new Error(`Version release ${tag} is not a draft during publication.`);
+    throw new Error(
+      `Version release ${tag} is not a draft during publication.`,
+    );
   }
   verifyReleaseAssetIntegrity(release, files, `Draft release ${tag}`);
 }
@@ -335,7 +342,11 @@ function verifyReleaseAssetIntegrity(release, files, label) {
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
   const actual = (release.assets ?? [])
-    .map((asset) => ({ name: asset.name, size: asset.size, digest: asset.digest ?? "" }))
+    .map((asset) => ({
+      name: asset.name,
+      size: asset.size,
+      digest: asset.digest ?? "",
+    }))
     .sort((left, right) => left.name.localeCompare(right.name));
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
@@ -345,7 +356,10 @@ function verifyReleaseAssetIntegrity(release, files, label) {
 }
 
 function sha256File(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(file))
+    .digest("hex");
 }
 
 function publishMutableChannelManifests(channel, suppliedEntries) {
@@ -376,7 +390,10 @@ function publishChannelTree(repository, branch, channel, entries) {
   const head = ghApiJson("GET", `repos/${repository}/git/ref/heads/${branch}`);
   const parentSha = head.object?.sha;
   if (!parentSha) throw new Error(`Could not resolve ${branch} branch head.`);
-  const parent = ghApiJson("GET", `repos/${repository}/git/commits/${parentSha}`);
+  const parent = ghApiJson(
+    "GET",
+    `repos/${repository}/git/commits/${parentSha}`,
+  );
   const baseTree = parent.tree?.sha;
   if (!baseTree) throw new Error(`Could not resolve ${branch} base tree.`);
 
@@ -392,7 +409,8 @@ function publishChannelTree(repository, branch, channel, entries) {
       content: content.toString("base64"),
       encoding: "base64",
     });
-    if (!blob.sha) throw new Error(`GitHub did not return a blob SHA for ${remotePath}.`);
+    if (!blob.sha)
+      throw new Error(`GitHub did not return a blob SHA for ${remotePath}.`);
     return { path: remotePath, mode: "100644", type: "blob", sha: blob.sha };
   });
 
@@ -406,7 +424,8 @@ function publishChannelTree(repository, branch, channel, entries) {
     tree: tree.sha,
     parents: [parentSha],
   });
-  if (!commit.sha) throw new Error("GitHub did not return a channel commit SHA.");
+  if (!commit.sha)
+    throw new Error("GitHub did not return a channel commit SHA.");
 
   // A non-forced ref update is a compare-and-swap: if another publisher moved
   // the branch after parentSha was read, this commit is no longer a fast-forward
@@ -417,7 +436,10 @@ function publishChannelTree(repository, branch, channel, entries) {
       force: false,
     });
   } catch (error) {
-    const latest = ghApiJson("GET", `repos/${repository}/git/ref/heads/${branch}`);
+    const latest = ghApiJson(
+      "GET",
+      `repos/${repository}/git/ref/heads/${branch}`,
+    );
     if (latest.object?.sha !== parentSha) {
       error.code = "CENTRALD_CHANNEL_REF_CONFLICT";
     }
@@ -426,14 +448,25 @@ function publishChannelTree(repository, branch, channel, entries) {
 }
 
 function localChannelEntries(channel) {
-  return [config.releaseManifest, config.tauriUpdateManifest].map((file) => {
-    const localPath = path.join(root, "release", file);
-    requireRegularFile(localPath);
-    return {
-      content: fs.readFileSync(localPath),
-      remotePath: `channels/${channel}/latest/${file}`,
-    };
-  });
+  return [config.releaseManifest, config.tauriUpdateManifest].flatMap(
+    (file) => {
+      const localPath = path.join(root, "release", file);
+      requireRegularFile(localPath);
+      const signaturePath = `${localPath}.minisig`;
+      requireRegularFile(signaturePath);
+      const entries = [
+        {
+          content: fs.readFileSync(localPath),
+          remotePath: `channels/${channel}/latest/${file}`,
+        },
+        {
+          content: fs.readFileSync(signaturePath),
+          remotePath: `channels/${channel}/latest/${file}.minisig`,
+        },
+      ];
+      return entries;
+    },
+  );
 }
 
 function immutableReleaseChannelEntries(tag, channel) {
@@ -445,17 +478,42 @@ function immutableReleaseChannelEntries(tag, channel) {
     );
   }
   const requested = [config.releaseManifest, config.tauriUpdateManifest];
-  const entries = requested.map((name) => {
-    const matches = (release.assets ?? []).filter((asset) => asset.name === name);
+  const entries = requested.flatMap((name) => {
+    const matches = (release.assets ?? []).filter(
+      (asset) => asset.name === name,
+    );
     if (matches.length !== 1) {
-      throw new Error(`Immutable version release ${tag} must contain exactly one ${name} asset.`);
+      throw new Error(
+        `Immutable version release ${tag} must contain exactly one ${name} asset.`,
+      );
     }
     const asset = matches[0];
     const content = downloadReleaseAsset(repository, asset);
-    return { content, remotePath: `channels/${channel}/latest/${name}` };
+    return [
+      { content, remotePath: `channels/${channel}/latest/${name}` },
+      {
+        content: downloadReleaseAsset(
+          repository,
+          findImmutableSignatureAsset(release, name),
+        ),
+        remotePath: `channels/${channel}/latest/${name}.minisig`,
+      },
+    ];
   });
   validateImmutableReleaseManifests(release, entries, channel);
   return entries;
+}
+
+function findImmutableSignatureAsset(release, name) {
+  const matches = (release.assets ?? []).filter(
+    (asset) => asset.name === `${name}.minisig`,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `Immutable version release must contain exactly one ${name}.minisig asset.`,
+    );
+  }
+  return matches[0];
 }
 
 function downloadReleaseAsset(repository, asset) {
@@ -467,10 +525,14 @@ function downloadReleaseAsset(repository, asset) {
     asset.size < 1 ||
     asset.size > maximum
   ) {
-    throw new Error(`Release asset ${asset.name} has an invalid or excessive size.`);
+    throw new Error(
+      `Release asset ${asset.name} has an invalid or excessive size.`,
+    );
   }
   if (!/^sha256:[0-9a-f]{64}$/u.test(asset.digest ?? "")) {
-    throw new Error(`Release asset ${asset.name} has no trustworthy SHA-256 digest.`);
+    throw new Error(
+      `Release asset ${asset.name} has no trustworthy SHA-256 digest.`,
+    );
   }
   const content = execFileSync(
     "gh",
@@ -483,11 +545,15 @@ function downloadReleaseAsset(repository, asset) {
     { maxBuffer: maximum + 1 },
   );
   if (content.length !== asset.size) {
-    throw new Error(`Downloaded release asset ${asset.name} has the wrong size.`);
+    throw new Error(
+      `Downloaded release asset ${asset.name} has the wrong size.`,
+    );
   }
   const digest = `sha256:${crypto.createHash("sha256").update(content).digest("hex")}`;
   if (digest !== asset.digest) {
-    throw new Error(`Downloaded release asset ${asset.name} failed SHA-256 verification.`);
+    throw new Error(
+      `Downloaded release asset ${asset.name} failed SHA-256 verification.`,
+    );
   }
   return content;
 }
@@ -499,8 +565,14 @@ function validateImmutableReleaseManifests(release, entries, channel) {
   const updaterEntry = entries.find((entry) =>
     entry.remotePath.endsWith(`/${config.tauriUpdateManifest}`),
   );
-  const shared = parseManifestJson(sharedEntry?.content, config.releaseManifest);
-  const updater = parseManifestJson(updaterEntry?.content, config.tauriUpdateManifest);
+  const shared = parseManifestJson(
+    sharedEntry?.content,
+    config.releaseManifest,
+  );
+  const updater = parseManifestJson(
+    updaterEntry?.content,
+    config.tauriUpdateManifest,
+  );
   if (
     shared.schema_version !== 1 ||
     shared.version !== version ||
@@ -512,15 +584,21 @@ function validateImmutableReleaseManifests(release, entries, channel) {
       `Immutable version release manifests do not describe CentralD v${version} on channel ${channel}.`,
     );
   }
-  const assets = new Map((release.assets ?? []).map((asset) => [asset.name, asset]));
+  const assets = new Map(
+    (release.assets ?? []).map((asset) => [asset.name, asset]),
+  );
   const updaterUrls = new Set();
-  for (const [platform, descriptor] of Object.entries(updater.platforms ?? {})) {
+  for (const [platform, descriptor] of Object.entries(
+    updater.platforms ?? {},
+  )) {
     if (
       typeof descriptor?.url !== "string" ||
       typeof descriptor?.signature !== "string" ||
       descriptor.signature.length === 0
     ) {
-      throw new Error(`Immutable updater manifest has an invalid ${platform} entry.`);
+      throw new Error(
+        `Immutable updater manifest has an invalid ${platform} entry.`,
+      );
     }
     updaterUrls.add(descriptor.url);
   }
@@ -530,7 +608,9 @@ function validateImmutableReleaseManifests(release, entries, channel) {
     "windows-aarch64",
   ]) {
     if (!Object.hasOwn(updater.platforms ?? {}, expectedPlatform)) {
-      throw new Error(`Immutable updater manifest is missing ${expectedPlatform}.`);
+      throw new Error(
+        `Immutable updater manifest is missing ${expectedPlatform}.`,
+      );
     }
   }
   let describedArtifacts = 0;
@@ -547,12 +627,19 @@ function validateImmutableReleaseManifests(release, entries, channel) {
       );
     }
     if (artifact.signature_url) {
-      const signatureName = new URL(artifact.signature_url).pathname.split("/").at(-1);
+      const signatureName = new URL(artifact.signature_url).pathname
+        .split("/")
+        .at(-1);
       if (!signatureName || !assets.has(signatureName)) {
-        throw new Error(`Immutable release is missing signature asset for ${artifact.filename}.`);
+        throw new Error(
+          `Immutable release is missing signature asset for ${artifact.filename}.`,
+        );
       }
     }
-    if (artifact.component === "admin" && ["appimage", "nsis"].includes(artifact.package)) {
+    if (
+      artifact.component === "admin" &&
+      ["appimage", "nsis"].includes(artifact.package)
+    ) {
       updaterUrls.delete(artifact.url);
     }
   }
@@ -586,7 +673,9 @@ function currentChannelEntries(repository, baseTree, entries) {
     if (!sha) return { remotePath, content: null };
     const blob = ghApiJson("GET", `repos/${repository}/git/blobs/${sha}`);
     if (blob.encoding !== "base64" || typeof blob.content !== "string") {
-      throw new Error(`GitHub returned an unsupported blob encoding for ${remotePath}.`);
+      throw new Error(
+        `GitHub returned an unsupported blob encoding for ${remotePath}.`,
+      );
     }
     return {
       remotePath,
@@ -604,34 +693,57 @@ function validateChannelAdvance(channel, existing, next) {
     );
   }
   const currentShared = parseManifestJson(
-    existing.find((entry) => entry.remotePath.endsWith(`/${config.releaseManifest}`))?.content,
+    existing.find((entry) =>
+      entry.remotePath.endsWith(`/${config.releaseManifest}`),
+    )?.content,
     `current ${config.releaseManifest}`,
   );
   const currentUpdater = parseManifestJson(
-    existing.find((entry) => entry.remotePath.endsWith(`/${config.tauriUpdateManifest}`))?.content,
+    existing.find((entry) =>
+      entry.remotePath.endsWith(`/${config.tauriUpdateManifest}`),
+    )?.content,
     `current ${config.tauriUpdateManifest}`,
   );
   const nextShared = parseManifestJson(
-    next.find((entry) => entry.remotePath.endsWith(`/${config.releaseManifest}`))?.content,
+    next.find((entry) =>
+      entry.remotePath.endsWith(`/${config.releaseManifest}`),
+    )?.content,
     config.releaseManifest,
   );
   const nextUpdater = parseManifestJson(
-    next.find((entry) => entry.remotePath.endsWith(`/${config.tauriUpdateManifest}`))?.content,
+    next.find((entry) =>
+      entry.remotePath.endsWith(`/${config.tauriUpdateManifest}`),
+    )?.content,
     config.tauriUpdateManifest,
   );
   if (currentShared.version !== currentUpdater.version) {
-    throw new Error(`Existing ${channel} channel manifests disagree about their version.`);
+    throw new Error(
+      `Existing ${channel} channel manifests disagree about their version.`,
+    );
   }
-  if (currentShared.channel !== channel || currentShared.repository !== config.repoUrl) {
+  if (
+    currentShared.channel !== channel ||
+    currentShared.repository !== config.repoUrl
+  ) {
     throw new Error(
       `Existing ${channel} channel manifest belongs to another channel or repository.`,
     );
   }
-  if (nextShared.version !== nextUpdater.version || nextShared.version !== version) {
-    throw new Error(`New ${channel} channel manifests disagree about their version.`);
+  if (
+    nextShared.version !== nextUpdater.version ||
+    nextShared.version !== version
+  ) {
+    throw new Error(
+      `New ${channel} channel manifests disagree about their version.`,
+    );
   }
-  if (nextShared.channel !== channel || nextShared.repository !== config.repoUrl) {
-    throw new Error(`New ${channel} channel manifest belongs to another channel or repository.`);
+  if (
+    nextShared.channel !== channel ||
+    nextShared.repository !== config.repoUrl
+  ) {
+    throw new Error(
+      `New ${channel} channel manifest belongs to another channel or repository.`,
+    );
   }
   const precedence = compareSemver(nextShared.version, currentShared.version);
   if (precedence < 0 && process.env.CENTRALD_ALLOW_CHANNEL_ROLLBACK !== "YES") {
@@ -641,17 +753,25 @@ function validateChannelAdvance(channel, existing, next) {
   }
   if (precedence === 0) {
     const unchanged = next.every((entry) => {
-      const current = existing.find((candidate) => candidate.remotePath === entry.remotePath);
+      const current = existing.find(
+        (candidate) => candidate.remotePath === entry.remotePath,
+      );
       return current?.content?.equals(entry.content) === true;
     });
     if (unchanged) return "unchanged";
-    throw new Error(`Refusing to replace ${channel} channel bytes without a version change.`);
+    throw new Error(
+      `Refusing to replace ${channel} channel bytes without a version change.`,
+    );
   }
   return "advance";
 }
 
 function parseManifestJson(content, label) {
-  if (!Buffer.isBuffer(content) || content.length === 0 || content.length > 2 * 1024 * 1024) {
+  if (
+    !Buffer.isBuffer(content) ||
+    content.length === 0 ||
+    content.length > 2 * 1024 * 1024
+  ) {
     throw new Error(`${label} is missing, empty, or too large.`);
   }
   try {
@@ -681,7 +801,9 @@ function ghApiJson(method, apiPath, body) {
 }
 
 function ensureChannelBranch(repository, branch) {
-  if (spawnSucceeded("gh", ["api", `repos/${repository}/git/ref/heads/${branch}`])) {
+  if (
+    spawnSucceeded("gh", ["api", `repos/${repository}/git/ref/heads/${branch}`])
+  ) {
     return;
   }
   const commit = git(["rev-parse", "HEAD"]);
@@ -692,7 +814,12 @@ function ensureChannelBranch(repository, branch) {
     });
   } catch (error) {
     // Another publisher may have created the branch after our existence check.
-    if (!spawnSucceeded("gh", ["api", `repos/${repository}/git/ref/heads/${branch}`])) {
+    if (
+      !spawnSucceeded("gh", [
+        "api",
+        `repos/${repository}/git/ref/heads/${branch}`,
+      ])
+    ) {
       throw error;
     }
   }
@@ -727,7 +854,9 @@ function spawnSucceeded(command, args) {
 function releaseFiles(includeArtifacts) {
   const files = [
     path.join("release", config.releaseManifest),
+    path.join("release", config.releaseManifest + ".minisig"),
     path.join("release", config.tauriUpdateManifest),
+    path.join("release", config.tauriUpdateManifest + ".minisig"),
   ];
   if (includeArtifacts) {
     for (const entry of fs.readdirSync(path.join(root, "release/artifacts"), {

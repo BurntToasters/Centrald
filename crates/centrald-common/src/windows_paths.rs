@@ -66,7 +66,7 @@ fn known_folder(folder_id: &GUID) -> Option<PathBuf> {
         let mut raw = ptr::null_mut::<u16>();
         // SAFETY: `folder_id` is a valid static KNOWNFOLDERID, the token is null
         // for the current machine context, and `raw` is a valid output pointer.
-        let status = unsafe { SHGetKnownFolderPath(folder_id, 0, ptr::null_mut(), &mut raw) };
+        let status = unsafe { SHGetKnownFolderPath(folder_id, 0, ptr::null_mut(), &raw mut raw) };
         if status < 0 || raw.is_null() {
             // Microsoft requires freeing the returned pointer even on failure.
             // SAFETY: `CoTaskMemFree` accepts null and any pointer returned

@@ -117,13 +117,133 @@ test("Admin updater is registered and remains operator initiated", async () => {
   assert.equal(pkg.dependencies["@tauri-apps/plugin-updater"], "2.10.1");
 });
 
-test("unsafe terminal fallback remains disabled", async () => {
-  const server = await read("crates/centrald-server/src/services.rs");
-  assert.match(
-    server,
-    /remote shell relay is disabled until broker PTY isolation is complete/,
+test("terminal transport never falls back to an arbitrary command runner", async () => {
+  const services = await read("crates/centrald-server/src/services.rs");
+  const shellRelay = await read("crates/centrald-server/src/shell.rs");
+  const client = await read("crates/centrald-client/src/daemon.rs");
+  const broker = await read("crates/centrald-client/src/broker_session.rs");
+  // The relay is bounded end-to-end: frame sizes, byte totals, and timeouts
+  // are enforced on the server relay and the broker session.
+  assert.match(shellRelay, /shell session timeout reached/);
+  assert.match(shellRelay, /shell data frame exceeds the limit/);
+  assert.match(client, /MAX_SHELL_SESSIONS/);
+  assert.match(broker, /MAX_CONCURRENT_SESSIONS/);
+  assert.match(broker, /session output bound reached/);
+  assert.match(broker, /session idle timeout reached/);
+  assert.doesNotMatch(services, /Command::new\([^)]*sh/);
+});
+
+test("client key material is zeroized and vault reads are bounded", async () => {
+  const [daemon, vault] = await Promise.all([
+    read("crates/centrald-client/src/daemon.rs"),
+    read("crates/centrald-client/src/vault.rs"),
+  ]);
+  // tonic copies PEM bytes into its TLS identity; the intermediate client
+  // buffers must be wiped rather than left as plaintext key material.
+  assert.match(daemon, /Zeroizing::new\(/);
+  assert.match(daemon, /zeroize::Zeroizing/);
+  // The Windows credential vault file is read through a bounded, zeroized path
+  // so an oversized replacement cannot exhaust memory.
+  assert.match(vault, /MAX_VAULT_FILE_BYTES/);
+  assert.match(vault, /read_vault_file/);
+  assert.match(vault, /bail!\("credential vault exceeds/);
+});
+
+test("Admin shell sessions release registry entries and never block on sends", async () => {
+  const shell = await read("apps/admin/src-tauri/src/shell.rs");
+  // Every exit path (close, stream end, or error) must release the registry
+  // entry so sessions cannot leak across the GUI session.
+  assert.match(shell, /remove_session\(\)/);
+  assert.match(shell, /sessions\.remove\(&session_handle\)/);
+  // Input/resize/close must fail fast instead of parking the async runtime on
+  // a stalled stream.
+  assert.match(shell, /\.try_send\(AdminShellFrame/);
+  assert.match(shell, /shell stream is backed up/);
+  assert.match(shell, /shell input stream is backed up/);
+  assert.doesNotMatch(shell, /\.blocking_send\(AdminShellFrame/);
+  assert.match(shell, /MAX_INPUT_BASE64_CHARS/);
+});
+
+test("abandoned shell sessions are closed by server housekeeping", async () => {
+  const services = await read("crates/centrald-server/src/services.rs");
+  const migration = await read(
+    "crates/centrald-server/migrations/0001_initial.sql",
   );
-  assert.doesNotMatch(server, /Command::new\([^)]*sh/);
+  assert.match(services, /shell_housekeeping/);
+  assert.match(services, /outcome = 'abandoned'/);
+  assert.match(services, /active_shell_session_ids/);
+  assert.match(migration, /CREATE TABLE shell_sessions/);
+  assert.match(migration, /CREATE TABLE elevation_challenges/);
+});
+
+test("client updater verifies release integrity before installation", async () => {
+  const updater = await read("crates/centrald-client/src/updates.rs");
+  const runners = await read("crates/centrald-client/src/runners.rs");
+  assert.match(updater, /minisign::verify/);
+  assert.match(updater, /same-version byte replacement is forbidden/);
+  assert.match(updater, /SHA-256 mismatch/);
+  assert.match(updater, /create_new\(true\)/);
+  assert.match(updater, /is_simple_entry_name/);
+  assert.doesNotMatch(updater, /Command::new\([^)]*sh\b/);
+  assert.match(runners, /update_client_operation/);
+});
+
+test("root replacement is authorized by the current root and journaled", async () => {
+  const pki = await read("crates/centrald-pki/src/lib.rs");
+  const manage = await read("crates/centrald-server/src/manage.rs");
+  assert.match(pki, /pub fn replace_root/);
+  assert.match(
+    pki,
+    /current offline root private key does not match the configured root certificate/,
+  );
+  assert.match(manage, /Replace the offline root CA/);
+  assert.match(manage, /recover_interrupted_root_replacement_locked/);
+  assert.match(manage, /targets\.len\(\) != 9/);
+});
+
+test("audit export verifies the hash chain before writing", async () => {
+  const exporter = await read("crates/centrald-server/src/audit_export.rs");
+  assert.match(exporter, /audit chain broken at sequence/);
+  assert.match(exporter, /entry_hash does not match its canonical record/);
+  assert.match(exporter, /never rewritten/);
+  assert.match(exporter, /write_new_file/);
+});
+
+test("audit export continuation windows are seeded by the previous tail hash", async () => {
+  const exporter = await read("crates/centrald-server/src/audit_export.rs");
+  const manage = await read("crates/centrald-server/src/manage.rs");
+  const services = await read("crates/centrald-server/src/services.rs");
+  // The continuation seed must chain against the previous export's tail so a
+  // gap between windows is a verification failure, not a silent skip.
+  assert.match(exporter, /previous export tail hash is not valid hex/);
+  assert.match(exporter, /expected_previous\.as_deref\(\)/);
+  assert.match(
+    exporter,
+    /chain_verification_accepts_a_valid_continuation_window/,
+  );
+  // Local server-console audits must produce entries the exporter can verify:
+  // timestamps are normalized to the same microsecond precision as RPC audits.
+  assert.match(services, /pub\(crate\) fn normalized_audit_timestamp/);
+  assert.match(
+    manage,
+    /crate::services::normalized_audit_timestamp\(Utc::now\(\)\)/,
+  );
+});
+
+test("rotation recovery revalidates root ownership and ancestors at point of use", async () => {
+  const manage = await read("crates/centrald-server/src/manage.rs");
+  // Recovery must read journals and backups through the no-follow, root-owned
+  // secure-read path, not a bare fs::read.
+  assert.match(manage, /read_root_private_text\(\s*&journal_path/);
+  assert.match(manage, /recover_interrupted_online_issuer_rotation_locked/);
+  assert.match(manage, /recover_interrupted_tls_rotation_locked/);
+  // The final rename revalidates the destination's ancestors so a directory
+  // swapped for a symlink cannot redirect the rollback outside the PKI tree.
+  assert.match(manage, /validate_no_symlink_ancestors\(destination\)/);
+  assert.doesNotMatch(
+    manage,
+    /serde_json::from_slice\(&fs::read\(&journal_path\)\?\)/,
+  );
 });
 
 test("release channels stay mutable outside immutable GitHub Releases", async () => {

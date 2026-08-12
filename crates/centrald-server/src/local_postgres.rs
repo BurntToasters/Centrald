@@ -26,21 +26,22 @@ enum RoleOwnership {
     Other,
 }
 
-/// Provisions the dedicated PostgreSQL login used by the recommended local setup.
+/// Provisions the dedicated `PostgreSQL` login used by the recommended local setup.
 ///
 /// SQL is delivered on stdin, so the generated password never appears in
 /// process arguments. Role creation and its instance-bound ownership marker are
-/// one PostgreSQL transaction. The login never receives database-creation or
+/// one `PostgreSQL` transaction. The login never receives database-creation or
 /// role-management authority; the pinned local postgres administrator creates
 /// its one database separately.
-pub fn provision_role(
-    role: &str,
-    database_url: &SecretString,
-    instance_id: Uuid,
-) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error when the generated URL is inconsistent or the role cannot
+/// be created.
+pub fn provision_role(role: &str, database_url: &SecretString, instance_id: Uuid) -> Result<()> {
     let _database = managed_database_name(role, database_url)?;
-    let parsed = Url::parse(database_url.expose_secret())
-        .context("parse generated local PostgreSQL URL")?;
+    let parsed =
+        Url::parse(database_url.expose_secret()).context("parse generated local PostgreSQL URL")?;
     let password = parsed
         .password()
         .context("generated local PostgreSQL URL has no password")?;
@@ -63,7 +64,7 @@ pub fn provision_role(
 /// # Errors
 ///
 /// Returns an error when the role marker does not match, the generated URL is
-/// inconsistent, or PostgreSQL rejects database creation/commenting.
+/// inconsistent, or `PostgreSQL` rejects database creation/commenting.
 pub fn provision_database(
     role: &str,
     database_url: &SecretString,
@@ -78,16 +79,20 @@ pub fn provision_database(
         quote_identifier(&database),
         quote_literal(&role_comment(instance_id)),
     );
-    run_psql(&statement, false)
-        .context("create the dedicated CentralD PostgreSQL database")
+    run_psql(&statement, false).context("create the dedicated CentralD PostgreSQL database")
 }
 
 /// Returns the generated database name after validating the complete local URL.
 /// This helper intentionally never returns the password.
+///
+/// # Errors
+///
+/// Returns an error when the role name is invalid or the URL does not match
+/// the generated local role/database pair.
 pub fn managed_database_name(role: &str, database_url: &SecretString) -> Result<String> {
     validate_managed_name(role)?;
-    let parsed = Url::parse(database_url.expose_secret())
-        .context("parse generated local PostgreSQL URL")?;
+    let parsed =
+        Url::parse(database_url.expose_secret()).context("parse generated local PostgreSQL URL")?;
     let database = parsed.path().trim_start_matches('/');
     if parsed.scheme() != "postgresql"
         || parsed.username() != role
@@ -104,6 +109,11 @@ pub fn managed_database_name(role: &str, database_url: &SecretString) -> Result<
 }
 
 /// Reasserts the restricted privilege set on the managed service login.
+///
+/// # Errors
+///
+/// Returns an error when the role is missing, is not owned by this server
+/// instance, or the privileges cannot be reset.
 pub fn harden_role(role: &str, instance_id: Uuid) -> Result<()> {
     require_owned_role(role, instance_id)?;
     run_psql(
@@ -124,11 +134,12 @@ pub fn harden_role(role: &str, instance_id: Uuid) -> Result<()> {
 /// marker or absent in the narrow crash window before the database comment was
 /// committed. Foreign collisions are left untouched; the recovery journal may
 /// then retire so a fresh setup can generate a different full-width UUID name.
-pub fn cleanup_managed_resources(
-    role: &str,
-    database: &str,
-    instance_id: Uuid,
-) -> Result<()> {
+///
+/// # Errors
+///
+/// Returns an error when the role/database names are invalid, ownership checks
+/// fail, or the managed objects cannot be removed.
+pub fn cleanup_managed_resources(role: &str, database: &str, instance_id: Uuid) -> Result<()> {
     validate_managed_name(role)?;
     validate_managed_name(database)?;
     if role != database {
@@ -150,15 +161,18 @@ pub fn cleanup_managed_resources(
             // make even that cleanup unsafe.
             return drop_owned_role(role, instance_id);
         }
-        if let Some(comment) = database_comment_value(database)? {
-            if comment != role_comment(instance_id) {
-                bail!(
-                    "refusing to remove PostgreSQL database {database}: its ownership comment belongs to another installation"
-                );
-            }
+        if let Some(comment) = database_comment_value(database)?
+            && comment != role_comment(instance_id)
+        {
+            bail!(
+                "refusing to remove PostgreSQL database {database}: its ownership comment belongs to another installation"
+            );
         }
         run_psql(
-            &format!("DROP DATABASE IF EXISTS {} WITH (FORCE);\n", quote_identifier(database)),
+            &format!(
+                "DROP DATABASE IF EXISTS {} WITH (FORCE);\n",
+                quote_identifier(database)
+            ),
             false,
         )
         .context("remove interrupted CentralD-managed PostgreSQL database")?;
@@ -167,18 +181,28 @@ pub fn cleanup_managed_resources(
 }
 
 /// Verifies that a managed role exists and belongs to the expected server.
+///
+/// # Errors
+///
+/// Returns an error when the role name is invalid, the role is missing, or the
+/// role is not owned by this server instance.
 pub fn require_owned_role(role: &str, instance_id: Uuid) -> Result<()> {
     validate_managed_name(role)?;
     match role_ownership(role, instance_id)? {
         RoleOwnership::Owned => Ok(()),
         RoleOwnership::Missing => bail!("CentralD-managed PostgreSQL role {role} is missing"),
-        RoleOwnership::Other => bail!(
-            "PostgreSQL role {role} is not owned by this CentralD server instance"
-        ),
+        RoleOwnership::Other => {
+            bail!("PostgreSQL role {role} is not owned by this CentralD server instance")
+        }
     }
 }
 
 /// Removes the dedicated role only after its instance-bound marker matches.
+///
+/// # Errors
+///
+/// Returns an error when the role name is invalid, the role is owned by
+/// another server instance, or the role cannot be removed.
 pub fn drop_owned_role(role: &str, instance_id: Uuid) -> Result<()> {
     validate_managed_name(role)?;
     match role_ownership(role, instance_id)? {
@@ -188,11 +212,8 @@ pub fn drop_owned_role(role: &str, instance_id: Uuid) -> Result<()> {
             "refusing to remove PostgreSQL role {role}: its CentralD ownership marker does not match"
         ),
     }
-    run_psql(
-        &format!("DROP ROLE {};\n", quote_identifier(role)),
-        false,
-    )
-    .context("remove the dedicated CentralD PostgreSQL role")
+    run_psql(&format!("DROP ROLE {};\n", quote_identifier(role)), false)
+        .context("remove the dedicated CentralD PostgreSQL role")
 }
 
 fn role_ownership(role: &str, instance_id: Uuid) -> Result<RoleOwnership> {
@@ -396,7 +417,8 @@ fn query_optional_scalar(sql: &str) -> Result<Option<String>> {
             diagnostic_suffix(&detail)
         );
     }
-    let text = String::from_utf8(output.stdout).context("PostgreSQL returned non-UTF-8 metadata")?;
+    let text =
+        String::from_utf8(output.stdout).context("PostgreSQL returned non-UTF-8 metadata")?;
     let mut rows = text.lines().map(str::trim).filter(|line| !line.is_empty());
     let first = rows.next().map(ToOwned::to_owned);
     if rows.next().is_some() {
@@ -435,14 +457,18 @@ fn diagnostic_suffix(detail: &str) -> String {
     }
 }
 
+/// Validates a CentralD-managed `PostgreSQL` object name.
+///
+/// # Errors
+///
+/// Returns an error when the name does not match the generated managed-name
+/// shape.
 pub fn validate_managed_name(value: &str) -> Result<()> {
     if value.len() < 10
         || value.len() > 63
         || !value.starts_with("centrald_")
         || !value.chars().all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || character == '_'
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
         })
     {
         bail!("invalid CentralD-managed PostgreSQL object name");
@@ -466,9 +492,7 @@ mod tests {
     #[test]
     fn managed_url_requires_exact_generated_role_and_database() {
         let role = "centrald_0123456789abcdef";
-        let good = SecretString::from(format!(
-            "postgresql://{role}:secret@127.0.0.1:5432/{role}"
-        ));
+        let good = SecretString::from(format!("postgresql://{role}:secret@127.0.0.1:5432/{role}"));
         assert_eq!(
             managed_database_name(role, &good).expect("managed URL should validate"),
             role
@@ -493,6 +517,9 @@ mod tests {
         let value = bounded_diagnostic(&input);
         assert!(value.ends_with("[truncated]"));
         assert!(value.len() <= MAX_DIAGNOSTIC_BYTES + 12);
-        assert_eq!(bounded_diagnostic(b"line one\nline two"), "line one line two");
+        assert_eq!(
+            bounded_diagnostic(b"line one\nline two"),
+            "line one line two"
+        );
     }
 }

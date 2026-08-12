@@ -39,8 +39,8 @@ for (const [source, text, label] of [
   ],
   [
     app,
-    "Unavailable until the PTY/ConPTY broker ships.",
-    "Admin gated shell settings",
+    "Credential saving stores the password in the operating-system vault (Windows DPAPI or the Linux Secret Service) only.",
+    "Admin vault-backed credential saving contract",
   ],
   [
     app,
@@ -55,7 +55,7 @@ for (const [source, text, label] of [
   ],
   [
     client,
-    'capabilities: vec!["heartbeat".into()]',
+    'capabilities: vec!["heartbeat".into(), "typed_jobs".into()]',
     "truthful client capabilities",
   ],
   [build, "raw.githubusercontent.com", "Rust prerelease update origin"],

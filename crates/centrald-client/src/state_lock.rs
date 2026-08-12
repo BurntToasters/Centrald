@@ -17,6 +17,7 @@ const STATE_LOCK_FILE: &str = ".centrald-state.lock";
 #[derive(Debug)]
 pub(crate) struct ClientStateLock {
     file: File,
+    #[allow(dead_code)]
     path: PathBuf,
 }
 
@@ -31,19 +32,21 @@ impl ClientStateLock {
     }
 
     /// Attempts to acquire the fixed client-state lock without blocking the
-    /// async daemon runtime. `None` means another CentralD process is currently
+    /// async daemon runtime. `None` means another `CentralD` process is currently
     /// publishing, repairing, or renewing client state.
     pub(crate) fn try_acquire() -> Result<Option<Self>> {
         let (file, path) = open_lock_file()?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file, path })),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error)
-                .with_context(|| format!("lock CentralD client state {}", path.display())),
+            Err(error) => {
+                Err(error).with_context(|| format!("lock CentralD client state {}", path.display()))
+            }
         }
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
     }
@@ -84,10 +87,10 @@ fn open_lock_file() -> Result<(File, PathBuf)> {
             parent.display()
         );
     }
-    if let Ok(metadata) = path.symlink_metadata() {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            bail!("client state lock is unsafe: {}", path.display());
-        }
+    if let Ok(metadata) = path.symlink_metadata()
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        bail!("client state lock is unsafe: {}", path.display());
     }
 
     let mut options = OpenOptions::new();
@@ -104,7 +107,10 @@ fn open_lock_file() -> Result<(File, PathBuf)> {
         .metadata()
         .with_context(|| format!("inspect CentralD client state lock {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("client state lock is not a regular file: {}", path.display());
+        bail!(
+            "client state lock is not a regular file: {}",
+            path.display()
+        );
     }
     Ok((file, path))
 }

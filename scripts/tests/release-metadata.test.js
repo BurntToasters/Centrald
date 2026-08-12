@@ -14,7 +14,9 @@ import {
 
 test("release timestamps honor reproducible build inputs", () => {
   assert.equal(
-    releaseTimestamp({ CENTRALD_RELEASE_TIMESTAMP: "2026-08-08T01:02:03-07:00" }),
+    releaseTimestamp({
+      CENTRALD_RELEASE_TIMESTAMP: "2026-08-08T01:02:03-07:00",
+    }),
     "2026-08-08T08:02:03.000Z",
   );
   assert.equal(

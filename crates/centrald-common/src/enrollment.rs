@@ -109,11 +109,7 @@ impl EnrollmentInvitationClaims {
         {
             return Err(EnrollmentSecretError::InvalidClaims);
         }
-        let ports = [
-            self.enrollment_port,
-            self.client_port,
-            self.admin_port,
-        ];
+        let ports = [self.enrollment_port, self.client_port, self.admin_port];
         if ports.iter().any(|port| *port < 1024)
             || ports[0] == ports[1]
             || ports[0] == ports[2]

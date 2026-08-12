@@ -8,6 +8,9 @@
 /.centrald-dev/
 /apps/admin/dist/
 /apps/admin/src-tauri/target/
+/site/dist/
+/site/.astro/
+/site/src/content/docs/
 *.pfx
 *.p12
 *.key

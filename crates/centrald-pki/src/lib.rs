@@ -78,7 +78,9 @@ pub enum PkiError {
     UnsupportedCommonName,
     #[error("certificate parsing failed: {0}")]
     CertificateParse(String),
-    #[error("{kind} cannot be issued because its signing chain expires too soon ({available_until})")]
+    #[error(
+        "{kind} cannot be issued because its signing chain expires too soon ({available_until})"
+    )]
     InsufficientSigningValidity {
         kind: &'static str,
         available_until: OffsetDateTime,
@@ -212,28 +214,22 @@ pub fn rotate_online_issuers(
     let (_, root_certificate) = parse_x509_certificate(&root_pem.contents)
         .map_err(|error| PkiError::CertificateParse(error.to_string()))?;
     let root_key = KeyPair::from_pem(root_private_key_pem)?;
-    if root_certificate.public_key().subject_public_key.data.as_ref() != root_key.public_key_raw() {
+    if root_certificate
+        .public_key()
+        .subject_public_key
+        .data
+        .as_ref()
+        != root_key.public_key_raw()
+    {
         return Err(PkiError::CertificateParse(
             "offline root recovery private key does not match the root certificate".into(),
         ));
     }
     let root_not_after = root_certificate.validity().not_after.to_datetime();
     let root_issuer = Issuer::from_ca_cert_pem(root_certificate_pem, root_key)?;
-    let server = signed_ca_with_issuer(
-        "CentralD Server Issuing CA",
-        &root_issuer,
-        root_not_after,
-    )?;
-    let client = signed_ca_with_issuer(
-        "CentralD Client Issuing CA",
-        &root_issuer,
-        root_not_after,
-    )?;
-    let admin = signed_ca_with_issuer(
-        "CentralD Admin Issuing CA",
-        &root_issuer,
-        root_not_after,
-    )?;
+    let server = signed_ca_with_issuer("CentralD Server Issuing CA", &root_issuer, root_not_after)?;
+    let client = signed_ca_with_issuer("CentralD Client Issuing CA", &root_issuer, root_not_after)?;
+    let admin = signed_ca_with_issuer("CentralD Admin Issuing CA", &root_issuer, root_not_after)?;
     Ok(OnlineIssuerRotation {
         server_certificate_pem: server.certificate_pem(),
         server_private_key_pem: server.private_key_pem(),
@@ -241,6 +237,89 @@ pub fn rotate_online_issuers(
         client_private_key_pem: client.private_key_pem(),
         admin_certificate_pem: admin.certificate_pem(),
         admin_private_key_pem: admin.private_key_pem(),
+    })
+}
+
+/// The complete material produced by the offline-root replacement ceremony.
+#[derive(Debug, Clone)]
+pub struct RootReplacement {
+    pub root_certificate_pem: String,
+    /// The replacement offline root's private key. The server writes it only
+    /// to the operator-chosen recovery bundle; it never stays on the server.
+    pub root_private_key_pem: String,
+    pub server_certificate_pem: String,
+    pub server_private_key_pem: String,
+    pub client_certificate_pem: String,
+    pub client_private_key_pem: String,
+    pub admin_certificate_pem: String,
+    pub admin_private_key_pem: String,
+    pub server_identity: PemIdentity,
+}
+
+/// Replaces the offline root and all online issuers. Authorized only by the
+/// current offline root private key, which is verified against the configured
+/// root certificate before any material is generated.
+///
+/// Existing client/Admin identities chain to the current root and cannot be
+/// validated after replacement; every device must re-enroll.
+///
+/// # Errors
+///
+/// Returns an error when the current recovery key does not match the current
+/// root certificate, the public host is empty, or generation fails.
+pub fn replace_root(
+    current_root_certificate_pem: &str,
+    current_root_private_key_pem: &str,
+    public_host: &str,
+) -> Result<RootReplacement, PkiError> {
+    let (_, root_pem) = parse_x509_pem(current_root_certificate_pem.as_bytes())
+        .map_err(|error| PkiError::CertificateParse(error.to_string()))?;
+    let (_, root_certificate) = parse_x509_certificate(&root_pem.contents)
+        .map_err(|error| PkiError::CertificateParse(error.to_string()))?;
+    let current_root_key = KeyPair::from_pem(current_root_private_key_pem)?;
+    if root_certificate
+        .public_key()
+        .subject_public_key
+        .data
+        .as_ref()
+        != current_root_key.public_key_raw()
+    {
+        return Err(PkiError::CertificateParse(
+            "current offline root private key does not match the configured root certificate"
+                .into(),
+        ));
+    }
+    if public_host.trim().is_empty() {
+        return Err(PkiError::EmptyPublicHost);
+    }
+    let new_root = self_signed_ca("CentralD Offline Root CA", true)?;
+    let root_issuer = Issuer::from_ca_cert_pem(
+        &new_root.certificate_pem(),
+        KeyPair::from_pem(&new_root.private_key_pem())?,
+    )?;
+    let root_not_after = certificate_not_after(&new_root.certificate_pem())?;
+    let server_issuer =
+        signed_ca_with_issuer("CentralD Server Issuing CA", &root_issuer, root_not_after)?;
+    let client_issuer =
+        signed_ca_with_issuer("CentralD Client Issuing CA", &root_issuer, root_not_after)?;
+    let admin_issuer =
+        signed_ca_with_issuer("CentralD Admin Issuing CA", &root_issuer, root_not_after)?;
+    let server_identity = issue_server_identity(
+        public_host,
+        &server_issuer.certificate_pem(),
+        &server_issuer.private_key_pem(),
+        &new_root.certificate_pem(),
+    )?;
+    Ok(RootReplacement {
+        root_certificate_pem: new_root.certificate_pem(),
+        root_private_key_pem: new_root.private_key_pem(),
+        server_certificate_pem: server_issuer.certificate_pem(),
+        server_private_key_pem: server_issuer.private_key_pem(),
+        client_certificate_pem: client_issuer.certificate_pem(),
+        client_private_key_pem: client_issuer.private_key_pem(),
+        admin_certificate_pem: admin_issuer.certificate_pem(),
+        admin_private_key_pem: admin_issuer.private_key_pem(),
+        server_identity,
     })
 }
 
@@ -459,8 +538,9 @@ fn bounded_not_after(
         .iter()
         .copied()
         .min()
-        .map(|value| value - Duration::days(SIGNING_CHAIN_SAFETY_MARGIN_DAYS))
-        .unwrap_or(requested);
+        .map_or(requested, |value| {
+            value - Duration::days(SIGNING_CHAIN_SAFETY_MARGIN_DAYS)
+        });
     let expires_at = requested.min(parent_limit);
     if expires_at <= now + Duration::days(minimum_days) {
         return Err(PkiError::InsufficientSigningValidity {
@@ -668,17 +748,58 @@ mod tests {
         ));
     }
     #[test]
+    fn root_replacement_generates_a_fresh_hierarchy_authorized_by_the_current_root() {
+        let hierarchy = PkiHierarchy::generate().unwrap();
+        let replacement = replace_root(
+            &hierarchy.root.certificate_pem(),
+            &hierarchy.root.private_key_pem(),
+            "centrald.home.arpa",
+        )
+        .unwrap();
+        assert_ne!(
+            replacement.root_certificate_pem,
+            hierarchy.root.certificate_pem()
+        );
+        assert!(replacement.root_private_key_pem.contains("PRIVATE KEY"));
+        assert_eq!(
+            replacement
+                .server_identity
+                .certificate_chain_pem
+                .matches("BEGIN CERTIFICATE")
+                .count(),
+            3
+        );
+        let replacement_root = KeyPair::from_pem(&replacement.root_private_key_pem).unwrap();
+        let (_, replacement_root_pem) =
+            parse_x509_pem(replacement.root_certificate_pem.as_bytes()).unwrap();
+        let (_, replacement_root_certificate) =
+            parse_x509_certificate(&replacement_root_pem.contents).unwrap();
+        assert_eq!(
+            replacement_root_certificate
+                .public_key()
+                .subject_public_key
+                .data
+                .as_ref(),
+            replacement_root.public_key_raw()
+        );
+        // A wrong current-root key must never authorize a replacement.
+        let unrelated = PkiHierarchy::generate().unwrap();
+        assert!(matches!(
+            replace_root(
+                &hierarchy.root.certificate_pem(),
+                &unrelated.root.private_key_pem(),
+                "centrald.home.arpa",
+            ),
+            Err(PkiError::CertificateParse(_))
+        ));
+    }
+
+    #[test]
     fn child_validity_is_capped_by_the_signing_chain() {
         let now = OffsetDateTime::now_utc();
         let parent = now + Duration::days(45);
-        let expiry = bounded_not_after(
-            now,
-            90,
-            "test leaf",
-            &[parent],
-            31,
-        )
-        .expect("45-day parent should permit a bounded leaf");
+        let expiry = bounded_not_after(now, 90, "test leaf", &[parent], 31)
+            .expect("45-day parent should permit a bounded leaf");
         assert!(expiry <= parent - Duration::days(1));
         assert!(expiry > now + Duration::days(31));
     }
@@ -686,17 +807,10 @@ mod tests {
     #[test]
     fn issuance_fails_before_a_renewal_window_can_be_honored() {
         let now = OffsetDateTime::now_utc();
-        let result = bounded_not_after(
-            now,
-            90,
-            "test leaf",
-            &[now + Duration::days(20)],
-            31,
-        );
+        let result = bounded_not_after(now, 90, "test leaf", &[now + Duration::days(20)], 31);
         assert!(matches!(
             result,
             Err(PkiError::InsufficientSigningValidity { .. })
         ));
     }
-
 }

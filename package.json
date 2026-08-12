@@ -42,7 +42,11 @@
     "release:assemble": "node scripts/release.js assemble",
     "release:manifests": "node scripts/release.js manifests",
     "release:sign": "node scripts/release.js sign",
-    "check:onboarding": "node scripts/check-onboarding.js"
+    "check:onboarding": "node scripts/check-onboarding.js",
+    "site:dev": "npm --prefix site run dev",
+    "site:build": "npm --prefix site run build",
+    "site:check": "npm --prefix site run check",
+    "site:sync": "npm --prefix site run sync-docs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -65,6 +69,7 @@
     "globals": "^17.8.0",
     "jsdom": "^26.1.0",
     "prettier": "^3.6.0",
+    "prettier-plugin-astro": "^0.14.1",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.65.0",
     "vite": "^7.0.0",

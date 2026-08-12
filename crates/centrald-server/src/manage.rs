@@ -7,14 +7,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use centrald_common::config::ServerConfig;
-use centrald_common::host::canonical_host;
 use centrald_common::enrollment::{
-    EnrollmentInvitationClaims, EnrollmentRole, generate_enrollment_invitation,
-    hash_enrollment_key,
+    EnrollmentInvitationClaims, EnrollmentRole, generate_enrollment_invitation, hash_enrollment_key,
 };
-use centrald_common::secure_fs::{
-    prune_file_backups, replace_file_with_backup, write_new_file,
-};
+use centrald_common::host::canonical_host;
+use centrald_common::secure_fs::{prune_file_backups, replace_file_with_backup, write_new_file};
 use centrald_pki::{certificate_not_after, issue_server_identity, rotate_online_issuers};
 use chrono::{DateTime, Utc};
 use console::style;
@@ -31,18 +28,19 @@ use crate::config_lock::{
     ConfigFileLock, DatabaseUpdateTransaction, recover_interrupted_database_update_locked,
     recover_interrupted_settings_update_locked,
 };
-use crate::file_security::{read_root_private_text, read_root_public_text};
 use crate::db::{
     connect_and_migrate, database_environment_contents, resolve_database_url,
     validate_database_url_policy, verify_owned_database,
 };
-use crate::local_control::LocalControlClient;
+use crate::file_security::{read_root_private_text, read_root_public_text};
 use crate::local_audit;
+use crate::local_control::LocalControlClient;
 
 const MAX_ENROLLMENT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const AUDIT_LOCK_ID: i64 = 1_129_601_348;
 const TLS_ROTATION_JOURNAL_NAME: &str = ".centrald-tls-rotation.json";
 const ISSUER_ROTATION_JOURNAL_NAME: &str = ".centrald-issuer-rotation.json";
+const ROOT_REPLACEMENT_JOURNAL_NAME: &str = ".centrald-root-replacement.json";
 const TLS_RETIREMENT_JOURNAL_NAME: &str = ".centrald-tls-retirement.json";
 const SERVER_RENEW_BEFORE_DAYS: i64 = 30;
 const CONFIG_BACKUP_RETENTION: usize = 10;
@@ -60,6 +58,17 @@ struct TlsRotationJournal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IssuerRotationJournal {
+    version: u32,
+    nonce: Uuid,
+    config_path: PathBuf,
+    targets: Vec<IssuerRotationTarget>,
+}
+
+/// Crash-recovery journal for the offline-root replacement ceremony: the root
+/// certificate plus the three issuer certificates/keys and the server leaf.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootReplacementJournal {
     version: u32,
     nonce: Uuid,
     config_path: PathBuf,
@@ -151,14 +160,16 @@ enum MenuAction {
     RevokeAdmin,
     Configure,
     RotateIssuers,
+    ReplaceRoot,
     ExportTrust,
+    ExportAudit,
     Diagnostics,
     Exit,
 }
 
 /// Runs the local, guided server configuration and administration console.
 ///
-/// The console reads PostgreSQL credentials only in the root-owned process and
+/// The console reads `PostgreSQL` credentials only in the root-owned process and
 /// does not require the network daemon to be running.
 ///
 /// # Errors
@@ -172,7 +183,9 @@ pub async fn run(config_path: &Path) -> Result<()> {
 
     println!();
     println!("{}", style("CentralD Server Configuration").cyan().bold());
-    println!("Routine tasks are first. Advanced server, database, and PKI controls remain available below.");
+    println!(
+        "Routine tasks are first. Advanced server, database, and PKI controls remain available below."
+    );
 
     loop {
         println!();
@@ -195,13 +208,20 @@ pub async fn run(config_path: &Path) -> Result<()> {
             MenuAction::RevokeClient => guided_revoke(&config, "client", &theme).await,
             MenuAction::RevokeAdmin => guided_revoke(&config, "admin", &theme).await,
             MenuAction::Configure => configure(config_path, &mut config, &theme).await,
-            MenuAction::RotateIssuers => rotate_online_issuers_guided(config_path, &mut config, &theme),
+            MenuAction::RotateIssuers => {
+                rotate_online_issuers_guided(config_path, &mut config, &theme)
+            }
+            MenuAction::ReplaceRoot => replace_root_guided(config_path, &mut config, &theme),
             MenuAction::ExportTrust => export_trust(&config, &theme),
+            MenuAction::ExportAudit => export_audit_guided(config_path).await,
             MenuAction::Diagnostics => diagnostics(config_path, &config).await,
             MenuAction::Exit => unreachable!(),
         };
         if let Err(error) = result {
-            eprintln!("{} {error:#}", style("Could not complete action:").red().bold());
+            eprintln!(
+                "{} {error:#}",
+                style("Could not complete action:").red().bold()
+            );
         }
     }
 }
@@ -224,6 +244,11 @@ pub async fn create_enrollment_key(
 
 /// Creates an enrollment invitation while optionally sharing the daemon Argon2
 /// concurrency limit used by the network enrollment path.
+///
+/// # Errors
+///
+/// Returns an error for invalid input, unreadable trust material, hashing
+/// failure, or database/audit failure.
 pub async fn create_enrollment_key_bounded(
     pool: &PgPool,
     config: &ServerConfig,
@@ -241,11 +266,8 @@ pub async fn create_enrollment_key_bounded(
     let id = Uuid::now_v7();
     let expires_at = Utc::now()
         + chrono::Duration::from_std(ttl).context("enrollment-key lifetime is too large")?;
-    let root_ca_pem = read_root_public_text(
-        &config.pki.root_cert,
-        256 * 1024,
-        "root CA certificate",
-    )?;
+    let root_ca_pem =
+        read_root_public_text(&config.pki.root_cert, 256 * 1024, "root CA certificate")?;
     let claims = EnrollmentInvitationClaims::new(
         id,
         config.server.instance_id,
@@ -319,7 +341,9 @@ fn select_action(theme: &ColorfulTheme) -> Result<MenuAction> {
         "Revoke an Admin",
         "Server settings (advanced)",
         "Rotate online PKI issuers (advanced; offline root required)",
+        "Replace the offline root CA (advanced; current offline root required)",
         "Export the root trust certificate",
+        "Export the verified audit chain (advanced)",
         "Exit",
     ];
     let actions = [
@@ -334,12 +358,14 @@ fn select_action(theme: &ColorfulTheme) -> Result<MenuAction> {
         MenuAction::RevokeAdmin,
         MenuAction::Configure,
         MenuAction::RotateIssuers,
+        MenuAction::ReplaceRoot,
         MenuAction::ExportTrust,
+        MenuAction::ExportAudit,
         MenuAction::Exit,
     ];
     let selected = Select::with_theme(theme)
         .with_prompt("What would you like to do?")
-        .items(&labels)
+        .items(labels)
         .default(0)
         .interact()?;
     actions
@@ -348,11 +374,7 @@ fn select_action(theme: &ColorfulTheme) -> Result<MenuAction> {
         .context("invalid menu selection")
 }
 
-async fn guided_enrollment(
-    config: &ServerConfig,
-    role: &str,
-    theme: &ColorfulTheme,
-) -> Result<()> {
+async fn guided_enrollment(config: &ServerConfig, role: &str, theme: &ColorfulTheme) -> Result<()> {
     println!();
     println!("{}", style(format!("Create {role} access")).cyan().bold());
     println!("The resulting bearer invitation is single-use and shown once.");
@@ -373,7 +395,7 @@ async fn guided_enrollment(
     ];
     let selected = Select::with_theme(theme)
         .with_prompt("Invitation lifetime")
-        .items(&expiries)
+        .items(expiries)
         .default(0)
         .interact()?;
     if !Confirm::with_theme(theme)
@@ -410,7 +432,10 @@ async fn guided_list(config: &ServerConfig, role: &str) -> Result<()> {
     let rows = list_identity_records(&pool, role).await?;
     pool.close().await;
     println!();
-    println!("{}", style(format!("{}s", display_role(role))).cyan().bold());
+    println!(
+        "{}",
+        style(format!("{}s", display_role(role))).cyan().bold()
+    );
     if rows.is_empty() {
         println!("None enrolled yet.");
         return Ok(());
@@ -437,7 +462,9 @@ async fn guided_manage_invitations(
     println!();
     println!(
         "{}",
-        style(format!("{} invitations", display_role(role))).cyan().bold()
+        style(format!("{} invitations", display_role(role)))
+            .cyan()
+            .bold()
     );
     if rows.is_empty() {
         println!("No invitations have been created.");
@@ -458,10 +485,8 @@ async fn guided_manage_invitations(
         println!("- {} ({}) [{state}]", key.name, key.id);
     }
 
-    let pending: Vec<&EnrollmentKeySummary> = rows
-        .iter()
-        .filter(|key| key.is_pending(&now))
-        .collect();
+    let pending: Vec<&EnrollmentKeySummary> =
+        rows.iter().filter(|key| key.is_pending(&now)).collect();
     if pending.is_empty()
         || !Confirm::with_theme(theme)
             .with_prompt("Revoke one pending invitation?")
@@ -590,11 +615,7 @@ pub async fn revoke_enrollment_key_record(
     Ok(())
 }
 
-async fn guided_revoke(
-    config: &ServerConfig,
-    role: &str,
-    theme: &ColorfulTheme,
-) -> Result<()> {
+async fn guided_revoke(config: &ServerConfig, role: &str, theme: &ColorfulTheme) -> Result<()> {
     let pool = open_pool(config).await?;
     let rows: Vec<IdentitySummary> = list_identity_records(&pool, role)
         .await?
@@ -715,7 +736,11 @@ pub async fn revoke_identity_record(
     Ok(())
 }
 
-async fn configure(config_path: &Path, config: &mut ServerConfig, theme: &ColorfulTheme) -> Result<()> {
+async fn configure(
+    config_path: &Path,
+    config: &mut ServerConfig,
+    theme: &ColorfulTheme,
+) -> Result<()> {
     loop {
         println!();
         println!("{}", style("Server settings (advanced)").cyan().bold());
@@ -731,7 +756,7 @@ async fn configure(config_path: &Path, config: &mut ServerConfig, theme: &Colorf
         ];
         match Select::with_theme(theme)
             .with_prompt("Configuration area")
-            .items(&options)
+            .items(options)
             .default(0)
             .interact()?
         {
@@ -757,8 +782,8 @@ fn configure_network(
         .default(config.server.public_host.clone())
         .validate_with(|value: &String| validate_prompt_host(value))
         .interact_text()?;
-    replacement.server.public_host = canonical_host(&replacement.server.public_host)
-        .context("canonicalize public TLS host")?;
+    replacement.server.public_host =
+        canonical_host(&replacement.server.public_host).context("canonicalize public TLS host")?;
     replacement.server.enrollment_listen = socket_prompt(
         theme,
         "Enrollment listener",
@@ -784,10 +809,10 @@ fn configure_network(
     {
         return Ok(());
     }
-    if replacement.server.public_host != config.server.public_host {
-        rotate_server_identity_and_save(config_path, config, replacement)?;
-    } else {
+    if replacement.server.public_host == config.server.public_host {
         save_config(config_path, config, replacement)?;
+    } else {
+        rotate_server_identity_and_save(config_path, config, replacement)?;
     }
     Ok(())
 }
@@ -816,7 +841,10 @@ fn configure_runtime(
         theme,
         "Job lifetime seconds",
         config.runtime.job_ttl_seconds,
-        60,
+        // The TTL must exceed the longest broker round trip (up to 15 minutes
+        // for package operations) or terminal job events can be rejected as
+        // expired after the operation already ran.
+        1800,
         604_800,
     )?;
     replacement.runtime.shell_idle_timeout_seconds = u32_prompt(
@@ -872,6 +900,7 @@ fn configure_updates(
     confirm_and_save(config_path, config, replacement, theme)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn configure_database(
     config_path: &Path,
     config: &mut ServerConfig,
@@ -919,15 +948,15 @@ async fn configure_database(
     recover_interrupted_tls_rotation_locked(config_path)?;
     let current = ServerConfig::load(config_path)?;
     if current != *config {
-        bail!("server configuration changed in another process; reopen centrald-server config and retry");
+        bail!(
+            "server configuration changed in another process; reopen centrald-server config and retry"
+        );
     }
     let current_url = resolve_database_url(&current)?;
     let database_url = if new_url.is_empty() {
         current_url
     } else {
-        if current.database.managed_local_role.is_some()
-            && new_url != current_url.expose_secret()
-        {
+        if current.database.managed_local_role.is_some() && new_url != current_url.expose_secret() {
             bail!(
                 "the recommended managed-local PostgreSQL location is lifecycle-bound to this installation; use the existing URL or perform an explicit backup/reset/restore instead of silently relocating it"
             );
@@ -981,26 +1010,46 @@ async fn configure_database(
     ) {
         warn!(%error, "database settings were committed; final local audit append is pending reconciliation");
     }
-    println!("{} Database settings committed atomically.", style("✓").green());
+    println!(
+        "{} Database settings committed atomically.",
+        style("✓").green()
+    );
     println!("Restart centrald-server to apply runtime changes.");
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn configure_paths(
     _config_path: &Path,
     config: &mut ServerConfig,
     _theme: &ColorfulTheme,
 ) -> Result<()> {
-    println!("CentralD package paths are fixed so the systemd sandbox and privileged recovery boundary cannot drift.");
+    println!(
+        "CentralD package paths are fixed so the systemd sandbox and privileged recovery boundary cannot drift."
+    );
     println!("  Data directory: {}", config.server.data_dir.display());
     println!("  Local socket: {}", config.server.local_socket.display());
-    println!("  Database secret file: {}", config.database.environment_file.display());
+    println!(
+        "  Database secret file: {}",
+        config.database.environment_file.display()
+    );
     println!("  PKI root: {}", config.pki.root_cert.display());
-    println!("  Server certificate: {}", config.pki.server_chain.display());
-    println!("  Server issuer: {}", config.pki.server_issuer_cert.display());
-    println!("  Client issuer: {}", config.pki.client_issuer_cert.display());
+    println!(
+        "  Server certificate: {}",
+        config.pki.server_chain.display()
+    );
+    println!(
+        "  Server issuer: {}",
+        config.pki.server_issuer_cert.display()
+    );
+    println!(
+        "  Client issuer: {}",
+        config.pki.client_issuer_cert.display()
+    );
     println!("  Admin issuer: {}", config.pki.admin_issuer_cert.display());
-    println!("Use the guided online-issuer rotation action for PKI key rotation; paths themselves are not configurable.");
+    println!(
+        "Use the guided online-issuer rotation action for PKI key rotation; paths themselves are not configurable."
+    );
     Ok(())
 }
 
@@ -1011,8 +1060,12 @@ fn rotate_online_issuers_guided(
 ) -> Result<()> {
     println!();
     println!("{}", style("Rotate online PKI issuers").cyan().bold());
-    println!("This maintenance ceremony requires the offline root recovery PEM. The root itself is not changed.");
-    println!("Existing client/Admin certificates continue to chain to the same root while new certificates use the replacement issuers.");
+    println!(
+        "This maintenance ceremony requires the offline root recovery PEM. The root itself is not changed."
+    );
+    println!(
+        "Existing client/Admin certificates continue to chain to the same root while new certificates use the replacement issuers."
+    );
     let recovery_path = PathBuf::from(
         Input::<String>::with_theme(theme)
             .with_prompt("Offline root recovery PEM path")
@@ -1027,13 +1080,9 @@ fn rotate_online_issuers_guided(
         256 * 1024,
         "offline root recovery bundle",
     )?);
-    let (recovery_root, recovery_key) =
-        parse_root_recovery_bundle(bundle.expose_secret())?;
-    let configured_root = read_root_public_text(
-        &config.pki.root_cert,
-        256 * 1024,
-        "root CA certificate",
-    )?;
+    let (recovery_root, recovery_key) = parse_root_recovery_bundle(bundle.expose_secret())?;
+    let configured_root =
+        read_root_public_text(&config.pki.root_cert, 256 * 1024, "root CA certificate")?;
     if recovery_root.trim() != configured_root.trim() {
         bail!("offline recovery certificate does not match this server's configured root CA");
     }
@@ -1055,14 +1104,21 @@ fn rotate_online_issuers_guided(
     }
 
     commit_online_issuer_rotation(config_path, config, rotated, server_identity)?;
-    println!("{} Online issuers and server TLS leaf rotated.", style("✓").green());
-    println!("Restart centrald-server. Rollback keys are retired only after all TLS listeners pass health probes.");
+    println!(
+        "{} Online issuers and server TLS leaf rotated.",
+        style("✓").green()
+    );
+    println!(
+        "Restart centrald-server. Rollback keys are retired only after all TLS listeners pass health probes."
+    );
     Ok(())
 }
 
 fn parse_root_recovery_bundle(bundle: &str) -> Result<(String, SecretString)> {
     fn extract(bundle: &str, begin: &str, end: &str) -> Result<String> {
-        let start = bundle.find(begin).context("recovery bundle is missing required PEM material")?;
+        let start = bundle
+            .find(begin)
+            .context("recovery bundle is missing required PEM material")?;
         let suffix = &bundle[start..];
         let finish = suffix
             .find(end)
@@ -1083,6 +1139,7 @@ fn parse_root_recovery_bundle(bundle: &str) -> Result<(String, SecretString)> {
     Ok((certificate, SecretString::from(private_key)))
 }
 
+#[allow(clippy::too_many_lines)]
 fn commit_online_issuer_rotation(
     config_path: &Path,
     config: &mut ServerConfig,
@@ -1096,27 +1153,66 @@ fn commit_online_issuer_rotation(
     recover_interrupted_tls_rotation_locked(config_path)?;
     let retirement_path = tls_retirement_journal_path(config_path)?;
     if retirement_path.exists() {
-        bail!("previous PKI/TLS rollback material is awaiting a healthy server restart; restart centrald-server before rotating issuers again");
+        bail!(
+            "previous PKI/TLS rollback material is awaiting a healthy server restart; restart centrald-server before rotating issuers again"
+        );
     }
     let current = ServerConfig::load(config_path)?;
     if current != *config {
-        bail!("server configuration changed in another process; reopen centrald-server config and retry");
+        bail!(
+            "server configuration changed in another process; reopen centrald-server config and retry"
+        );
     }
 
     let replacements: Vec<(PathBuf, bool, Vec<u8>)> = vec![
-        (config.pki.server_issuer_cert.clone(), false, rotated.server_certificate_pem.into_bytes()),
-        (config.pki.server_issuer_key.clone(), true, rotated.server_private_key_pem.into_bytes()),
-        (config.pki.client_issuer_cert.clone(), false, rotated.client_certificate_pem.into_bytes()),
-        (config.pki.client_issuer_key.clone(), true, rotated.client_private_key_pem.into_bytes()),
-        (config.pki.admin_issuer_cert.clone(), false, rotated.admin_certificate_pem.into_bytes()),
-        (config.pki.admin_issuer_key.clone(), true, rotated.admin_private_key_pem.into_bytes()),
-        (config.pki.server_chain.clone(), false, server_identity.certificate_chain_pem.into_bytes()),
-        (config.pki.server_key.clone(), true, server_identity.private_key_pem.into_bytes()),
+        (
+            config.pki.server_issuer_cert.clone(),
+            false,
+            rotated.server_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.server_issuer_key.clone(),
+            true,
+            rotated.server_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.client_issuer_cert.clone(),
+            false,
+            rotated.client_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.client_issuer_key.clone(),
+            true,
+            rotated.client_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.admin_issuer_cert.clone(),
+            false,
+            rotated.admin_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.admin_issuer_key.clone(),
+            true,
+            rotated.admin_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.server_chain.clone(),
+            false,
+            server_identity.certificate_chain_pem.into_bytes(),
+        ),
+        (
+            config.pki.server_key.clone(),
+            true,
+            server_identity.private_key_pem.into_bytes(),
+        ),
     ];
     let nonce = Uuid::now_v7();
     let targets: Vec<IssuerRotationTarget> = replacements
         .iter()
-        .map(|(path, private, _)| IssuerRotationTarget { path: path.clone(), private: *private })
+        .map(|(path, private, _)| IssuerRotationTarget {
+            path: path.clone(),
+            private: *private,
+        })
         .collect();
     let journal = IssuerRotationJournal {
         version: 1,
@@ -1132,7 +1228,10 @@ fn commit_online_issuer_rotation(
     let retirement = TlsRetirementJournal {
         version: 1,
         config_path: config_path.to_path_buf(),
-        backups: artifact_paths.iter().map(|paths| paths.backup.clone()).collect(),
+        backups: artifact_paths
+            .iter()
+            .map(|paths| paths.backup.clone())
+            .collect(),
     };
 
     local_audit::record(
@@ -1146,7 +1245,11 @@ fn commit_online_issuer_rotation(
             stage_rotation_artifact(path, paths, bytes, *private)?;
         }
         write_new_file(&journal_path, &serde_json::to_vec_pretty(&journal)?, true)?;
-        write_new_file(&retirement_path, &serde_json::to_vec_pretty(&retirement)?, true)?;
+        write_new_file(
+            &retirement_path,
+            &serde_json::to_vec_pretty(&retirement)?,
+            true,
+        )?;
         sync_parent(&journal_path)?;
         Ok::<(), anyhow::Error>(())
     })();
@@ -1171,8 +1274,9 @@ fn commit_online_issuer_rotation(
             atomic_replace_from_stage(&paths.stage, path)?;
             sync_parent(path)?;
         }
-        fs::remove_file(&journal_path)
-            .with_context(|| format!("remove issuer rotation journal {}", journal_path.display()))?;
+        fs::remove_file(&journal_path).with_context(|| {
+            format!("remove issuer rotation journal {}", journal_path.display())
+        })?;
         if let Err(error) = sync_parent(&journal_path) {
             warn!(%error, "online issuer rotation committed but journal-directory sync could not be confirmed");
         }
@@ -1203,41 +1307,320 @@ fn commit_online_issuer_rotation(
     Ok(())
 }
 
-fn issuer_rotation_journal_path(config_path: &Path) -> Result<PathBuf> {
+/// Guided ceremony that replaces the offline root CA, all online issuers, and
+/// the server TLS leaf. Authorized only by the current offline root recovery
+/// key; every enrolled client/Admin must re-enroll afterwards.
+fn replace_root_guided(
+    config_path: &Path,
+    config: &mut ServerConfig,
+    theme: &ColorfulTheme,
+) -> Result<()> {
+    println!();
+    println!("{}", style("Replace the offline root CA").cyan().bold());
+    println!(
+        "WARNING: every enrolled client and Admin chains to the current root and will be unable to connect after this ceremony. All devices must re-enroll."
+    );
+    println!(
+        "This ceremony requires the CURRENT offline root recovery PEM and writes the replacement recovery material to a new root-only file."
+    );
+    let recovery_path = PathBuf::from(
+        Input::<String>::with_theme(theme)
+            .with_prompt("Current offline root recovery PEM path")
+            .validate_with(|value: &String| validate_nonempty(value, "path"))
+            .interact_text()?,
+    );
+    if !recovery_path.is_absolute() {
+        bail!("offline root recovery path must be absolute");
+    }
+    let output_path = PathBuf::from(
+        Input::<String>::with_theme(theme)
+            .with_prompt("New offline root recovery PEM output path")
+            .validate_with(|value: &String| validate_nonempty(value, "path"))
+            .interact_text()?,
+    );
+    if !output_path.is_absolute() {
+        bail!("new offline root recovery path must be absolute");
+    }
+    if output_path == recovery_path {
+        bail!("the new recovery output must not overwrite the current recovery bundle");
+    }
+    if output_path.exists() {
+        bail!("the new recovery output path already exists; refusing to overwrite it");
+    }
+    let bundle = SecretString::from(read_root_private_text(
+        &recovery_path,
+        256 * 1024,
+        "current offline root recovery bundle",
+    )?);
+    let (recovery_root, recovery_key) = parse_root_recovery_bundle(bundle.expose_secret())?;
+    let configured_root =
+        read_root_public_text(&config.pki.root_cert, 256 * 1024, "root CA certificate")?;
+    if recovery_root.trim() != configured_root.trim() {
+        bail!("offline recovery certificate does not match this server's configured root CA");
+    }
+    let replacement = centrald_pki::replace_root(
+        &recovery_root,
+        recovery_key.expose_secret(),
+        &config.server.public_host,
+    )
+    .context("generate a replacement root hierarchy authorized by the current offline root")?;
+    if !Confirm::with_theme(theme)
+        .with_prompt("Replace the offline root, all issuers, and the server TLS leaf? Every enrolled device must re-enroll.")
+        .default(false)
+        .interact()?
+    {
+        println!("Root replacement cancelled.");
+        return Ok(());
+    }
+    commit_root_replacement(config_path, config, replacement, &output_path)?;
+    println!("{} Offline root CA replaced.", style("✓").green());
+    println!("Replacement recovery material: {}", output_path.display());
+    println!(
+        "Restart centrald-server. Rollback keys are retired only after all TLS listeners pass health probes. Re-enroll every client and Admin with the new trust anchor."
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn commit_root_replacement(
+    config_path: &Path,
+    config: &mut ServerConfig,
+    replacement: centrald_pki::RootReplacement,
+    output_path: &Path,
+) -> Result<()> {
+    let _lock = ConfigFileLock::acquire(config_path)?;
+    recover_interrupted_database_update_locked(config_path)?;
+    recover_interrupted_settings_update_locked(config_path)?;
+    recover_interrupted_online_issuer_rotation_locked(config_path)?;
+    recover_interrupted_root_replacement_locked(config_path)?;
+    recover_interrupted_tls_rotation_locked(config_path)?;
+    let retirement_path = tls_retirement_journal_path(config_path)?;
+    if retirement_path.exists() {
+        bail!(
+            "previous PKI/TLS rollback material is awaiting a healthy server restart; restart centrald-server before replacing the root"
+        );
+    }
+    let current = ServerConfig::load(config_path)?;
+    if current != *config {
+        bail!(
+            "server configuration changed in another process; reopen centrald-server config and retry"
+        );
+    }
+
+    let replacements: Vec<(PathBuf, bool, Vec<u8>)> = vec![
+        (
+            config.pki.root_cert.clone(),
+            false,
+            replacement.root_certificate_pem.clone().into_bytes(),
+        ),
+        (
+            config.pki.server_issuer_cert.clone(),
+            false,
+            replacement.server_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.server_issuer_key.clone(),
+            true,
+            replacement.server_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.client_issuer_cert.clone(),
+            false,
+            replacement.client_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.client_issuer_key.clone(),
+            true,
+            replacement.client_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.admin_issuer_cert.clone(),
+            false,
+            replacement.admin_certificate_pem.into_bytes(),
+        ),
+        (
+            config.pki.admin_issuer_key.clone(),
+            true,
+            replacement.admin_private_key_pem.into_bytes(),
+        ),
+        (
+            config.pki.server_chain.clone(),
+            false,
+            replacement
+                .server_identity
+                .certificate_chain_pem
+                .into_bytes(),
+        ),
+        (
+            config.pki.server_key.clone(),
+            true,
+            replacement.server_identity.private_key_pem.into_bytes(),
+        ),
+    ];
+    let nonce = Uuid::now_v7();
+    let targets: Vec<IssuerRotationTarget> = replacements
+        .iter()
+        .map(|(path, private, _)| IssuerRotationTarget {
+            path: path.clone(),
+            private: *private,
+        })
+        .collect();
+    let journal = RootReplacementJournal {
+        version: 1,
+        nonce,
+        config_path: config_path.to_path_buf(),
+        targets,
+    };
+    let journal_path = root_replacement_journal_path(config_path)?;
+    let artifact_paths: Vec<RotationArtifactPaths> = replacements
+        .iter()
+        .map(|(path, _, _)| rotation_artifact_paths(path, nonce))
+        .collect::<Result<_>>()?;
+    let retirement = TlsRetirementJournal {
+        version: 1,
+        config_path: config_path.to_path_buf(),
+        backups: artifact_paths
+            .iter()
+            .map(|paths| paths.backup.clone())
+            .collect(),
+    };
+    // The replacement recovery bundle is written before the rotation journal
+    // so an interrupted commit never loses the new offline root key.
+    let bundle = format!(
+        "{}{}",
+        replacement.root_certificate_pem, replacement.root_private_key_pem
+    );
+    write_new_file(output_path, bundle.as_bytes(), true).with_context(|| {
+        format!(
+            "write replacement recovery bundle {}",
+            output_path.display()
+        )
+    })?;
+
+    local_audit::record(
+        config_path,
+        "pki.root.replace",
+        "pending",
+        serde_json::json!({"target_count": 9}),
+    )?;
+    let staging = (|| {
+        for ((path, private, bytes), paths) in replacements.iter().zip(&artifact_paths) {
+            stage_rotation_artifact(path, paths, bytes, *private)?;
+        }
+        write_new_file(&journal_path, &serde_json::to_vec_pretty(&journal)?, true)?;
+        write_new_file(
+            &retirement_path,
+            &serde_json::to_vec_pretty(&retirement)?,
+            true,
+        )?;
+        sync_parent(&journal_path)?;
+        Ok::<(), anyhow::Error>(())
+    })();
+    if let Err(error) = staging {
+        let _ = local_audit::record(
+            config_path,
+            "pki.root.replace",
+            "failed",
+            serde_json::json!({"phase": "stage"}),
+        );
+        if journal_path.exists() {
+            let _ = recover_interrupted_root_replacement_locked(config_path);
+        } else {
+            cleanup_uncommitted_rotation_artifacts(&artifact_paths);
+            let _ = fs::remove_file(&retirement_path);
+        }
+        return Err(error.context("stage offline root replacement"));
+    }
+
+    let commit = (|| {
+        for ((path, _, _), paths) in replacements.iter().zip(&artifact_paths) {
+            atomic_replace_from_stage(&paths.stage, path)?;
+            sync_parent(path)?;
+        }
+        fs::remove_file(&journal_path).with_context(|| {
+            format!("remove root replacement journal {}", journal_path.display())
+        })?;
+        if let Err(error) = sync_parent(&journal_path) {
+            warn!(%error, "offline root replacement committed but journal-directory sync could not be confirmed");
+        }
+        Ok::<(), anyhow::Error>(())
+    })();
+    if let Err(error) = commit {
+        let _ = local_audit::record(
+            config_path,
+            "pki.root.replace",
+            "failed",
+            serde_json::json!({"phase": "commit"}),
+        );
+        return match recover_interrupted_root_replacement_locked(config_path) {
+            Ok(()) => Err(error.context("offline root replacement failed and was rolled back")),
+            Err(rollback) => Err(error.context(format!(
+                "offline root replacement failed and rollback also failed: {rollback:#}"
+            ))),
+        };
+    }
+    if let Err(error) = local_audit::record(
+        config_path,
+        "pki.root.replace",
+        "succeeded",
+        serde_json::json!({"target_count": 9}),
+    ) {
+        warn!(%error, "offline root replacement committed; final local audit append is pending reconciliation");
+    }
+    Ok(())
+}
+
+fn root_replacement_journal_path(config_path: &Path) -> Result<PathBuf> {
     let parent = config_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .context("server configuration path has no parent")?;
-    Ok(parent.join(ISSUER_ROTATION_JOURNAL_NAME))
+    Ok(parent.join(ROOT_REPLACEMENT_JOURNAL_NAME))
 }
 
-pub fn recover_interrupted_online_issuer_rotation(config_path: &Path) -> Result<()> {
-    let journal_path = issuer_rotation_journal_path(config_path)?;
+/// Restores all pre-replacement files if the process stopped after publishing
+/// a root-replacement journal but before completing the multi-file commit.
+///
+/// # Errors
+///
+/// Returns an error when the journal is malformed, rollback backups are
+/// missing, or a file cannot be restored durably.
+pub fn recover_interrupted_root_replacement(config_path: &Path) -> Result<()> {
+    let journal_path = root_replacement_journal_path(config_path)?;
     if !journal_path.exists() {
         return Ok(());
     }
     let _lock = ConfigFileLock::acquire(config_path)?;
-    recover_interrupted_online_issuer_rotation_locked(config_path)
+    recover_interrupted_root_replacement_locked(config_path)
 }
 
-pub(crate) fn recover_interrupted_online_issuer_rotation_locked(
-    config_path: &Path,
-) -> Result<()> {
-    let journal_path = issuer_rotation_journal_path(config_path)?;
+pub(crate) fn recover_interrupted_root_replacement_locked(config_path: &Path) -> Result<()> {
+    let journal_path = root_replacement_journal_path(config_path)?;
     if !journal_path.exists() {
         return Ok(());
     }
-    validate_regular_file(&journal_path)?;
-    let journal: IssuerRotationJournal = serde_json::from_slice(&fs::read(&journal_path)?)
-        .context("parse online issuer rotation recovery journal")?;
-    if journal.version != 1 || journal.config_path != config_path || journal.targets.len() != 8 {
-        bail!("online issuer rotation journal does not belong to this server configuration");
+    let journal: RootReplacementJournal = serde_json::from_slice(
+        &read_root_private_text(
+            &journal_path,
+            256 * 1024,
+            "offline root replacement recovery journal",
+        )?
+        .into_bytes(),
+    )
+    .context("parse offline root replacement recovery journal")?;
+    if journal.version != 1 || journal.config_path != config_path || journal.targets.len() != 9 {
+        bail!("offline root replacement journal does not belong to this server configuration");
     }
     for target in &journal.targets {
         let paths = rotation_artifact_paths(&target.path, journal.nonce)?;
         validate_regular_file(&paths.backup)?;
-        let original = fs::read(&paths.backup)
-            .with_context(|| format!("read issuer rotation backup {}", paths.backup.display()))?;
+        let original = if target.private {
+            read_root_private_text(&paths.backup, 256 * 1024, "root replacement private backup")?
+                .into_bytes()
+        } else {
+            read_root_public_text(&paths.backup, 256 * 1024, "root replacement backup")?
+                .into_bytes()
+        };
         if paths.stage.exists() {
             validate_regular_file(&paths.stage)?;
             fs::remove_file(&paths.stage)?;
@@ -1256,6 +1639,73 @@ pub(crate) fn recover_interrupted_online_issuer_rotation_locked(
     Ok(())
 }
 
+fn issuer_rotation_journal_path(config_path: &Path) -> Result<PathBuf> {
+    let parent = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("server configuration path has no parent")?;
+    Ok(parent.join(ISSUER_ROTATION_JOURNAL_NAME))
+}
+/// Rolls back an interrupted online-issuer rotation journal before startup.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe, unreadable, or the rotation
+/// artifacts cannot be restored.
+pub fn recover_interrupted_online_issuer_rotation(config_path: &Path) -> Result<()> {
+    let journal_path = issuer_rotation_journal_path(config_path)?;
+    if !journal_path.exists() {
+        return Ok(());
+    }
+    let _lock = ConfigFileLock::acquire(config_path)?;
+    recover_interrupted_online_issuer_rotation_locked(config_path)
+}
+
+pub(crate) fn recover_interrupted_online_issuer_rotation_locked(config_path: &Path) -> Result<()> {
+    let journal_path = issuer_rotation_journal_path(config_path)?;
+    if !journal_path.exists() {
+        return Ok(());
+    }
+    let journal: IssuerRotationJournal = serde_json::from_slice(
+        &read_root_private_text(
+            &journal_path,
+            256 * 1024,
+            "online issuer rotation recovery journal",
+        )?
+        .into_bytes(),
+    )
+    .context("parse online issuer rotation recovery journal")?;
+    if journal.version != 1 || journal.config_path != config_path || journal.targets.len() != 8 {
+        bail!("online issuer rotation journal does not belong to this server configuration");
+    }
+    for target in &journal.targets {
+        let paths = rotation_artifact_paths(&target.path, journal.nonce)?;
+        validate_regular_file(&paths.backup)?;
+        let original = if target.private {
+            read_root_private_text(&paths.backup, 256 * 1024, "issuer rotation private backup")?
+                .into_bytes()
+        } else {
+            read_root_public_text(&paths.backup, 256 * 1024, "issuer rotation backup")?.into_bytes()
+        };
+        if paths.stage.exists() {
+            validate_regular_file(&paths.stage)?;
+            fs::remove_file(&paths.stage)?;
+        }
+        write_new_file(&paths.stage, &original, target.private)?;
+        atomic_replace_from_stage(&paths.stage, &target.path)?;
+        sync_parent(&target.path)?;
+    }
+    fs::remove_file(&journal_path)?;
+    let retirement_path = tls_retirement_journal_path(config_path)?;
+    if retirement_path.exists() {
+        validate_regular_file(&retirement_path)?;
+        fs::remove_file(&retirement_path)?;
+    }
+    sync_parent(&journal_path)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn rotate_server_identity_and_save(
     config_path: &Path,
     config: &mut ServerConfig,
@@ -1269,11 +1719,15 @@ fn rotate_server_identity_and_save(
     recover_interrupted_tls_rotation_locked(config_path)?;
     let retirement_path = tls_retirement_journal_path(config_path)?;
     if retirement_path.exists() {
-        bail!("a previous TLS rotation is awaiting a successful server restart; restart centrald-server before rotating again");
+        bail!(
+            "a previous TLS rotation is awaiting a successful server restart; restart centrald-server before rotating again"
+        );
     }
     let current = ServerConfig::load(config_path)?;
     if current != *config {
-        bail!("server configuration changed in another process; reopen centrald-server config and retry");
+        bail!(
+            "server configuration changed in another process; reopen centrald-server config and retry"
+        );
     }
 
     let issuer_certificate = read_root_public_text(
@@ -1368,11 +1822,7 @@ fn rotate_server_identity_and_save(
         if journal_path.exists() {
             let _ = recover_interrupted_tls_rotation_locked(config_path);
         } else {
-            cleanup_uncommitted_rotation_artifacts(&[
-                config_paths,
-                chain_paths,
-                key_paths,
-            ]);
+            cleanup_uncommitted_rotation_artifacts(&[config_paths, chain_paths, key_paths]);
             let _ = fs::remove_file(&retirement_path);
         }
         return Err(error.context("stage server TLS rotation"));
@@ -1389,8 +1839,12 @@ fn rotate_server_identity_and_save(
         ] {
             sync_parent(path)?;
         }
-        fs::remove_file(&journal_path)
-            .with_context(|| format!("remove completed TLS rotation journal {}", journal_path.display()))?;
+        fs::remove_file(&journal_path).with_context(|| {
+            format!(
+                "remove completed TLS rotation journal {}",
+                journal_path.display()
+            )
+        })?;
         if let Err(error) = sync_parent(&journal_path) {
             warn!(%error, "server TLS rotation committed but journal-directory sync could not be confirmed");
         }
@@ -1429,7 +1883,9 @@ fn rotate_server_identity_and_save(
         "{} Server TLS identity and configuration committed together.",
         style("✓").green()
     );
-    println!("Rollback material will be removed automatically after the restarted server remains healthy.");
+    println!(
+        "Rollback material will be removed automatically after the restarted server remains healthy."
+    );
     println!("Restart centrald-server to apply runtime changes.");
     Ok(())
 }
@@ -1475,7 +1931,9 @@ fn cleanup_uncommitted_rotation_artifacts(paths: &[RotationArtifactPaths]) {
             match fs::remove_file(artifact) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => warn!(path = %artifact.display(), %error, "could not remove uncommitted rotation artifact"),
+                Err(error) => {
+                    warn!(path = %artifact.display(), %error, "could not remove uncommitted rotation artifact");
+                }
             }
         }
     }
@@ -1486,7 +1944,10 @@ fn validate_regular_file(path: &Path) -> Result<()> {
         .symlink_metadata()
         .with_context(|| format!("inspect {}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("refusing non-regular or symbolic-link rotation target {}", path.display());
+        bail!(
+            "refusing non-regular or symbolic-link rotation target {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -1495,6 +1956,15 @@ fn validate_regular_file(path: &Path) -> Result<()> {
 fn atomic_replace_from_stage(stage: &Path, destination: &Path) -> Result<()> {
     validate_regular_file(stage)?;
     validate_regular_file(destination)?;
+    // Revalidate the destination's ancestors at the point of use so a
+    // directory swapped for a symlink since staging cannot redirect the
+    // rename outside the intended PKI tree.
+    centrald_common::secure_fs::validate_no_symlink_ancestors(destination).map_err(|error| {
+        anyhow::anyhow!(
+            "validate rotation destination ancestors {}: {error}",
+            destination.display()
+        )
+    })?;
     fs::rename(stage, destination).with_context(|| {
         format!(
             "atomically replace {} from {}",
@@ -1529,6 +1999,11 @@ fn tls_rotation_journal_path(config_path: &Path) -> Result<PathBuf> {
 
 /// Restores all pre-rotation files if the process stopped after publishing a
 /// TLS-rotation journal but before completing the multi-file commit.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe, unreadable, or the
+/// pre-rotation files cannot be restored.
 pub fn recover_interrupted_tls_rotation(config_path: &Path) -> Result<()> {
     let journal_path = tls_rotation_journal_path(config_path)?;
     if !journal_path.exists() {
@@ -1545,8 +2020,8 @@ pub(crate) fn recover_interrupted_tls_rotation_locked(config_path: &Path) -> Res
     }
     validate_regular_file(&journal_path)?;
     let journal: TlsRotationJournal = serde_json::from_slice(
-        &fs::read(&journal_path)
-            .with_context(|| format!("read TLS rotation journal {}", journal_path.display()))?,
+        &read_root_private_text(&journal_path, 256 * 1024, "TLS rotation recovery journal")?
+            .into_bytes(),
     )
     .context("parse TLS rotation recovery journal")?;
     if journal.version != 1 || journal.config_path != config_path {
@@ -1562,8 +2037,12 @@ pub(crate) fn recover_interrupted_tls_rotation_locked(config_path: &Path) -> Res
         (config_path, &config_paths, true),
     ] {
         validate_regular_file(&paths.backup)?;
-        let original = fs::read(&paths.backup)
-            .with_context(|| format!("read TLS rotation backup {}", paths.backup.display()))?;
+        let original = if private {
+            read_root_private_text(&paths.backup, 256 * 1024, "TLS rotation private backup")?
+                .into_bytes()
+        } else {
+            read_root_public_text(&paths.backup, 256 * 1024, "TLS rotation backup")?.into_bytes()
+        };
         if paths.stage.exists() {
             validate_regular_file(&paths.stage)?;
             fs::remove_file(&paths.stage)
@@ -1573,13 +2052,20 @@ pub(crate) fn recover_interrupted_tls_rotation_locked(config_path: &Path) -> Res
         atomic_replace_from_stage(&paths.stage, final_path)?;
         sync_parent(final_path)?;
     }
-    fs::remove_file(&journal_path)
-        .with_context(|| format!("remove recovered TLS rotation journal {}", journal_path.display()))?;
+    fs::remove_file(&journal_path).with_context(|| {
+        format!(
+            "remove recovered TLS rotation journal {}",
+            journal_path.display()
+        )
+    })?;
     let retirement_path = tls_retirement_journal_path(config_path)?;
     if retirement_path.exists() {
         validate_regular_file(&retirement_path)?;
         fs::remove_file(&retirement_path).with_context(|| {
-            format!("remove rolled-back TLS retirement journal {}", retirement_path.display())
+            format!(
+                "remove rolled-back TLS retirement journal {}",
+                retirement_path.display()
+            )
         })?;
     }
     sync_parent(&journal_path)?;
@@ -1596,6 +2082,10 @@ fn tls_retirement_journal_path(config_path: &Path) -> Result<PathBuf> {
 
 /// Returns whether a completed PKI/TLS rotation is waiting for post-restart
 /// listener health verification before rollback material can be retired.
+///
+/// # Errors
+///
+/// Returns an error when the retirement journal path is unsafe.
 pub fn tls_retirement_pending(config_path: &Path) -> Result<bool> {
     let path = tls_retirement_journal_path(config_path)?;
     if !path.exists() {
@@ -1608,6 +2098,11 @@ pub fn tls_retirement_pending(config_path: &Path) -> Result<bool> {
 /// Removes private rollback material only after the restarted daemon has
 /// completed explicit TLS handshakes on enrollment, client-mTLS, and Admin-mTLS
 /// listeners.
+///
+/// # Errors
+///
+/// Returns an error when the retirement journal is unsafe, unreadable, or
+/// rollback material cannot be removed.
 pub fn retire_completed_tls_rotation(config_path: &Path) -> Result<bool> {
     let retirement_path = tls_retirement_journal_path(config_path)?;
     if !retirement_path.exists() {
@@ -1615,7 +2110,10 @@ pub fn retire_completed_tls_rotation(config_path: &Path) -> Result<bool> {
     }
     let _lock = ConfigFileLock::acquire(config_path)?;
     validate_regular_file(&retirement_path)?;
-    let journal: TlsRetirementJournal = serde_json::from_slice(&fs::read(&retirement_path)?)?;
+    let journal: TlsRetirementJournal = serde_json::from_slice(
+        &read_root_private_text(&retirement_path, 256 * 1024, "TLS retirement journal")?
+            .into_bytes(),
+    )?;
     if journal.version != 1 || journal.config_path != config_path {
         bail!("TLS retirement journal does not belong to this server configuration");
     }
@@ -1624,12 +2122,17 @@ pub fn retire_completed_tls_rotation(config_path: &Path) -> Result<bool> {
             continue;
         }
         validate_regular_file(backup)?;
-        fs::remove_file(backup)
-            .with_context(|| format!("remove retired TLS rollback material {}", backup.display()))?;
+        fs::remove_file(backup).with_context(|| {
+            format!("remove retired TLS rollback material {}", backup.display())
+        })?;
         sync_parent(backup)?;
     }
-    fs::remove_file(&retirement_path)
-        .with_context(|| format!("remove TLS retirement journal {}", retirement_path.display()))?;
+    fs::remove_file(&retirement_path).with_context(|| {
+        format!(
+            "remove TLS retirement journal {}",
+            retirement_path.display()
+        )
+    })?;
     sync_parent(&retirement_path)?;
     Ok(true)
 }
@@ -1637,6 +2140,11 @@ pub fn retire_completed_tls_rotation(config_path: &Path) -> Result<bool> {
 /// Renews the server TLS leaf when it is expired or within the renewal
 /// window. Startup and the long-lived daemon both call this function. The
 /// persisted online server issuer is used; the offline root key remains offline.
+///
+/// # Errors
+///
+/// Returns an error when the configuration or trust material cannot be read
+/// or the renewal rotation fails.
 pub fn renew_server_identity_if_needed(config_path: &Path) -> Result<bool> {
     let mut config = ServerConfig::load(config_path)?;
     let chain = read_root_public_text(
@@ -1645,7 +2153,8 @@ pub fn renew_server_identity_if_needed(config_path: &Path) -> Result<bool> {
         "server TLS certificate chain",
     )?;
     let expires_at = certificate_not_after(&chain)?;
-    if expires_at > time::OffsetDateTime::now_utc() + time::Duration::days(SERVER_RENEW_BEFORE_DAYS) {
+    if expires_at > time::OffsetDateTime::now_utc() + time::Duration::days(SERVER_RENEW_BEFORE_DAYS)
+    {
         return Ok(false);
     }
     let replacement = config.clone();
@@ -1655,6 +2164,10 @@ pub fn renew_server_identity_if_needed(config_path: &Path) -> Result<bool> {
 
 /// Rejects expired trust material and warns when issuer/root rotation planning
 /// is due. Leaf renewal is handled separately at startup and while running.
+///
+/// # Errors
+///
+/// Returns an error when trust material cannot be read or is already expired.
 pub fn check_pki_expiry(config: &ServerConfig) -> Result<()> {
     let now = time::OffsetDateTime::now_utc();
     for (label, path, warn_days) in [
@@ -1666,7 +2179,9 @@ pub fn check_pki_expiry(config: &ServerConfig) -> Result<()> {
         let pem = read_root_public_text(path, 256 * 1024, &format!("{label} certificate"))?;
         let expires_at = certificate_not_after(&pem)?;
         if expires_at <= now {
-            bail!("{label} certificate expired at {expires_at}; rotate PKI before starting CentralD");
+            bail!(
+                "{label} certificate expired at {expires_at}; rotate PKI before starting CentralD"
+            );
         }
         if expires_at <= now + time::Duration::days(warn_days) {
             warn!(%expires_at, %label, "CentralD PKI certificate is approaching expiration; schedule server-local rotation");
@@ -1701,10 +2216,13 @@ fn save_config(
     recover_interrupted_database_update_locked(config_path)?;
     recover_interrupted_settings_update_locked(config_path)?;
     recover_interrupted_online_issuer_rotation_locked(config_path)?;
+    recover_interrupted_root_replacement_locked(config_path)?;
     recover_interrupted_tls_rotation_locked(config_path)?;
     let current = ServerConfig::load(config_path)?;
     if current != *config {
-        bail!("server configuration changed in another process; reopen centrald-server config and retry");
+        bail!(
+            "server configuration changed in another process; reopen centrald-server config and retry"
+        );
     }
     let original_raw = fs::read(config_path)?;
     let serialized = toml::to_string_pretty(&replacement)?;
@@ -1760,39 +2278,142 @@ fn save_config(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn changed_config_fields(before: &ServerConfig, after: &ServerConfig) -> Vec<&'static str> {
     let mut fields = Vec::new();
     macro_rules! changed {
         ($name:literal, $left:expr, $right:expr) => {
-            if &$left != &$right { fields.push($name); }
+            if &$left != &$right {
+                fields.push($name);
+            }
         };
     }
-    changed!("server.public_host", before.server.public_host, after.server.public_host);
-    changed!("server.enrollment_listen", before.server.enrollment_listen, after.server.enrollment_listen);
-    changed!("server.client_listen", before.server.client_listen, after.server.client_listen);
-    changed!("server.admin_listen", before.server.admin_listen, after.server.admin_listen);
-    changed!("server.data_dir", before.server.data_dir, after.server.data_dir);
-    changed!("database.environment_file", before.database.environment_file, after.database.environment_file);
-    changed!("database.max_connections", before.database.max_connections, after.database.max_connections);
+    changed!(
+        "server.public_host",
+        before.server.public_host,
+        after.server.public_host
+    );
+    changed!(
+        "server.enrollment_listen",
+        before.server.enrollment_listen,
+        after.server.enrollment_listen
+    );
+    changed!(
+        "server.client_listen",
+        before.server.client_listen,
+        after.server.client_listen
+    );
+    changed!(
+        "server.admin_listen",
+        before.server.admin_listen,
+        after.server.admin_listen
+    );
+    changed!(
+        "server.data_dir",
+        before.server.data_dir,
+        after.server.data_dir
+    );
+    changed!(
+        "database.environment_file",
+        before.database.environment_file,
+        after.database.environment_file
+    );
+    changed!(
+        "database.max_connections",
+        before.database.max_connections,
+        after.database.max_connections
+    );
     changed!("pki.root_cert", before.pki.root_cert, after.pki.root_cert);
-    changed!("pki.server_chain", before.pki.server_chain, after.pki.server_chain);
-    changed!("pki.server_key", before.pki.server_key, after.pki.server_key);
-    changed!("pki.server_issuer_cert", before.pki.server_issuer_cert, after.pki.server_issuer_cert);
-    changed!("pki.server_issuer_key", before.pki.server_issuer_key, after.pki.server_issuer_key);
-    changed!("pki.client_issuer_cert", before.pki.client_issuer_cert, after.pki.client_issuer_cert);
-    changed!("pki.client_issuer_key", before.pki.client_issuer_key, after.pki.client_issuer_key);
-    changed!("pki.admin_issuer_cert", before.pki.admin_issuer_cert, after.pki.admin_issuer_cert);
-    changed!("pki.admin_issuer_key", before.pki.admin_issuer_key, after.pki.admin_issuer_key);
-    changed!("runtime.heartbeat_interval_seconds", before.runtime.heartbeat_interval_seconds, after.runtime.heartbeat_interval_seconds);
-    changed!("runtime.offline_after_seconds", before.runtime.offline_after_seconds, after.runtime.offline_after_seconds);
-    changed!("runtime.job_ttl_seconds", before.runtime.job_ttl_seconds, after.runtime.job_ttl_seconds);
-    changed!("runtime.shell_idle_timeout_seconds", before.runtime.shell_idle_timeout_seconds, after.runtime.shell_idle_timeout_seconds);
-    changed!("runtime.max_shell_frame_bytes", before.runtime.max_shell_frame_bytes, after.runtime.max_shell_frame_bytes);
-    changed!("updates.enabled", before.updates.enabled, after.updates.enabled);
-    changed!("updates.channel", before.updates.channel, after.updates.channel);
-    changed!("updates.manifest_url", before.updates.manifest_url, after.updates.manifest_url);
-    changed!("updates.check_interval_seconds", before.updates.check_interval_seconds, after.updates.check_interval_seconds);
-    changed!("updates.allow_prerelease", before.updates.allow_prerelease, after.updates.allow_prerelease);
+    changed!(
+        "pki.server_chain",
+        before.pki.server_chain,
+        after.pki.server_chain
+    );
+    changed!(
+        "pki.server_key",
+        before.pki.server_key,
+        after.pki.server_key
+    );
+    changed!(
+        "pki.server_issuer_cert",
+        before.pki.server_issuer_cert,
+        after.pki.server_issuer_cert
+    );
+    changed!(
+        "pki.server_issuer_key",
+        before.pki.server_issuer_key,
+        after.pki.server_issuer_key
+    );
+    changed!(
+        "pki.client_issuer_cert",
+        before.pki.client_issuer_cert,
+        after.pki.client_issuer_cert
+    );
+    changed!(
+        "pki.client_issuer_key",
+        before.pki.client_issuer_key,
+        after.pki.client_issuer_key
+    );
+    changed!(
+        "pki.admin_issuer_cert",
+        before.pki.admin_issuer_cert,
+        after.pki.admin_issuer_cert
+    );
+    changed!(
+        "pki.admin_issuer_key",
+        before.pki.admin_issuer_key,
+        after.pki.admin_issuer_key
+    );
+    changed!(
+        "runtime.heartbeat_interval_seconds",
+        before.runtime.heartbeat_interval_seconds,
+        after.runtime.heartbeat_interval_seconds
+    );
+    changed!(
+        "runtime.offline_after_seconds",
+        before.runtime.offline_after_seconds,
+        after.runtime.offline_after_seconds
+    );
+    changed!(
+        "runtime.job_ttl_seconds",
+        before.runtime.job_ttl_seconds,
+        after.runtime.job_ttl_seconds
+    );
+    changed!(
+        "runtime.shell_idle_timeout_seconds",
+        before.runtime.shell_idle_timeout_seconds,
+        after.runtime.shell_idle_timeout_seconds
+    );
+    changed!(
+        "runtime.max_shell_frame_bytes",
+        before.runtime.max_shell_frame_bytes,
+        after.runtime.max_shell_frame_bytes
+    );
+    changed!(
+        "updates.enabled",
+        before.updates.enabled,
+        after.updates.enabled
+    );
+    changed!(
+        "updates.channel",
+        before.updates.channel,
+        after.updates.channel
+    );
+    changed!(
+        "updates.manifest_url",
+        before.updates.manifest_url,
+        after.updates.manifest_url
+    );
+    changed!(
+        "updates.check_interval_seconds",
+        before.updates.check_interval_seconds,
+        after.updates.check_interval_seconds
+    );
+    changed!(
+        "updates.allow_prerelease",
+        before.updates.allow_prerelease,
+        after.updates.allow_prerelease
+    );
     fields
 }
 
@@ -1810,11 +2431,8 @@ fn export_trust(config: &ServerConfig, theme: &ColorfulTheme) -> Result<()> {
     } else {
         current_directory.join(destination)
     };
-    let certificate = read_root_public_text(
-        &config.pki.root_cert,
-        256 * 1024,
-        "root CA certificate",
-    )?;
+    let certificate =
+        read_root_public_text(&config.pki.root_cert, 256 * 1024, "root CA certificate")?;
     write_new_file(&destination, certificate.as_bytes(), false)?;
     println!(
         "{} Trust certificate exported to {}",
@@ -1824,17 +2442,81 @@ fn export_trust(config: &ServerConfig, theme: &ColorfulTheme) -> Result<()> {
     Ok(())
 }
 
+/// Guides a verified, append-only export of the audit hash chain into a
+/// root-owned directory as `centrald-audit-<from>-<to>.jsonl` files.
+async fn export_audit_guided(config_path: &Path) -> Result<()> {
+    println!();
+    println!("{}", style("Export the verified audit chain").cyan().bold());
+    println!(
+        "Each batch is verified against the PostgreSQL hash chain and the previous export file before it is written. Files are never rewritten."
+    );
+    let config = ServerConfig::load(config_path)?;
+    let current_directory = std::env::current_dir().context("resolve current directory")?;
+    let default_directory = current_directory.join("centrald-audit-export");
+    let directory = Input::<String>::with_theme(&ColorfulTheme::default())
+        .with_prompt("Audit export directory")
+        .default(default_directory.display().to_string())
+        .validate_with(|value: &String| validate_nonempty(value, "directory"))
+        .interact_text()?;
+    let directory = PathBuf::from(directory);
+    let directory = if directory.is_absolute() {
+        directory
+    } else {
+        current_directory.join(directory)
+    };
+    let limit = Input::<usize>::with_theme(&ColorfulTheme::default())
+        .with_prompt("Maximum entries in this batch")
+        .default(5_000)
+        .validate_with(|value: &usize| {
+            if *value < 1 || *value > 50_000 {
+                bail!("batch size must be between 1 and 50000")
+            }
+            Ok(())
+        })
+        .interact_text()?;
+    let pool = open_pool(&config).await.context("connect to PostgreSQL")?;
+    let summary = crate::audit_export::export_audit_chain(&pool, &directory, limit).await?;
+    if summary.exported_count == 0 {
+        println!(
+            "Audit chain is fully exported through sequence {}.",
+            summary.exported_to
+        );
+    } else {
+        println!(
+            "{} Exported {} audit records (sequences {} through {}) to {}",
+            style("✓").green(),
+            summary.exported_count,
+            summary.exported_from + 1,
+            summary.exported_to,
+            directory.display()
+        );
+        println!(
+            "Next batch continues from sequence {}.",
+            summary.exported_to
+        );
+    }
+    println!("Chain tail entry hash: {}", summary.tail_hash);
+    Ok(())
+}
+
 async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
     println!();
     println!("{}", style("Health, status, and next steps").cyan().bold());
-    println!("{} Configuration valid: {}", style("✓").green(), config_path.display());
+    println!(
+        "{} Configuration valid: {}",
+        style("✓").green(),
+        config_path.display()
+    );
 
     let pool = open_pool(config).await;
     match pool {
         Ok(pool) => {
             let summary = diagnostic_summary(&pool).await?;
             pool.close().await;
-            println!("{} PostgreSQL connected and migrations current", style("✓").green());
+            println!(
+                "{} PostgreSQL connected and migrations current",
+                style("✓").green()
+            );
             println!("  Active clients: {}", summary.active_clients);
             println!("  Active Admins: {}", summary.active_admins);
             println!("  Pending invitations: {}", summary.pending_enrollments);
@@ -1844,8 +2526,14 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
 
     let client = LocalControlClient::new(config.server.local_socket.clone());
     match client.diagnostics().await {
-        Ok(_) => println!("{} centrald-server daemon accepted an authenticated local health request", style("✓").green()),
-        Err(error) => println!("{} centrald-server daemon is not reachable: {error}", style("!").yellow()),
+        Ok(_) => println!(
+            "{} centrald-server daemon accepted an authenticated local health request",
+            style("✓").green()
+        ),
+        Err(error) => println!(
+            "{} centrald-server daemon is not reachable: {error}",
+            style("!").yellow()
+        ),
     }
 
     if Path::new("/run/systemd/system").is_dir() && Path::new("/usr/bin/systemctl").is_file() {
@@ -1857,7 +2545,15 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
             .args(["is-enabled", "--quiet", "centrald-server.service"])
             .status()
             .is_ok_and(|status| status.success());
-        println!("systemd: {} / {}", if active { "active" } else { "not active" }, if enabled { "enabled at boot" } else { "not enabled" });
+        println!(
+            "systemd: {} / {}",
+            if active { "active" } else { "not active" },
+            if enabled {
+                "enabled at boot"
+            } else {
+                "not enabled"
+            }
+        );
         if !active || !enabled {
             println!("Next step: sudo systemctl enable --now centrald-server.service");
         }
@@ -1865,9 +2561,16 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
 
     let raw = std::fs::read(config_path)?;
     let persisted_revision = hex::encode(Sha256::digest(&raw));
-    println!("Persisted configuration revision: {}", &persisted_revision[..12]);
+    println!(
+        "Persisted configuration revision: {}",
+        &persisted_revision[..12]
+    );
     println!("TLS name: {}", config.server.public_host);
-    println!("{} Root trust certificate: {}", style("✓").green(), config.pki.root_cert.display());
+    println!(
+        "{} Root trust certificate: {}",
+        style("✓").green(),
+        config.pki.root_cert.display()
+    );
     Ok(())
 }
 
@@ -1875,7 +2578,7 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when PostgreSQL health queries fail.
+/// Returns an error when `PostgreSQL` health queries fail.
 pub async fn diagnostic_summary(pool: &PgPool) -> Result<DiagnosticsSummary> {
     let clients: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM identities WHERE role = 'client' AND revoked_at IS NULL",
@@ -1908,7 +2611,7 @@ async fn open_pool(config: &ServerConfig) -> Result<PgPool> {
         config.server.instance_id,
     )
     .await
-        .context("connect to CentralD PostgreSQL database")
+    .context("connect to CentralD PostgreSQL database")
 }
 
 async fn append_local_audit(
@@ -1921,13 +2624,14 @@ async fn append_local_audit(
         .bind(AUDIT_LOCK_ID)
         .execute(&mut **transaction)
         .await?;
-    let previous_hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1",
-    )
-    .fetch_optional(&mut **transaction)
-    .await?;
+    let previous_hash: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1")
+            .fetch_optional(&mut **transaction)
+            .await?;
     let id = Uuid::now_v7();
-    let created_at = Utc::now();
+    // Normalize to microsecond precision exactly like the RPC audit path so
+    // exported canonical-record verification reproduces the stored hash.
+    let created_at = crate::services::normalized_audit_timestamp(Utc::now());
     let canonical = serde_json::to_vec(&serde_json::json!({
         "id": id,
         "actorId": null,
@@ -1966,6 +2670,12 @@ fn require_interactive_root() -> Result<()> {
 }
 
 #[cfg(unix)]
+/// Verifies the process is running as root.
+///
+/// # Errors
+///
+/// Returns an error when the effective user ID cannot be determined or is
+/// not root.
 pub fn require_root() -> Result<()> {
     let status = std::fs::read_to_string("/proc/self/status")
         .context("read effective user ID from /proc/self/status")?;
@@ -1982,6 +2692,12 @@ pub fn require_root() -> Result<()> {
 }
 
 #[cfg(not(unix))]
+/// Verifies the process is running as root.
+///
+/// # Errors
+///
+/// Returns an error on this platform because local administration is
+/// supported only on Ubuntu Server hosts.
 pub fn require_root() -> Result<()> {
     bail!("centrald-server local administration is supported on Ubuntu Server hosts")
 }
@@ -2019,14 +2735,16 @@ fn validate_prompt_reason(value: &str) -> Result<(), &'static str> {
 }
 
 fn validate_prompt_host(value: &str) -> Result<(), &'static str> {
-    canonical_host(value)
-        .map(|_| ())
-        .map_err(|_| "enter a canonical ASCII DNS name or IP without scheme, port, path, or whitespace")
+    canonical_host(value).map(|_| ()).map_err(
+        |_| "enter a canonical ASCII DNS name or IP without scheme, port, path, or whitespace",
+    )
 }
 
 fn validate_nonempty(value: &str, label: &str) -> Result<(), String> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
-        Err(format!("{label} must not be empty or contain control characters"))
+        Err(format!(
+            "{label} must not be empty or contain control characters"
+        ))
     } else {
         Ok(())
     }
@@ -2048,9 +2766,12 @@ fn validate_manifest_url(value: &str) -> Result<(), &'static str> {
     }
 }
 
+#[allow(dead_code)]
 fn validate_env_name(value: &str) -> Result<(), &'static str> {
     let mut characters = value.chars();
-    let first = characters.next().ok_or("enter an environment variable name")?;
+    let first = characters
+        .next()
+        .ok_or("enter an environment variable name")?;
     if !(first.is_ascii_alphabetic() || first == '_')
         || !characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
@@ -2081,21 +2802,6 @@ fn socket_prompt(theme: &ColorfulTheme, prompt: &str, default: SocketAddr) -> Re
         })
         .interact_text()?;
     value.parse().context("parse listener socket")
-}
-
-fn path_prompt(theme: &ColorfulTheme, prompt: &str, default: &Path) -> Result<PathBuf> {
-    let value = Input::<String>::with_theme(theme)
-        .with_prompt(prompt)
-        .default(default.to_string_lossy().into_owned())
-        .validate_with(|value: &String| {
-            if value.trim().is_empty() {
-                Err("path must not be empty")
-            } else {
-                Ok(())
-            }
-        })
-        .interact_text()?;
-    Ok(PathBuf::from(value))
 }
 
 fn u32_prompt(
@@ -2132,7 +2838,9 @@ mod tests {
         assert!(validate_prompt_name("valid host").is_ok());
         assert!(validate_prompt_reason("\n").is_err());
         assert!(validate_database_url("https://example.test").is_err());
-        assert!(validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok());
+        assert!(
+            validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok()
+        );
         assert!(validate_env_name("CENTRALD_DATABASE_URL").is_ok());
     }
 

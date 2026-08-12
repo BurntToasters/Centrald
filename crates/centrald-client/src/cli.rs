@@ -12,7 +12,7 @@ pub struct ClientCli {
 #[derive(Debug, Subcommand)]
 pub enum ClientCommand {
     Enroll(EnrollmentArgs),
-    /// Restart the installed CentralD client service.
+    /// Restart the installed `CentralD` client service.
     Restart,
     Reenroll(EnrollmentArgs),
     Rescue(RescueArgs),
@@ -23,6 +23,9 @@ pub enum ClientCommand {
     #[cfg(windows)]
     #[command(hide = true)]
     WindowsService,
+    #[cfg(windows)]
+    #[command(hide = true)]
+    WindowsServiceBroker,
 }
 
 #[derive(Debug, Args)]
@@ -40,7 +43,7 @@ pub struct EnrollmentArgs {
 
 #[derive(Debug, Args)]
 pub struct RescueArgs {
-    /// Reapply permissions to the fixed CentralD client state layout.
+    /// Reapply permissions to the fixed `CentralD` client state layout.
     #[arg(long)]
     pub repair: bool,
     /// Restart the installed client service after diagnostics/repair.

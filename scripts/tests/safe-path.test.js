@@ -64,14 +64,15 @@ test("cleans only a marked allowlisted directory", () => {
   }
 });
 
-
 test("rejects a symlinked generated-output ancestor", (t) => {
   if (process.platform === "win32") {
     t.skip("junction behavior is covered by the native Windows CI smoke test");
     return;
   }
   const testRoot = fixture();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "centrald-safe-outside-"));
+  const outside = fs.mkdtempSync(
+    path.join(os.tmpdir(), "centrald-safe-outside-"),
+  );
   try {
     fs.symlinkSync(outside, path.join(testRoot.root, "dist"), "dir");
     assert.throws(() => ensureGeneratedDirectory(testRoot.root, "dist/nested"));

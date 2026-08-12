@@ -1,17 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use centrald_common::host::canonical_host;
 use console::{Term, style};
 use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
-use secrecy::{ExposeSecret, SecretString};
 use rand::RngCore;
-use centrald_common::host::canonical_host;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::cli::SetupArgs;
-use centrald_common::config::{SERVER_DATA_DIR, SERVER_DATABASE_ENV_FILE, SERVER_DATABASE_URL_ENV};
 use crate::db::validate_database_url_policy;
 use crate::manage::CreatedEnrollmentKey;
 use crate::setup::{SetupOptions, SetupSummary};
+use centrald_common::config::{SERVER_DATA_DIR, SERVER_DATABASE_ENV_FILE, SERVER_DATABASE_URL_ENV};
 
 const DATABASE_ENV: &str = SERVER_DATABASE_URL_ENV;
 
@@ -68,7 +68,12 @@ pub fn print_completion(
         summary.recovery_key_output.display()
     );
     println!();
-    println!("{}", style("Initial Admin access key (shown once)").yellow().bold());
+    println!(
+        "{}",
+        style("Initial Admin access key (shown once)")
+            .yellow()
+            .bold()
+    );
     println!("{}", admin.key.expose_secret());
     println!("Expires: {}", admin.expires_at);
     println!(
@@ -115,9 +120,10 @@ fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptio
     let database_url_env = args
         .database_url_env
         .unwrap_or_else(|| DATABASE_ENV.to_owned());
-    let (database_url, managed_local_role) = database_setup(&theme, &database_url_env, instance_id)?;
+    let (database_url, managed_local_role) =
+        database_setup(&theme, &database_url_env, instance_id)?;
     let requested_data_dir = args.data_dir.unwrap_or_else(default_data_dir);
-    if requested_data_dir != PathBuf::from(SERVER_DATA_DIR) {
+    if requested_data_dir != *SERVER_DATA_DIR {
         bail!("packaged CentralD uses fixed server data directory {SERVER_DATA_DIR}");
     }
     let data_dir = PathBuf::from(SERVER_DATA_DIR);
@@ -189,7 +195,7 @@ fn collect_non_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupO
         .with_context(|| format!("{database_url_env} must be set for non-interactive setup"))?;
     validate_database_url(&database_url).map_err(anyhow::Error::msg)?;
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
-    if data_dir != PathBuf::from(SERVER_DATA_DIR) {
+    if data_dir != *SERVER_DATA_DIR {
         bail!("packaged CentralD uses fixed server data directory {SERVER_DATA_DIR}");
     }
     let recovery_key_output = args
@@ -225,7 +231,7 @@ fn database_setup(
     ];
     let selected = Select::with_theme(theme)
         .with_prompt("PostgreSQL setup")
-        .items(&choices)
+        .items(choices)
         .default(0)
         .interact()?;
     if selected == 0 {
@@ -240,7 +246,9 @@ fn database_setup(
             password.expose_secret()
         );
         println!("  CentralD will create one dedicated local PostgreSQL role and database.");
-        println!("  The generated password is stored only in the root-protected server environment file.");
+        println!(
+            "  The generated password is stored only in the root-protected server environment file."
+        );
         Ok((SecretString::from(url), Some(role)))
     } else {
         Ok((advanced_database_secret(theme, variable)?, None))
@@ -281,9 +289,9 @@ fn path_prompt(theme: &ColorfulTheme, prompt: &str, default: &Path) -> Result<Pa
 }
 
 fn validate_host(value: &str) -> Result<(), &'static str> {
-    canonical_host(value)
-        .map(|_| ())
-        .map_err(|_| "enter a canonical ASCII DNS name or IP without scheme, port, path, or whitespace")
+    canonical_host(value).map(|_| ()).map_err(
+        |_| "enter a canonical ASCII DNS name or IP without scheme, port, path, or whitespace",
+    )
 }
 
 fn validate_name(value: &str) -> Result<(), &'static str> {
@@ -317,7 +325,9 @@ mod tests {
         assert!(validate_host("https://centrald.example").is_err());
         assert!(validate_host("centrald.example").is_ok());
         assert!(validate_database_url("https://centrald.example").is_err());
-        assert!(validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok());
+        assert!(
+            validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok()
+        );
         assert!(validate_name("").is_err());
     }
 }

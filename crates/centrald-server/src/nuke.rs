@@ -48,18 +48,18 @@ struct NukeRecoveryJournal {
     plan: NukePlan,
 }
 
-/// Permanently removes one marked CentralD installation and drops its database.
+/// Permanently removes one marked `CentralD` installation and drops its database.
 ///
 /// Every filesystem target and both database ownership markers are validated
 /// before a durable reset journal is written. The journal makes the destructive
-/// operation retryable after a crash, PostgreSQL role-removal failure, or partial
+/// operation retryable after a crash, `PostgreSQL` role-removal failure, or partial
 /// filesystem cleanup. The same exclusive runtime lock used by the daemon is
 /// held for the entire attempt.
 ///
 /// # Errors
 ///
 /// Returns an error unless the caller is root, the daemon lock can be acquired,
-/// all filesystem and ownership markers match, and PostgreSQL accepts the owned
+/// all filesystem and ownership markers match, and `PostgreSQL` accepts the owned
 /// database/role removal. On a partial failure, the reset journal is retained and
 /// rerunning the exact nuke command resumes rather than attempting a new reset.
 pub async fn nuke(config_path: &Path) -> Result<NukeSummary> {
@@ -79,12 +79,10 @@ pub async fn nuke(config_path: &Path) -> Result<NukeSummary> {
         .context("acquire exclusive CentralD server lock; stop centrald-server before --nuke")?;
     ensure_socket_inactive(&config.server.local_socket).await?;
 
-    let database_name = verify_owned_database(
-        database_url.expose_secret(),
-        config.server.instance_id,
-    )
-    .await
-    .context("verify CentralD PostgreSQL ownership before authorizing destructive reset")?;
+    let database_name =
+        verify_owned_database(database_url.expose_secret(), config.server.instance_id)
+            .await
+            .context("verify CentralD PostgreSQL ownership before authorizing destructive reset")?;
     let journal = NukeRecoveryJournal {
         version: NUKE_JOURNAL_VERSION,
         phase: NukePhase::Authorized,
@@ -98,10 +96,7 @@ pub async fn nuke(config_path: &Path) -> Result<NukeSummary> {
     continue_authorized_nuke(journal, &journal_path, Some(database_url.expose_secret())).await
 }
 
-async fn resume_nuke(
-    journal: NukeRecoveryJournal,
-    journal_path: &Path,
-) -> Result<NukeSummary> {
+async fn resume_nuke(journal: NukeRecoveryJournal, journal_path: &Path) -> Result<NukeSummary> {
     validate_journal_plan(&journal)?;
     let _server_lock = acquire_server_lock(&journal.plan.runtime_socket)
         .context("acquire exclusive CentralD server lock; stop centrald-server before --nuke")?;
@@ -113,12 +108,8 @@ async fn resume_nuke(
             let config = ServerConfig::load(&journal.plan.config_path)?;
             validate_config_matches_journal(&config, &journal)?;
             let database_url = resolve_database_url_from_file(&config)?;
-            continue_authorized_nuke(
-                journal,
-                journal_path,
-                Some(database_url.expose_secret()),
-            )
-            .await
+            continue_authorized_nuke(journal, journal_path, Some(database_url.expose_secret()))
+                .await
         }
         NukePhase::DatabaseDropped => finish_nuke(journal, journal_path),
     }
@@ -171,24 +162,17 @@ async fn continue_authorized_nuke(
     }
 
     journal.phase = NukePhase::DatabaseDropped;
-    replace_file_atomically(
-        journal_path,
-        &serde_json::to_vec_pretty(&journal)?,
-        true,
-    )
-    .with_context(|| {
-        format!(
-            "record completed PostgreSQL drop in {}",
-            journal_path.display()
-        )
-    })?;
+    replace_file_atomically(journal_path, &serde_json::to_vec_pretty(&journal)?, true)
+        .with_context(|| {
+            format!(
+                "record completed PostgreSQL drop in {}",
+                journal_path.display()
+            )
+        })?;
     finish_nuke(journal, journal_path)
 }
 
-fn finish_nuke(
-    journal: NukeRecoveryJournal,
-    journal_path: &Path,
-) -> Result<NukeSummary> {
+fn finish_nuke(journal: NukeRecoveryJournal, journal_path: &Path) -> Result<NukeSummary> {
     validate_journal_plan(&journal)?;
     if let Some(role) = journal.managed_local_role.as_deref() {
         local_postgres::drop_owned_role(role, journal.instance_id).with_context(|| {
@@ -205,7 +189,10 @@ fn finish_nuke(
         &mut cleanup_failures,
     );
     collect_cleanup(
-        remove_regular_file_if_present(&journal.plan.local_audit_journal, "server-local audit journal"),
+        remove_regular_file_if_present(
+            &journal.plan.local_audit_journal,
+            "server-local audit journal",
+        ),
         &mut cleanup_failures,
     );
     collect_cleanup(
@@ -273,9 +260,7 @@ impl NukePlan {
         let canonical_config = std::fs::canonicalize(config_path)
             .context("canonicalize CentralD server configuration")?;
         if canonical_config.starts_with(&canonical_data) {
-            bail!(
-                "server configuration must remain outside the disposable CentralD data root"
-            );
+            bail!("server configuration must remain outside the disposable CentralD data root");
         }
         for (label, path) in [
             ("server configuration", config_path),
@@ -327,9 +312,15 @@ fn validate_journal_plan(journal: &NukeRecoveryJournal) -> Result<()> {
     for (label, path) in [
         ("configuration", journal.plan.config_path.as_path()),
         ("data root", journal.plan.data_dir.as_path()),
-        ("database environment", journal.plan.environment_file.as_path()),
+        (
+            "database environment",
+            journal.plan.environment_file.as_path(),
+        ),
         ("runtime socket", journal.plan.runtime_socket.as_path()),
-        ("local audit journal", journal.plan.local_audit_journal.as_path()),
+        (
+            "local audit journal",
+            journal.plan.local_audit_journal.as_path(),
+        ),
     ] {
         if path.as_os_str().is_empty() || !path.is_absolute() {
             bail!("destructive-reset journal contains an unsafe {label} path");
@@ -397,14 +388,22 @@ fn remove_nuke_journal(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::File::open(parent)
             .and_then(|directory| directory.sync_all())
-            .with_context(|| format!("sync destructive-reset journal directory {}", parent.display()))?;
+            .with_context(|| {
+                format!(
+                    "sync destructive-reset journal directory {}",
+                    parent.display()
+                )
+            })?;
     }
     Ok(())
 }
 
 fn validate_nuke_journal_metadata(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("destructive-reset journal is not a regular file: {}", path.display());
+        bail!(
+            "destructive-reset journal is not a regular file: {}",
+            path.display()
+        );
     }
     #[cfg(unix)]
     {
@@ -448,8 +447,7 @@ fn validate_nuke_journal_parent(path: &Path) -> Result<()> {
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("inspect {}", ancestor.display()));
+                    return Err(error).with_context(|| format!("inspect {}", ancestor.display()));
                 }
             }
             current = ancestor.parent();
@@ -521,7 +519,10 @@ fn validate_data_root_marker(marker: &Path, instance_id: uuid::Uuid) -> Result<(
         .symlink_metadata()
         .with_context(|| format!("inspect data-root marker {}", marker.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("data-root marker is not a regular file: {}", marker.display());
+        bail!(
+            "data-root marker is not a regular file: {}",
+            marker.display()
+        );
     }
     #[cfg(unix)]
     {
@@ -580,7 +581,7 @@ fn remove_data_dir_if_present(data_dir: &Path, instance_id: uuid::Uuid) -> Resul
                 let entry = entry.with_context(|| {
                     format!("read data-directory entry under {}", data_dir.display())
                 })?;
-                if entry.file_name() == OsString::from(DATA_ROOT_MARKER) {
+                if entry.file_name() == DATA_ROOT_MARKER {
                     continue;
                 }
                 remove_data_root_entry(&entry.path())?;
@@ -607,8 +608,12 @@ fn remove_data_dir_if_present(data_dir: &Path, instance_id: uuid::Uuid) -> Resul
         }
     }
 
-    std::fs::remove_dir(data_dir)
-        .with_context(|| format!("remove empty CentralD data directory {}", data_dir.display()))
+    std::fs::remove_dir(data_dir).with_context(|| {
+        format!(
+            "remove empty CentralD data directory {}",
+            data_dir.display()
+        )
+    })
 }
 
 fn remove_data_root_entry(path: &Path) -> Result<()> {
@@ -643,6 +648,7 @@ async fn ensure_socket_inactive(socket: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unused_async)]
 async fn ensure_socket_inactive(_socket: &Path) -> Result<()> {
     bail!("destructive server reset is supported only on Ubuntu Server hosts")
 }
@@ -656,7 +662,10 @@ fn validate_regular_file(path: &Path, label: &str, required: bool) -> Result<()>
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("refusing non-regular or symbolic-link {label}: {}", path.display());
+        bail!(
+            "refusing non-regular or symbolic-link {label}: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -669,7 +678,9 @@ fn validate_runtime_socket(path: &Path) -> Result<()> {
         Ok(metadata) if metadata.file_type().is_socket() => Ok(()),
         Ok(_) => bail!("refusing non-socket runtime path {}", path.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("inspect runtime socket {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("inspect runtime socket {}", path.display()))
+        }
     }
 }
 
@@ -700,7 +711,10 @@ fn remove_runtime_socket_if_present(path: &Path) -> Result<()> {
     match path.symlink_metadata() {
         Ok(metadata) => {
             if !metadata.file_type().is_socket() {
-                bail!("refusing to remove non-socket runtime path {}", path.display());
+                bail!(
+                    "refusing to remove non-socket runtime path {}",
+                    path.display()
+                );
             }
             std::fs::remove_file(path)
                 .with_context(|| format!("remove runtime socket {}", path.display()))?;
@@ -719,6 +733,7 @@ fn remove_runtime_socket_if_present(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn remove_runtime_socket_if_present(_path: &Path) -> Result<()> {
     Ok(())
 }

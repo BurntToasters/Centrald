@@ -46,43 +46,62 @@ if (artifacts.length === 0) {
 }
 
 for (const artifact of artifacts) {
-  requireRegularFile(artifact, "Release artifact");
-  const signature = `${artifact}.minisig`;
+  signFile(
+    artifact,
+    `centrald ${packageJson.version} ${path.basename(artifact)}`,
+  );
+}
+
+// Sign the mutable channel manifests as well, so clients and servers can
+// verify the manifest itself before trusting its channel/version fields.
+const releaseDirectory = path.resolve(root, options.outputDir);
+let signedManifestCount = 0;
+for (const manifestName of [
+  config.releaseManifest,
+  config.tauriUpdateManifest,
+]) {
+  const manifest = path.join(releaseDirectory, manifestName);
+  if (!fs.existsSync(manifest)) {
+    continue;
+  }
+  requireRegularFile(manifest, "Release manifest");
+  signFile(manifest, `centrald ${packageJson.version} ${manifestName}`);
+  signedManifestCount += 1;
+}
+
+console.log(
+  `Signed and verified ${artifacts.length} release artifacts and ${signedManifestCount} manifests.`,
+);
+
+function signFile(file, trustedComment) {
+  requireRegularFile(file, "Release file");
+  const signature = `${file}.minisig`;
   fs.rmSync(signature, { force: true });
   const signingArguments = [
     "-S",
     "-s",
     secretKey,
     "-m",
-    artifact,
+    file,
     "-x",
     signature,
     "-t",
-    `centrald ${packageJson.version} ${path.basename(artifact)}`,
+    trustedComment,
   ];
   if (options.unprotectedKey) signingArguments.splice(1, 0, "-W");
   execFileSync("minisign", signingArguments, { stdio: "inherit" });
   fs.chmodSync(signature, 0o644);
   execFileSync(
     "minisign",
-    [
-      "-V",
-      "-P",
-      config.minisignPublicKey,
-      "-m",
-      artifact,
-      "-x",
-      signature,
-    ],
+    ["-V", "-P", config.minisignPublicKey, "-m", file, "-x", signature],
     { stdio: "inherit" },
   );
 }
 
-console.log(`Signed and verified ${artifacts.length} release artifacts.`);
-
 function parseArguments(args) {
   const result = {
     artifactsDir: "release/artifacts",
+    outputDir: "release",
     secretKey: null,
     unprotectedKey: false,
   };
@@ -90,6 +109,8 @@ function parseArguments(args) {
     const argument = args[index];
     if (argument === "--artifacts-dir") {
       result.artifactsDir = requiredValue(args, ++index, argument);
+    } else if (argument === "--output-dir") {
+      result.outputDir = requiredValue(args, ++index, argument);
     } else if (argument === "--secret-key") {
       result.secretKey = requiredValue(args, ++index, argument);
     } else if (argument === "--unprotected-key") {
@@ -120,6 +141,8 @@ function requireRegularFile(file, description) {
     throw new Error(`${description} is missing or not a regular file: ${file}`);
   }
   if (fs.lstatSync(file).isSymbolicLink()) {
-    throw new Error(`Refusing symbolic-link ${description.toLowerCase()}: ${file}`);
+    throw new Error(
+      `Refusing symbolic-link ${description.toLowerCase()}: ${file}`,
+    );
   }
 }

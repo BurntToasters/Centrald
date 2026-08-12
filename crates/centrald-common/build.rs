@@ -17,9 +17,8 @@ const ALLOWED_KEYS: [&str; 8] = [
 ];
 
 fn main() {
-    let manifest_dir = PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned()),
-    );
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned()));
     let root = manifest_dir.join("../..");
     let config_path = root.join("centrald.config");
     println!("cargo:rerun-if-changed={}", config_path.display());
@@ -28,29 +27,22 @@ fn main() {
     let repo_url = value(&values, "REPO_URL", DEFAULT_REPO_URL);
     validate_https_base(&repo_url, "REPO_URL");
     let release_channel = value(&values, "RELEASE_CHANNEL", DEFAULT_RELEASE_CHANNEL);
-    if !is_channel(&release_channel) {
-        panic!("RELEASE_CHANNEL must be a lowercase channel name");
-    }
-    let update_base = values
-        .get("UPDATE_BASE_URL")
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| default_update_base(&repo_url, &release_channel));
+    assert!(
+        is_channel(&release_channel),
+        "RELEASE_CHANNEL must be a lowercase channel name"
+    );
+    let update_base = match values.get("UPDATE_BASE_URL").map(String::as_str) {
+        Some(value) if !value.trim().is_empty() => value.to_owned(),
+        _ => default_update_base(&repo_url, &release_channel),
+    };
     validate_https_base(&update_base, "UPDATE_BASE_URL");
-    let artifact_template = values
-        .get("ARTIFACT_BASE_URL_TEMPLATE")
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| default_artifact_template(&repo_url));
+    let artifact_template = match values.get("ARTIFACT_BASE_URL_TEMPLATE").map(String::as_str) {
+        Some(value) if !value.trim().is_empty() => value.to_owned(),
+        _ => default_artifact_template(&repo_url),
+    };
     validate_artifact_template(&artifact_template);
     let release_manifest = value(&values, "RELEASE_MANIFEST", DEFAULT_RELEASE_MANIFEST);
-    let tauri_manifest = value(
-        &values,
-        "TAURI_UPDATE_MANIFEST",
-        DEFAULT_TAURI_MANIFEST,
-    );
+    let tauri_manifest = value(&values, "TAURI_UPDATE_MANIFEST", DEFAULT_TAURI_MANIFEST);
     validate_filename(&release_manifest, "RELEASE_MANIFEST");
     validate_filename(&tauri_manifest, "TAURI_UPDATE_MANIFEST");
     let updater_pubkey = values
@@ -65,7 +57,10 @@ fn main() {
     validate_minisign_public_key(minisign_public_key);
 
     emit("CENTRALD_REPO_URL", repo_url.trim_end_matches('/'));
-    emit("CENTRALD_UPDATE_BASE_URL", update_base.trim_end_matches('/'));
+    emit(
+        "CENTRALD_UPDATE_BASE_URL",
+        update_base.trim_end_matches('/'),
+    );
     emit(
         "CENTRALD_ARTIFACT_BASE_URL_TEMPLATE",
         artifact_template.trim_end_matches('/'),
@@ -94,19 +89,21 @@ fn read_config(path: &Path) -> BTreeMap<String, String> {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
-            panic!(
-                "{}:{}: expected KEY=value",
-                path.display(),
-                index + 1
-            );
+            panic!("{}:{}: expected KEY=value", path.display(), index + 1);
         };
         let key = key.trim();
-        if !allowed.contains(key) {
-            panic!("{}:{}: unknown key {key}", path.display(), index + 1);
-        }
-        if values.contains_key(key) {
-            panic!("{}:{}: duplicate key {key}", path.display(), index + 1);
-        }
+        assert!(
+            allowed.contains(key),
+            "{}:{}: unknown key {key}",
+            path.display(),
+            index + 1
+        );
+        assert!(
+            !values.contains_key(key),
+            "{}:{}: duplicate key {key}",
+            path.display(),
+            index + 1
+        );
         values.insert(key.to_owned(), unquote(value.trim()).to_owned());
     }
     values
@@ -134,9 +131,10 @@ fn default_update_base(repo_url: &str, release_channel: &str) -> String {
             let mut pieces = repository.split('/');
             let owner = pieces.next().unwrap_or_default();
             let repository = pieces.next().unwrap_or_default();
-            if owner.is_empty() || repository.is_empty() || pieces.next().is_some() {
-                panic!("GitHub REPO_URL must contain exactly owner/repository");
-            }
+            assert!(
+                !owner.is_empty() && !repository.is_empty() && pieces.next().is_none(),
+                "GitHub REPO_URL must contain exactly owner/repository"
+            );
             format!(
                 "https://raw.githubusercontent.com/{owner}/{repository}/centrald-channels/channels/{release_channel}/latest"
             )
@@ -180,9 +178,10 @@ fn validate_https_base(value: &str, key: &str) {
 }
 
 fn validate_artifact_template(value: &str) {
-    if !value.contains("{version}") && !value.contains("{tag}") {
-        panic!("ARTIFACT_BASE_URL_TEMPLATE must contain {{version}} or {{tag}}");
-    }
+    assert!(
+        value.contains("{version}") || value.contains("{tag}"),
+        "ARTIFACT_BASE_URL_TEMPLATE must contain {{version}} or {{tag}}"
+    );
     let concrete = value
         .replace("{version}", "1.2.3")
         .replace("{tag}", "v1.2.3");
@@ -209,18 +208,19 @@ fn validate_filename(value: &str, key: &str) {
         || value.starts_with('.')
         || value.contains('/')
         || value.contains('\\')
-        || !value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
     {
         panic!("{key} must be a simple file name");
     }
 }
 
 fn validate_public_value(value: &str, key: &str) {
-    if value.contains('\n') || value.contains('\r') || value.contains('\0') {
-        panic!("{key} must be a single-line public value");
-    }
+    assert!(
+        !value.contains('\n') && !value.contains('\r') && !value.contains('\0'),
+        "{key} must be a single-line public value"
+    );
 }
 
 fn validate_minisign_public_key(value: &str) {
@@ -229,9 +229,9 @@ fn validate_minisign_public_key(value: &str) {
         return;
     }
     if !value.starts_with("RW")
-        || !value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '='))
+        || !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
+        })
     {
         panic!("MINISIGN_PUBLIC_KEY must be the base64 public key beginning with RW");
     }

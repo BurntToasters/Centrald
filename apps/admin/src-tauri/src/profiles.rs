@@ -14,11 +14,10 @@ use centrald_protocol::v1::admin_service_client::AdminServiceClient;
 use centrald_protocol::v1::enrollment_service_client::EnrollmentServiceClient;
 use centrald_protocol::v1::{
     ActivateIdentityRequest, CreateEnrollmentKeyRequest, EnrollAdminRequest,
-    EnrollmentKeySummary as ProtocolEnrollmentKey,
-    GetServerSettingsRequest, IdentityRole, JobKind, ListEnrollmentKeysRequest,
-    ListTargetsRequest, ProtocolVersion, RenewCertificateRequest, RevokeEnrollmentKeyRequest,
-    RevokeIdentityRequest, ServerSettings, StartJobRequest, TargetSummary,
-    UpdateServerSettingsRequest,
+    EnrollmentKeySummary as ProtocolEnrollmentKey, GetServerSettingsRequest, IdentityRole, JobKind,
+    ListEnrollmentKeysRequest, ListTargetsRequest, ProtocolVersion, RenewCertificateRequest,
+    RevokeEnrollmentKeyRequest, RevokeIdentityRequest, ServerSettings, StartJobRequest,
+    TargetSummary, UpdateServerSettingsRequest,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use fs2::FileExt;
@@ -42,17 +41,23 @@ struct AdminProfileLock {
 
 impl AdminProfileLock {
     async fn acquire(profile_dir: &Path) -> anyhow::Result<Self> {
-        let directory = profile_dir
-            .symlink_metadata()
-            .with_context(|| format!("inspect Admin profile directory {}", profile_dir.display()))?;
+        let directory = profile_dir.symlink_metadata().with_context(|| {
+            format!("inspect Admin profile directory {}", profile_dir.display())
+        })?;
         if directory.file_type().is_symlink() || !directory.is_dir() {
-            anyhow::bail!("Admin profile path is not a real directory: {}", profile_dir.display());
+            anyhow::bail!(
+                "Admin profile path is not a real directory: {}",
+                profile_dir.display()
+            );
         }
         let path = profile_dir.join(PROFILE_STATE_LOCK_NAME);
-        if let Ok(metadata) = path.symlink_metadata() {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                anyhow::bail!("refusing unsafe Admin profile state lock {}", path.display());
-            }
+        if let Ok(metadata) = path.symlink_metadata()
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            anyhow::bail!(
+                "refusing unsafe Admin profile state lock {}",
+                path.display()
+            );
         }
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true);
@@ -68,7 +73,10 @@ impl AdminProfileLock {
             .metadata()
             .with_context(|| format!("inspect Admin profile state lock {}", path.display()))?;
         if !metadata.is_file() {
-            anyhow::bail!("Admin profile state lock is not a regular file: {}", path.display());
+            anyhow::bail!(
+                "Admin profile state lock is not a regular file: {}",
+                path.display()
+            );
         }
         #[cfg(unix)]
         {
@@ -91,9 +99,8 @@ impl AdminProfileLock {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
                 Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("lock Admin profile state {}", path.display())
-                    });
+                    return Err(error)
+                        .with_context(|| format!("lock Admin profile state {}", path.display()));
                 }
             }
         }
@@ -124,6 +131,19 @@ pub struct AdminProfile {
     identity_certificate: PathBuf,
     identity_private_key: PathBuf,
     certificate_expires_at: DateTime<Utc>,
+    /// Ed25519 elevation key used to sign shell-elevation challenges. Older
+    /// profiles have no key and cannot request elevated shells until they are
+    /// re-enrolled.
+    #[serde(default)]
+    elevation_private_key: Option<PathBuf>,
+}
+
+impl AdminProfile {
+    /// The stored elevation private key path, if this profile has one.
+    #[must_use]
+    pub fn elevation_private_key(&self) -> Option<&Path> {
+        self.elevation_private_key.as_deref()
+    }
 }
 
 #[derive(Deserialize)]
@@ -201,6 +221,7 @@ pub struct JobView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerSettingsView {
     revision: String,
     instance_id: String,
@@ -226,8 +247,9 @@ pub struct ServerSettingsView {
     root_cert_path: String,
     local_only_fields: Vec<String>,
     restart_required: bool,
+    update_latest_version: String,
+    update_available: bool,
 }
-
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -322,8 +344,9 @@ pub async fn start_job(
     target_id: String,
     kind: String,
     reason: String,
+    parameters_json: String,
 ) -> Result<JobView, String> {
-    start_job_inner(&app, &profile_id, target_id, &kind, reason)
+    start_job_inner(&app, &profile_id, target_id, &kind, reason, parameters_json)
         .await
         .map_err(display_error)
 }
@@ -351,6 +374,7 @@ pub async fn update_server_settings(
         .map_err(display_error)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn enroll_admin_inner(
     app: &AppHandle,
     input: EnrollAdminInput,
@@ -381,6 +405,12 @@ async fn enroll_admin_inner(
     parameters.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
     let csr = parameters.serialize_request(&identity_key)?.pem()?;
 
+    // The elevation key proves the operator's intent for elevated shells. It
+    // is generated locally, kept with the profile, and only its public half
+    // is sent to the server.
+    let elevation_signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core_06::OsRng);
+    let elevation_public_key = elevation_signing_key.verifying_key().to_bytes().to_vec();
+
     let channel = tls_channel(
         &enrollment_endpoint,
         &claims.server_name,
@@ -393,7 +423,7 @@ async fn enroll_admin_inner(
             enrollment_key: access_key.expose_secret().to_owned(),
             csr_pem: csr.into_bytes(),
             name: claims.name.clone(),
-            elevation_public_key: Vec::new(),
+            elevation_public_key,
             protocol: Some(ProtocolVersion {
                 major: centrald_protocol::PROTOCOL_MAJOR,
                 minor: centrald_protocol::PROTOCOL_MINOR,
@@ -406,8 +436,9 @@ async fn enroll_admin_inner(
         anyhow::bail!("server returned incomplete Admin enrollment material");
     }
 
-    let certificate_expires_at = timestamp_datetime(response.expires_at)
-        .ok_or_else(|| anyhow::anyhow!("server returned an invalid Admin certificate expiration"))?;
+    let certificate_expires_at = timestamp_datetime(response.expires_at).ok_or_else(|| {
+        anyhow::anyhow!("server returned an invalid Admin certificate expiration")
+    })?;
     let profile_id = Uuid::now_v7();
     let generation_id = Uuid::now_v7();
     let profile_dir = profiles_dir(app)?.join(profile_id.to_string());
@@ -417,6 +448,7 @@ async fn enroll_admin_inner(
     let root_ca = credential_dir.join("root-ca.pem");
     let identity_certificate = credential_dir.join("identity-chain.pem");
     let identity_private_key = credential_dir.join("identity-key.pem");
+    let elevation_private_key = profile_dir.join("elevation-key.pem");
     let profile = AdminProfile {
         id: profile_id,
         identity_id,
@@ -427,6 +459,7 @@ async fn enroll_admin_inner(
         identity_certificate,
         identity_private_key,
         certificate_expires_at,
+        elevation_private_key: Some(elevation_private_key.clone()),
     };
     if let Err(error) = persist_profile_generation(
         &profile_dir,
@@ -442,6 +475,16 @@ async fn enroll_admin_inner(
         return Err(error.context(
             "server accepted a pending Admin enrollment, but local profile persistence failed; the pending identity will expire automatically",
         ));
+    }
+    // The elevation key is written with the profile but is not part of the
+    // per-generation identity material.
+    if let Err(error) =
+        persist_elevation_key(&profile_dir, &elevation_private_key, &elevation_signing_key)
+    {
+        if profile_dir.is_dir() {
+            let _ = std::fs::remove_dir_all(&profile_dir);
+        }
+        return Err(error.context("persist the Admin elevation key"));
     }
     let publication = match publish_active_profile(&profile_dir, generation_id) {
         Ok(publication) => publication,
@@ -488,11 +531,7 @@ fn persist_profile_generation(
     let result = (|| {
         prepare_profile_directories(profile_dir, credential_dir)?;
         write_new_file(&profile.root_ca, root_ca, false)?;
-        write_new_file(
-            &profile.identity_certificate,
-            identity_certificate,
-            false,
-        )?;
+        write_new_file(&profile.identity_certificate, identity_certificate, false)?;
         write_new_file(&profile.identity_private_key, identity_private_key, true)?;
         secure_profile_tree(profile_dir)?;
         let metadata = serde_json::to_vec_pretty(profile)?;
@@ -511,6 +550,21 @@ fn persist_profile_generation(
         }
     }
     result
+}
+
+fn persist_elevation_key(
+    profile_dir: &Path,
+    path: &Path,
+    key: &ed25519_dalek::SigningKey,
+) -> anyhow::Result<()> {
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
+
+    let bytes = key
+        .to_pkcs8_pem(pkcs8::LineEnding::LF)
+        .context("encode the Admin elevation private key")?;
+    write_new_file(path, bytes.as_bytes(), true)
+        .with_context(|| format!("write Admin elevation key {}", path.display()))?;
+    secure_profile_tree(profile_dir)
 }
 
 fn prepare_profile_directories(profile_dir: &Path, credential_dir: &Path) -> anyhow::Result<()> {
@@ -585,7 +639,13 @@ foreach ($item in $items) { Set-CentralDAcl $item }
     let powershell = windows_powershell_executable()
         .context("Windows did not return its trusted system directory")?;
     let status = Command::new(powershell)
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            SCRIPT,
+        ])
         .env("CENTRALD_ACL_PATH", profile_dir)
         .status()
         .context("apply owner-only ACL to CentralD Admin profile")?;
@@ -704,15 +764,22 @@ async fn start_job_inner(
     target_id: String,
     kind: &str,
     reason: String,
+    parameters_json: String,
 ) -> anyhow::Result<JobView> {
     let (job_kind, kind_name) = parse_job_kind(kind)?;
+    let parameters_json = parameters_json.trim();
+    let parameters: serde_json::Value =
+        serde_json::from_str(parameters_json).context("job parameters must be a JSON object")?;
+    if !parameters.is_object() {
+        anyhow::bail!("job parameters must be a JSON object");
+    }
     let response = admin_client(app, profile_id)
         .await?
         .start_job(StartJobRequest {
             request_id: Uuid::now_v7().to_string(),
             target_id,
             kind: job_kind as i32,
-            parameters_json: b"{}".to_vec(),
+            parameters_json: serde_json::to_vec(&parameters)?,
             reason,
         })
         .await?
@@ -757,7 +824,7 @@ async fn update_server_settings_inner(
 
 const ADMIN_CERTIFICATE_RENEWAL_WINDOW_DAYS: i64 = 30;
 
-async fn admin_client(
+pub(crate) async fn admin_client(
     app: &AppHandle,
     profile_id: &str,
 ) -> anyhow::Result<AdminServiceClient<Channel>> {
@@ -778,8 +845,7 @@ async fn admin_client(
         }
         return Err(error);
     }
-    commit_active_profile(&profile_dir)
-        .context("finalize recovered Admin credential pointer")?;
+    commit_active_profile(&profile_dir).context("finalize recovered Admin credential pointer")?;
     if profile.certificate_expires_at
         <= Utc::now() + ChronoDuration::days(ADMIN_CERTIFICATE_RENEWAL_WINDOW_DAYS)
     {
@@ -827,8 +893,9 @@ async fn renew_admin_profile(
     if response.certificate_chain_pem.is_empty() {
         anyhow::bail!("server returned an empty renewed Admin certificate chain");
     }
-    let certificate_expires_at = timestamp_datetime(response.expires_at)
-        .ok_or_else(|| anyhow::anyhow!("server returned an invalid renewed certificate expiration"))?;
+    let certificate_expires_at = timestamp_datetime(response.expires_at).ok_or_else(|| {
+        anyhow::anyhow!("server returned an invalid renewed certificate expiration")
+    })?;
     if certificate_expires_at <= Utc::now() + ChronoDuration::days(1) {
         anyhow::bail!("server returned a renewed Admin certificate with an unsafe expiration");
     }
@@ -888,16 +955,15 @@ async fn activate_admin_profile(profile: &AdminProfile) -> anyhow::Result<()> {
         .context("activate Admin identity")?
         .into_inner();
     if !response.success {
-        anyhow::bail!("server rejected Admin identity activation: {}", response.message);
+        anyhow::bail!(
+            "server rejected Admin identity activation: {}",
+            response.message
+        );
     }
     Ok(())
 }
 
-fn cleanup_profile_generation(
-    profile_dir: &Path,
-    generation_id: Uuid,
-    profile: &AdminProfile,
-) {
+fn cleanup_profile_generation(profile_dir: &Path, generation_id: Uuid, profile: &AdminProfile) {
     let metadata_path = profile_dir.join(format!("profile-{generation_id}.json"));
     let _ = std::fs::remove_file(metadata_path);
     if let Some(credential_dir) = profile.identity_private_key.parent() {
@@ -921,7 +987,7 @@ async fn admin_client_for_profile(
     Ok(AdminServiceClient::new(channel))
 }
 
-fn load_profile_from_dir(profile_dir: &Path) -> anyhow::Result<AdminProfile> {
+pub(crate) fn load_profile_from_dir(profile_dir: &Path) -> anyhow::Result<AdminProfile> {
     let path = latest_profile_path(profile_dir)?;
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
@@ -978,7 +1044,7 @@ fn validate_profile_target(profile_dir: &Path, filename: &str) -> anyhow::Result
         || candidate.is_absolute()
         || candidate.components().count() != 1
         || !filename.starts_with("profile-")
-        || !filename.ends_with(".json")
+        || !filename.to_ascii_lowercase().ends_with(".json")
     {
         anyhow::bail!("active Admin profile pointer is invalid");
     }
@@ -995,11 +1061,13 @@ fn validate_profile_target(profile_dir: &Path, filename: &str) -> anyhow::Result
     Ok(path)
 }
 
-
 fn list_profiles_inner(app: &AppHandle) -> anyhow::Result<ProfileListView> {
     let directory = profiles_dir(app)?;
     if !directory.exists() {
-        return Ok(ProfileListView { profiles: Vec::new(), warnings: Vec::new() });
+        return Ok(ProfileListView {
+            profiles: Vec::new(),
+            warnings: Vec::new(),
+        });
     }
     let mut profiles = Vec::new();
     let mut warnings = Vec::new();
@@ -1112,6 +1180,8 @@ fn settings_view(settings: ServerSettings) -> ServerSettingsView {
         root_cert_path: settings.root_cert_path,
         local_only_fields: settings.local_only_fields,
         restart_required: settings.restart_required,
+        update_latest_version: settings.update_latest_version,
+        update_available: settings.update_available,
     }
 }
 
@@ -1141,10 +1211,12 @@ fn settings_proto(settings: ServerSettingsView) -> ServerSettings {
         root_cert_path: settings.root_cert_path,
         local_only_fields: settings.local_only_fields,
         restart_required: settings.restart_required,
+        update_latest_version: settings.update_latest_version,
+        update_available: settings.update_available,
     }
 }
 
-fn profiles_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
+pub(crate) fn profiles_dir(app: &AppHandle) -> anyhow::Result<PathBuf> {
     Ok(app.path().app_data_dir()?.join("profiles"))
 }
 
@@ -1162,7 +1234,7 @@ fn target_view(target: TargetSummary) -> TargetView {
 }
 
 fn enrollment_key_view(key: ProtocolEnrollmentKey) -> EnrollmentKeyView {
-    let expires_at_value = timestamp_datetime(key.expires_at.clone());
+    let expires_at_value = timestamp_datetime(key.expires_at);
     let status = if key.revoked_at.is_some() {
         "revoked"
     } else if key.consumed_at.is_some() {
@@ -1202,8 +1274,7 @@ fn timestamp_datetime(value: Option<prost_types::Timestamp>) -> Option<DateTime<
 }
 
 fn timestamp_text(value: Option<prost_types::Timestamp>) -> String {
-    timestamp_datetime(value)
-        .map_or_else(|| "".into(), |timestamp| timestamp.to_rfc3339())
+    timestamp_datetime(value).map_or_else(String::new, |timestamp| timestamp.to_rfc3339())
 }
 
 fn display_error(error: impl std::fmt::Display) -> String {

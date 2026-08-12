@@ -1,8 +1,8 @@
 # CentralD quick start
 
 This is the recommended path for a first CentralD homelab. Advanced network,
-database, PKI, storage, and release settings are available later; you do not need
-them for normal enrollment.
+database, PKI, storage, and release settings are available later; you do not
+need them for normal enrollment.
 
 ## 1. Initialize the Ubuntu server
 
@@ -15,9 +15,9 @@ sudo centrald-server initial-setup
 The wizard asks for the public DNS name/IP, PostgreSQL setup mode, offline-root
 recovery location, and first Admin name. The recommended mode configures local
 PostgreSQL automatically; only the advanced mode asks for a database URL. It
-creates the dedicated database, PKI, server
-identity, and one-time Admin access key. On a packaged systemd installation it
-also enables and starts `centrald-server.service`.
+creates the dedicated database, PKI, server identity, and one-time Admin access
+key. On a packaged systemd installation it also enables and starts
+`centrald-server.service`.
 
 Move the offline-root recovery PEM off the server after setup. Keep the one-time
 Admin access key only long enough to enroll the Admin app.
@@ -37,10 +37,10 @@ sudo centrald-server initial-setup
 ```
 
 CentralD records non-secret crash-recovery state before it creates the generated
-role or database. A retry refuses to interfere with a still-running setup process
-and cleans only CentralD-owned PostgreSQL resources from an abandoned attempt
-before restarting the wizard. The advanced external-database path uses the same
-non-secret setup journal; if a crash happens in PostgreSQL's narrow
+role or database. A retry refuses to interfere with a still-running setup
+process and cleans only CentralD-owned PostgreSQL resources from an abandoned
+attempt before restarting the wizard. The advanced external-database path uses
+the same non-secret setup journal; if a crash happens in PostgreSQL's narrow
 `CREATE DATABASE`-before-ownership-comment window, CentralD fails closed and
 asks you to inspect that dedicated database instead of guessing that it owns it.
 
@@ -62,14 +62,14 @@ Install the CentralD client package on the Linux or Windows machine. On Linux:
 sudo centrald-client enroll
 ```
 
-Paste the one-time client invitation. The invitation already contains the trusted
-CA, TLS name, and service ports; an optional IP/FQDN override changes only the
-network destination. Successful Linux enrollment enables and starts the client
-service automatically.
+Paste the one-time client invitation. The invitation already contains the
+trusted CA, TLS name, and service ports; an optional IP/FQDN override changes
+only the network destination. Successful Linux enrollment enables and starts the
+client service automatically.
 
-On Windows, install from an elevated PowerShell session and follow the installer's
-final next-step message, then run `centrald-client enroll` from an elevated
-terminal when the machine is not yet enrolled.
+On Windows, install from an elevated PowerShell session and follow the
+installer's final next-step message, then run `centrald-client enroll` from an
+elevated terminal when the machine is not yet enrolled.
 
 For unattended enrollment, keep the invitation out of process arguments and
 shell history. Put it in a private file and run:
@@ -103,9 +103,20 @@ Use the Admin GUI for inventory, enrollment invitations, revocation, and safe
 remote settings. Use `centrald-server config` for local-only trust and advanced
 server controls.
 
-Privileged typed jobs and the SSH-like PTY/ConPTY terminal remain unavailable in
-this alpha until the isolated broker and OS credential-vault boundaries are
-implemented; the UI does not pretend those operations work.
+Privileged typed jobs (agent restart, machine restart, OS update check/apply)
+run through the root/SYSTEM broker on enrolled clients. The Terminal page opens
+real PTY/ConPTY sessions: low shells run as the managed service account, and
+elevated shells require the Admin's elevation key and the OS account password,
+which the broker validates and may save in the machine's OS vault. The Devices
+page can install the server-verified CentralD release on a client; the broker
+verifies the artifact digest and Minisign signature before installing.
+
+PKI maintenance: `centrald-server config` offers online-issuer rotation (uses
+the offline root recovery PEM) and, for disaster recovery, an offline-root
+replacement ceremony that requires the current root recovery key and writes a
+new recovery bundle; every enrolled device must re-enroll afterwards. The same
+console exports the verified audit chain to root-owned, append-only
+`centrald-audit-<from>-<to>.jsonl` files.
 
 ## Recovery
 
@@ -130,8 +141,8 @@ sudo centrald-server --nuke --yes-i-want-to-do-this
 ```
 
 The reset is journaled. If the command reports incomplete PostgreSQL-role or
-filesystem cleanup, correct the reported problem and rerun the same command;
-do not delete the recovery journal or edit ownership markers manually.
+filesystem cleanup, correct the reported problem and rerun the same command; do
+not delete the recovery journal or edit ownership markers manually.
 
 ## PostgreSQL setup
 

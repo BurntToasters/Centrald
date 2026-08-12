@@ -1,18 +1,16 @@
-use std::io::{self, IsTerminal, Read, Write};
 #[cfg(unix)]
 use std::fs::File;
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use centrald_common::active_pointer::{ActivePointer, ActivePointerError, PointerPublication};
-use centrald_common::config::{ClientConfig, client_data_dir};
 #[cfg(windows)]
 use centrald_common::config::windows_system_executable;
-use centrald_common::enrollment::{
-    EnrollmentRole, parse_enrollment_invitation,
-};
+use centrald_common::config::{ClientConfig, client_data_dir};
+use centrald_common::enrollment::{EnrollmentRole, parse_enrollment_invitation};
 use centrald_common::host::https_endpoint;
 #[cfg(not(unix))]
 use centrald_common::secure_fs::write_new_file;
@@ -42,6 +40,7 @@ const MAX_INVITATION_BYTES: usize = 128 * 1024;
 /// Returns an error for invalid input, expired/wrong-role invitations, TLS/RPC
 /// failures, rejected enrollment, certificate generation, or safe persistence
 /// failures.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: EnrollmentArgs, reenroll: bool) -> Result<PathBuf> {
     println!("CentralD client enrollment");
     println!("Paste the one-time invitation created by your CentralD administrator.");
@@ -71,9 +70,8 @@ pub async fn run(args: EnrollmentArgs, reenroll: bool) -> Result<PathBuf> {
     // service account cannot unlink it and split the lock domain.
     let state_lock = ClientStateLock::acquire()
         .context("wait for another CentralD client state mutation to finish")?;
-    prepare_base_state(&data_dir).context(
-        "prepare protected client state before consuming the one-time invitation",
-    )?;
+    prepare_base_state(&data_dir)
+        .context("prepare protected client state before consuming the one-time invitation")?;
     let pointer = client_active_pointer(&data_dir)?;
     if pointer.previous()?.is_some() {
         bail!(
@@ -243,15 +241,20 @@ pub async fn run(args: EnrollmentArgs, reenroll: bool) -> Result<PathBuf> {
     drop(state_lock);
     #[cfg(target_os = "linux")]
     if let Err(error) = enable_linux_service_after_enrollment() {
-        eprintln!("warning: enrollment succeeded but the Linux client service could not be enabled and started automatically: {error:#}");
+        eprintln!(
+            "warning: enrollment succeeded but the Linux client service could not be enabled and started automatically: {error:#}"
+        );
     }
     #[cfg(windows)]
     if let Err(error) = enable_windows_service_after_enrollment() {
-        eprintln!("warning: enrollment succeeded but Windows service startup could not be enabled automatically: {error:#}");
+        eprintln!(
+            "warning: enrollment succeeded but Windows service startup could not be enabled automatically: {error:#}"
+        );
     }
     Ok(config_path)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_identity_generation(
     config: &ClientConfig,
     config_path: &Path,
@@ -289,6 +292,7 @@ fn persist_identity_generation(
 
     #[cfg(not(unix))]
     {
+        let _ = generation_id;
         prepare_identity_generation(&config.data_dir, identity_dir)?;
         write_new_file(&config.identity_cert, certificate, false)?;
         write_new_file(&config.identity_key, private_key, true)?;
@@ -440,8 +444,8 @@ pub(crate) fn secure_renewed_configuration(data_dir: &Path, config_path: &Path) 
 
 #[cfg(windows)]
 fn validate_windows_protected_root(data_dir: &Path) -> Result<()> {
-    let expected_data_dir = client_data_dir()
-        .context("resolve installer-owned Windows CentralD data directory")?;
+    let expected_data_dir =
+        client_data_dir().context("resolve installer-owned Windows CentralD data directory")?;
     if data_dir != expected_data_dir {
         bail!(
             "Windows CentralD client state must use the installer-owned fixed data directory {}",
@@ -492,7 +496,10 @@ fn require_windows_real_component(path: &Path, metadata: &std::fs::Metadata) -> 
     if metadata.file_type().is_symlink()
         || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     {
-        bail!("refusing Windows reparse point in client state: {}", path.display());
+        bail!(
+            "refusing Windows reparse point in client state: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -512,7 +519,8 @@ pub(crate) fn timestamp_to_datetime(
 ) -> Result<chrono::DateTime<Utc>> {
     let value = value.context("timestamp is missing")?;
     let nanos = u32::try_from(value.nanos).context("timestamp nanoseconds are invalid")?;
-    chrono::DateTime::from_timestamp(value.seconds, nanos).context("timestamp is outside the supported range")
+    chrono::DateTime::from_timestamp(value.seconds, nanos)
+        .context("timestamp is outside the supported range")
 }
 
 /// Finds and validates the fixed active client configuration pointer.
@@ -528,9 +536,7 @@ pub fn load_latest_config() -> Result<(PathBuf, ClientConfig)> {
     Ok((path, config))
 }
 
-pub(crate) fn previous_active_config(
-    data_dir: &Path,
-) -> Result<Option<(PathBuf, ClientConfig)>> {
+pub(crate) fn previous_active_config(data_dir: &Path) -> Result<Option<(PathBuf, ClientConfig)>> {
     let pointer = client_active_pointer(data_dir)?;
     let Some(filename) = pointer.previous()? else {
         return Ok(None);
@@ -589,6 +595,7 @@ fn active_config_path(data_dir: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn validate_active_config_target(data_dir: &Path, filename: &str) -> Result<PathBuf> {
     let candidate = Path::new(filename);
     if filename.is_empty()
@@ -661,11 +668,7 @@ fn service_endpoint(server: &str, port: u16) -> Result<String> {
     )
 }
 
-fn secret_or_prompt(
-    key_file: Option<&Path>,
-    key_stdin: bool,
-    label: &str,
-) -> Result<SecretString> {
+fn secret_or_prompt(key_file: Option<&Path>, key_stdin: bool, label: &str) -> Result<SecretString> {
     if let Some(path) = key_file {
         return read_access_key_file(path, label);
     }
@@ -685,8 +688,8 @@ fn secret_or_prompt(
         if input.len() > MAX_INVITATION_BYTES {
             bail!("{label} exceeds the maximum supported invitation size");
         }
-        let value = String::from_utf8(input)
-            .context("access key from standard input is not UTF-8")?;
+        let value =
+            String::from_utf8(input).context("access key from standard input is not UTF-8")?;
         return normalize_access_key(value, label);
     }
     let value = rpassword::prompt_password(format!("{label}: "))?;
@@ -704,8 +707,8 @@ fn read_access_key_file(path: &Path, label: &str) -> Result<SecretString> {
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
         use rustix::fs::{Mode, OFlags, open};
+        use std::os::unix::fs::MetadataExt;
 
         if !path.is_absolute() {
             bail!("access-key file path must be absolute");
@@ -777,7 +780,9 @@ fn read_access_key_file(path: &Path, label: &str) -> Result<SecretString> {
 fn validate_access_key_ancestors(path: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
 
-    let parent = path.parent().context("access-key file has no parent directory")?;
+    let parent = path
+        .parent()
+        .context("access-key file has no parent directory")?;
     for ancestor in parent.ancestors() {
         let metadata = ancestor
             .symlink_metadata()
@@ -893,11 +898,9 @@ pub fn repair_active_state_permissions() -> Result<(PathBuf, ClientConfig)> {
         let service_ids = service_account_ids()?.context(
             "the centrald service account does not exist; install the Linux package before repair",
         )?;
-        let (config_path, config) = crate::unix_state::load_active_configuration(
-            &data_dir,
-            service_ids,
-        )
-        .context("load active client state through fixed-root descriptors")?;
+        let (config_path, config) =
+            crate::unix_state::load_active_configuration(&data_dir, service_ids)
+                .context("load active client state through fixed-root descriptors")?;
         let layout = validate_repair_layout(&config_path, &config)?;
         secure_unix_repair_state(&layout, state_lock.path())?;
         return Ok((config_path, config));
@@ -909,12 +912,14 @@ pub fn repair_active_state_permissions() -> Result<(PathBuf, ClientConfig)> {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct RepairLayout {
     identity_id: Uuid,
     generation_id: Uuid,
 }
 
+#[allow(dead_code)]
 fn validate_repair_layout(config_path: &Path, config: &ClientConfig) -> Result<RepairLayout> {
     let data_dir = client_data_dir().context("resolve fixed CentralD client state root")?;
     if config.data_dir != data_dir {
@@ -945,7 +950,10 @@ fn validate_repair_layout(config_path: &Path, config: &ClientConfig) -> Result<R
         .join("generations")
         .join(generation_id.to_string());
     let expected = [
-        (&config.identity_cert, identity_dir.join("identity-chain.pem")),
+        (
+            &config.identity_cert,
+            identity_dir.join("identity-chain.pem"),
+        ),
         (&config.identity_key, identity_dir.join("identity-key.pem")),
         (&config.root_ca, identity_dir.join("root-ca.pem")),
         (
@@ -984,32 +992,17 @@ fn secure_unix_repair_state(layout: &RepairLayout, lock_path: &Path) -> Result<(
         "client-{}-{}.toml",
         layout.identity_id, layout.generation_id
     );
-    crate::unix_state::secure_configuration(
-        &data_dir,
-        &configuration_name,
-        service_ids,
-    )?;
+    crate::unix_state::secure_configuration(&data_dir, &configuration_name, service_ids)?;
     // The descriptor-opened active configuration proves that the current
     // pointer exists. Repair the fixed pointer files through the same no-follow
     // descriptor walk rather than re-resolving their paths.
-    crate::unix_state::secure_configuration(
-        &data_dir,
-        "current.pointer",
-        service_ids,
-    )?;
-    crate::unix_state::secure_configuration(
-        &data_dir,
-        ".current.pointer.lock",
-        service_ids,
-    )?;
+    crate::unix_state::secure_configuration(&data_dir, "current.pointer", service_ids)?;
+    crate::unix_state::secure_configuration(&data_dir, ".current.pointer.lock", service_ids)?;
     crate::unix_state::secure_lock(lock_path, service_ids)
 }
 
 #[cfg(unix)]
-pub(crate) fn secure_identity_directory(
-    data_dir: &Path,
-    identity_dir: &Path,
-) -> Result<()> {
+pub(crate) fn secure_identity_directory(data_dir: &Path, identity_dir: &Path) -> Result<()> {
     let (identity_id, generation_id) = parse_generation_path(data_dir, identity_dir)?;
     let service_ids = service_account_ids()?.context(
         "the centrald service account does not exist; install the Linux package before enrollment",
@@ -1045,10 +1038,7 @@ fn parse_generation_path(data_dir: &Path, identity_dir: &Path) -> Result<(Uuid, 
         .components()
         .map(|component| component.as_os_str())
         .collect::<Vec<_>>();
-    if components.len() != 4
-        || components[0] != "identities"
-        || components[2] != "generations"
-    {
+    if components.len() != 4 || components[0] != "identities" || components[2] != "generations" {
         bail!("client identity generation path has an invalid shape");
     }
     let identity_id = components[1]
@@ -1137,9 +1127,7 @@ fn enable_windows_service_after_enrollment() -> Result<()> {
     }
     // Starting is best-effort because reenrollment may run while the service is
     // already active. Startup mode is the durable invariant.
-    let _ = Command::new(&sc)
-        .args(["start", "CentralDClient"])
-        .output();
+    let _ = Command::new(&sc).args(["start", "CentralDClient"]).output();
     Ok(())
 }
 

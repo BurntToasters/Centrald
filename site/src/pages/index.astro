@@ -1,0 +1,171 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="CentralD - Security-first homelab device manager"
+  description="CentralD manages Windows and Linux devices from a single Ubuntu Server with outbound-only clients, a Tauri desktop Admin, and a typed, audited job pipeline."
+>
+  <main>
+    <section class="hero">
+      <p class="hero-eyebrow">Security-first homelab management</p>
+      <h1>One server. Every device. No inbound ports.</h1>
+      <p class="hero-lede">
+        CentralD is a device manager for private LAN and VPN deployments. An
+        Ubuntu Server host manages outbound-only Windows and Linux clients
+        through a Tauri desktop Admin application - with typed jobs, audited
+        remote settings, and secure transient terminals.
+      </p>
+      <div class="hero-actions">
+        <a class="button primary" href="/docs/quickstart">Get started</a>
+        <a class="button" href="/docs/architecture">Read the architecture</a>
+      </div>
+    </section>
+
+    <section class="quick">
+      <div class="panel">
+        <p class="panel-title">First-run path</p>
+        <pre
+          class="code"><code>sudo centrald-server initial-setup
+sudo centrald-server config
+# on each managed Linux device
+sudo centrald-client enroll</code></pre>
+      </div>
+      <div class="panel">
+        <p class="panel-title">What you get</p>
+        <ul class="checklist">
+          <li>Outbound-only client network daemon</li>
+          <li>mTLS everywhere, no plaintext traffic</li>
+          <li>Typed, leased, and audited job queue</li>
+          <li>Verified, operator-approved updates</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="features">
+      <a class="feature" href="/docs/architecture">
+        <h2>Architecture</h2>
+        <p>
+          Three TLS listeners, one PostgreSQL source of truth, and a locked-down
+          server-local control socket.
+        </p>
+      </a>
+      <a class="feature" href="/docs/operations">
+        <h2>Operations</h2>
+        <p>
+          Configuration, enrollment, renewal, jobs, shell sessions, backups, and
+          recovery runbooks.
+        </p>
+      </a>
+      <a class="feature" href="/docs/threat-model">
+        <h2>Threat model</h2>
+        <p>
+          What CentralD defends against and what it does not, so you can deploy
+          it with the right assumptions.
+        </p>
+      </a>
+      <a class="feature" href="/docs/releases">
+        <h2>Releases</h2>
+        <p>
+          Channel policy, immutable artifacts, Minisign verification, and the
+          update pipeline.
+        </p>
+      </a>
+    </section>
+  </main>
+</BaseLayout>
+
+<style>
+  .hero {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 4.5rem 1.5rem 3rem;
+    text-align: center;
+  }
+  .hero-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin-bottom: 1rem;
+  }
+  .hero h1 {
+    font-size: clamp(2.2rem, 5vw, 3.4rem);
+    line-height: 1.1;
+    max-width: 18em;
+    margin: 0 auto 1.25rem;
+  }
+  .hero-lede {
+    max-width: 42em;
+    margin: 0 auto 2rem;
+    color: var(--muted);
+    font-size: 1.1rem;
+  }
+  .hero-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .quick {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 1rem 1.5rem 3rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+  }
+  .panel-title {
+    font-weight: 700;
+    margin: 0 0 0.75rem;
+  }
+  .code {
+    margin: 0;
+  }
+  .checklist {
+    margin: 0;
+    padding-left: 1.1rem;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .features {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 0 1.5rem 3rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1.5rem;
+  }
+  .feature {
+    display: block;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+  }
+  .feature:hover {
+    border-color: var(--accent);
+  }
+  .feature h2 {
+    margin: 0 0 0.5rem;
+    font-size: 1.15rem;
+  }
+  .feature p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  @media (max-width: 768px) {
+    .quick {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

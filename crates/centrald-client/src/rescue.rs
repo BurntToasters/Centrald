@@ -42,6 +42,7 @@ struct RescueCheck {
 /// Returns an error when no enrolled configuration exists, a requested repair
 /// fails, a diagnostic bundle cannot be created safely, or one or more checks
 /// fail after any requested repair.
+#[allow(clippy::too_many_lines)]
 pub async fn run(args: RescueArgs) -> Result<()> {
     let mut report = RescueReport {
         generated_at: Utc::now().to_rfc3339(),
@@ -58,9 +59,12 @@ pub async fn run(args: RescueArgs) -> Result<()> {
     };
 
     let loaded = crate::enrollment::load_latest_config();
-    let (mut config_path, mut config) = match loaded {
+    #[allow(unused_mut)]
+    let (config_path, config) = match loaded {
         Ok(value) => {
-            report.checks.push(ok("configuration", "active configuration loaded"));
+            report
+                .checks
+                .push(ok("configuration", "active configuration loaded"));
             value
         }
         Err(error) => {
@@ -87,7 +91,8 @@ pub async fn run(args: RescueArgs) -> Result<()> {
         #[cfg(not(windows))]
         {
             let was_running = client_service_running();
-            stop_client_service().context("stop CentralD client service before permission repair")?;
+            stop_client_service()
+                .context("stop CentralD client service before permission repair")?;
             let repair_result = crate::enrollment::repair_active_state_permissions()
                 .context("repair client state ownership and permissions");
             let restore_result = if was_running {
@@ -100,7 +105,9 @@ pub async fn run(args: RescueArgs) -> Result<()> {
                 (Err(repair), Ok(())) => return Err(repair),
                 (Ok(_), Err(restore)) => return Err(restore),
                 (Err(repair), Err(restore)) => {
-                    return Err(repair.context(format!("service restoration also failed: {restore:#}")));
+                    return Err(
+                        repair.context(format!("service restoration also failed: {restore:#}"))
+                    );
                 }
             };
             config_path = repaired.0;
@@ -119,7 +126,9 @@ pub async fn run(args: RescueArgs) -> Result<()> {
     }
     if args.restart_service {
         restart_client_service().context("restart CentralD client service")?;
-        report.checks.push(ok("service restart", "client service restarted"));
+        report
+            .checks
+            .push(ok("service restart", "client service restarted"));
     }
 
     report.checks.push(match config.validate() {
@@ -127,7 +136,11 @@ pub async fn run(args: RescueArgs) -> Result<()> {
         Err(error) => failed("configuration schema", format!("{error:#}")),
     });
     for (name, path, private) in [
-        ("identity certificate", config.identity_cert.as_path(), false),
+        (
+            "identity certificate",
+            config.identity_cert.as_path(),
+            false,
+        ),
         ("identity private key", config.identity_key.as_path(), true),
         ("root trust certificate", config.root_ca.as_path(), false),
         (
@@ -139,17 +152,19 @@ pub async fn run(args: RescueArgs) -> Result<()> {
     ] {
         report.checks.push(check_file(name, path, private));
     }
-    report.checks.push(if config.certificate_expires_at > Utc::now() {
-        ok(
-            "certificate lifetime",
-            format!("valid until {}", config.certificate_expires_at.to_rfc3339()),
-        )
-    } else {
-        failed(
-            "certificate lifetime",
-            format!("expired at {}", config.certificate_expires_at.to_rfc3339()),
-        )
-    });
+    report
+        .checks
+        .push(if config.certificate_expires_at > Utc::now() {
+            ok(
+                "certificate lifetime",
+                format!("valid until {}", config.certificate_expires_at.to_rfc3339()),
+            )
+        } else {
+            failed(
+                "certificate lifetime",
+                format!("expired at {}", config.certificate_expires_at.to_rfc3339()),
+            )
+        });
 
     if args.repair && !args.restart_service {
         report.checks.push(ok(
@@ -159,10 +174,12 @@ pub async fn run(args: RescueArgs) -> Result<()> {
     } else {
         report.checks.push(service_status());
     }
-    report.checks.push(match crate::daemon::probe_connection(&config).await {
-        Ok(()) => ok("server mTLS", "pinned TLS connection succeeded"),
-        Err(error) => failed("server mTLS", format!("{error:#}")),
-    });
+    report
+        .checks
+        .push(match crate::daemon::probe_connection(&config).await {
+            Ok(()) => ok("server mTLS", "pinned TLS connection succeeded"),
+            Err(error) => failed("server mTLS", format!("{error:#}")),
+        });
 
     write_bundle_if_requested(args.bundle.as_deref(), &report)?;
     print_report(&report);
@@ -172,10 +189,12 @@ pub async fn run(args: RescueArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn require_repair_privilege() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let status = std::fs::read_to_string("/proc/self/status").context("read process identity")?;
+        let status =
+            std::fs::read_to_string("/proc/self/status").context("read process identity")?;
         let effective_uid = status
             .lines()
             .find(|line| line.starts_with("Uid:"))
@@ -189,6 +208,7 @@ fn require_repair_privilege() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn client_service_running() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -201,16 +221,18 @@ fn client_service_running() -> bool {
     false
 }
 
+#[allow(dead_code, clippy::unnecessary_wraps)]
 fn start_client_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         run_checked(Command::new("/usr/bin/systemctl").args(["start", "centrald-client.service"]))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     Ok(())
 }
 
+#[allow(dead_code)]
 fn stop_client_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -219,9 +241,12 @@ fn stop_client_service() -> Result<()> {
             .output()
             .context("stop centrald-client.service")?;
         if !output.status.success() {
-            bail!("could not stop centrald-client.service: {}", command_detail(&output));
+            bail!(
+                "could not stop centrald-client.service: {}",
+                command_detail(&output)
+            );
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(windows)]
     {
@@ -265,8 +290,10 @@ fn stop_client_service() -> Result<()> {
 pub fn restart_client_service() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        run_checked(Command::new("/usr/bin/systemctl").args(["restart", "centrald-client.service"]))?;
-        return Ok(());
+        run_checked(
+            Command::new("/usr/bin/systemctl").args(["restart", "centrald-client.service"]),
+        )?;
+        Ok(())
     }
     #[cfg(windows)]
     {
@@ -299,7 +326,7 @@ pub fn restart_client_service() -> Result<()> {
             }
         }
         run_checked(Command::new(&sc).args(["start", "CentralDClient"]))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
@@ -355,18 +382,12 @@ fn service_status() -> RescueCheck {
         let Some(sc) = windows_system_executable("sc.exe") else {
             return failed("client service", "Windows system directory is unavailable");
         };
-        let query = match Command::new(&sc)
-            .args(["query", "CentralDClient"])
-            .output()
-        {
+        let query = match Command::new(&sc).args(["query", "CentralDClient"]).output() {
             Ok(output) if output.status.success() => output,
             Ok(output) => return failed("client service", command_detail(&output)),
             Err(error) => return failed("client service", error.to_string()),
         };
-        let account = match Command::new(&sc)
-            .args(["qc", "CentralDClient"])
-            .output()
-        {
+        let account = match Command::new(&sc).args(["qc", "CentralDClient"]).output() {
             Ok(output) if output.status.success() => output,
             Ok(output) => return failed("client service identity", command_detail(&output)),
             Err(error) => return failed("client service identity", error.to_string()),
@@ -379,12 +400,12 @@ fn service_status() -> RescueCheck {
             );
         }
         if String::from_utf8_lossy(&query.stdout).contains("RUNNING") {
-            ok(
-                "client service",
-                "running under NT SERVICE\\CentralDClient",
-            )
+            ok("client service", "running under NT SERVICE\\CentralDClient")
         } else {
-            failed("client service", "installed with the correct identity but not running")
+            failed(
+                "client service",
+                "installed with the correct identity but not running",
+            )
         }
     }
     #[cfg(not(any(target_os = "linux", windows)))]

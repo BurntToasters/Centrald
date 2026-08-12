@@ -163,6 +163,10 @@ impl ActivePointer {
     /// Rolls back a publication recovered after a process restart when a
     /// previous pointer exists. Returns `false` without changing the current
     /// pointer when this was the first credential generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when pointer recovery or file operations fail.
     pub fn rollback_recovered_if_previous(&self) -> Result<bool, ActivePointerError> {
         let lock = self.lock()?;
         self.recover_locked()?;
@@ -255,13 +259,14 @@ impl ActivePointer {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let file = options.open(&path).map_err(|source| io_error(&path, source))?;
+        let file = options
+            .open(&path)
+            .map_err(|source| io_error(&path, source))?;
         let metadata = file.metadata().map_err(|source| io_error(&path, source))?;
         if !metadata.is_file() {
             return Err(ActivePointerError::UnsafeFile(path));
         }
-        FileExt::lock_exclusive(&file)
-            .map_err(|source| io_error(&path, source))?;
+        FileExt::lock_exclusive(&file).map_err(|source| io_error(&path, source))?;
         Ok(file)
     }
 
@@ -338,6 +343,7 @@ fn read_value(path: &Path) -> Result<Option<String>, ActivePointerError> {
 }
 
 fn write_new_pointer(path: &Path, value: &str) -> Result<(), ActivePointerError> {
+    use std::io::Write as _;
     remove_regular_if_exists(path)?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -346,8 +352,9 @@ fn write_new_pointer(path: &Path, value: &str) -> Result<(), ActivePointerError>
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path).map_err(|source| io_error(path, source))?;
-    use std::io::Write as _;
+    let mut file = options
+        .open(path)
+        .map_err(|source| io_error(path, source))?;
     file.write_all(value.as_bytes())
         .and_then(|()| file.write_all(b"\n"))
         .and_then(|()| file.sync_all())
@@ -388,6 +395,7 @@ fn sync_directory(path: &Path) -> Result<(), ActivePointerError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn sync_directory(_path: &Path) -> Result<(), ActivePointerError> {
     Ok(())
 }
@@ -414,14 +422,26 @@ mod tests {
     fn publication_can_commit_and_rollback_without_ordering() {
         let directory = fixture();
         let pointer = ActivePointer::new(&directory).expect("pointer");
-        pointer.publish("generation-one.toml").expect("publish").commit().expect("commit");
+        pointer
+            .publish("generation-one.toml")
+            .expect("publish")
+            .commit()
+            .expect("commit");
         assert_eq!(pointer.read().expect("read"), "generation-one.toml");
 
-        let pending = pointer.publish("generation-two.toml").expect("publish second");
+        let pending = pointer
+            .publish("generation-two.toml")
+            .expect("publish second");
         assert_eq!(pointer.read().expect("read new"), "generation-two.toml");
-        assert_eq!(pointer.previous().expect("read previous").as_deref(), Some("generation-one.toml"));
+        assert_eq!(
+            pointer.previous().expect("read previous").as_deref(),
+            Some("generation-one.toml")
+        );
         pending.rollback().expect("rollback");
-        assert_eq!(pointer.read().expect("read restored"), "generation-one.toml");
+        assert_eq!(
+            pointer.read().expect("read restored"),
+            "generation-one.toml"
+        );
         fs::remove_dir_all(directory).expect("remove fixture");
     }
 }

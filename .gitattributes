@@ -3,3 +3,5 @@
 *.ps1 text eol=crlf
 *.rs text eol=lf
 *.proto text eol=lf
+*.astro text eol=lf
+*.mjs text eol=lf

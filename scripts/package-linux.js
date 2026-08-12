@@ -55,7 +55,13 @@ buildDebianPackage({
     version: debianVersion,
     description:
       "CentralD homelab management server for Ubuntu Server 24.04 and newer",
-    dependencies: ["ca-certificates", "coreutils", "postgresql", "systemd", "util-linux"],
+    dependencies: [
+      "ca-certificates",
+      "coreutils",
+      "postgresql",
+      "systemd",
+      "util-linux",
+    ],
   }),
   postinst: `#!/bin/sh\nset -eu\ninstall -d -m 0700 -o root -g root /etc/centrald /var/lib/centrald\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-server.service; then\n    systemctl try-restart centrald-server.service || echo "warning: centrald-server.service did not restart cleanly; inspect with systemctl status centrald-server" >&2\n  fi\nfi\n`,
   service: path.join(root, "deploy/systemd/centrald-server.service"),
@@ -69,10 +75,19 @@ buildDebianPackage({
     packageName: "centrald-client",
     version: debianVersion,
     description: "Outbound-only CentralD managed client for Debian and Ubuntu",
-    dependencies: ["adduser", "ca-certificates", "systemd"],
+    dependencies: ["adduser", "ca-certificates", "systemd", "util-linux"],
   }),
-  postinst: `#!/bin/sh\nset -eu\nif ! getent group centrald >/dev/null 2>&1; then addgroup --system centrald >/dev/null; fi\nif ! getent passwd centrald >/dev/null 2>&1; then adduser --system --ingroup centrald --home /var/lib/centrald-client --no-create-home --shell /usr/sbin/nologin centrald >/dev/null; fi\nfor path in /var/lib/centrald-client /var/lib/centrald-client/identities /var/lib/centrald-client/configurations /var/lib/centrald-client.lock; do\n  if [ -L "$path" ]; then echo "refusing symbolic-link CentralD client state: $path" >&2; exit 1; fi\ndone\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client/identities\ninstall -d -m 0700 -o centrald -g centrald /var/lib/centrald-client/configurations\nif [ -e /var/lib/centrald-client.lock ]; then\n  if [ ! -f /var/lib/centrald-client.lock ]; then echo "CentralD client state lock is not a regular file" >&2; exit 1; fi\n  chown centrald:centrald /var/lib/centrald-client.lock\n  chmod 0600 /var/lib/centrald-client.lock\nelse\n  install -m 0600 -o centrald -g centrald /dev/null /var/lib/centrald-client.lock\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-client.service; then\n    systemctl try-restart centrald-client.service || echo "warning: centrald-client.service did not restart cleanly; inspect with systemctl status centrald-client" >&2\n  fi\nfi\n`,
-  service: path.join(root, "deploy/systemd/centrald-client.service"),
+  postinst: `#!/bin/sh\nset -eu\nif ! getent group centrald >/dev/null 2>&1; then addgroup --system centrald >/dev/null; fi\nif ! getent passwd centrald >/dev/null 2>&1; then adduser --system --ingroup centrald --home /var/lib/centrald-client --no-create-home --shell /usr/sbin/nologin centrald >/dev/null; fi\nfor path in /var/lib/centrald-client /var/lib/centrald-client/identities /var/lib/centrald-client/configurations /var/lib/centrald-client.lock; do\n  if [ -L "$path" ]; then echo "refusing symbolic-link CentralD client state: $path" >&2; exit 1; fi\ndone\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client/identities\ninstall -d -m 0700 -o centrald -g centrald /var/lib/centrald-client/configurations\nif [ -e /var/lib/centrald-client.lock ]; then\n  if [ ! -f /var/lib/centrald-client.lock ]; then echo "CentralD client state lock is not a regular file" >&2; exit 1; fi\n  chown centrald:centrald /var/lib/centrald-client.lock\n  chmod 0600 /var/lib/centrald-client.lock\nelse\n  install -m 0600 -o centrald -g centrald /dev/null /var/lib/centrald-client.lock\nfi\nif [ -e /var/lib/centrald-broker ]; then\n  if [ ! -d /var/lib/centrald-broker ]; then echo "CentralD broker state is not a directory" >&2; exit 1; fi\n  chown root:root /var/lib/centrald-broker\n  chmod 0700 /var/lib/centrald-broker\nelse\n  install -d -m 0700 -o root -g root /var/lib/centrald-broker\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  systemctl enable centrald-broker.service || echo "warning: could not enable centrald-broker.service" >&2\n  if systemctl is-active --quiet centrald-client.service; then\n    systemctl try-restart centrald-client.service || echo "warning: centrald-client.service did not restart cleanly; inspect with systemctl status centrald-client" >&2\n  fi\nfi\n`,
+  services: [
+    {
+      source: path.join(root, "deploy/systemd/centrald-client.service"),
+      name: "centrald-client.service",
+    },
+    {
+      source: path.join(root, "deploy/systemd/centrald-broker.service"),
+      name: "centrald-broker.service",
+    },
+  ],
 });
 
 const appImage = findSingleArtifact(
@@ -147,6 +162,7 @@ function buildDebianPackage({
   control,
   postinst,
   service,
+  services,
 }) {
   const staging = path.join(
     path.dirname(artifact),
@@ -156,7 +172,10 @@ function buildDebianPackage({
     throw new Error(`Refusing existing package staging directory: ${staging}`);
   }
   try {
-    fs.mkdirSync(path.join(staging, "DEBIAN"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(staging, "DEBIAN"), {
+      recursive: true,
+      mode: 0o700,
+    });
     fs.mkdirSync(path.join(staging, "usr/bin"), {
       recursive: true,
       mode: 0o755,
@@ -170,11 +189,20 @@ function buildDebianPackage({
       mode: 0o755,
     });
     copyArtifact(binary, path.join(staging, `usr/bin/${binaryName}`), 0o755);
-    copyArtifact(
-      requireRegularFile(service, "systemd service"),
-      path.join(staging, `lib/systemd/system/${binaryName}.service`),
-      0o644,
-    );
+    const units = [];
+    if (service) {
+      units.push({ source: service, name: `${binaryName}.service` });
+    }
+    if (services) {
+      units.push(...services);
+    }
+    for (const { source, name } of units) {
+      copyArtifact(
+        requireRegularFile(source, "systemd service"),
+        path.join(staging, `lib/systemd/system/${name}`),
+        0o644,
+      );
+    }
     fs.writeFileSync(path.join(staging, "DEBIAN/control"), control, {
       mode: 0o644,
     });
@@ -204,7 +232,8 @@ function requireRegularFile(file, label) {
 
 function findSingleArtifact(start, predicate, label) {
   if (fs.existsSync(start) && fs.statSync(start).isFile()) {
-    if (!predicate(start)) throw new Error(`${label} has an unexpected name: ${start}`);
+    if (!predicate(start))
+      throw new Error(`${label} has an unexpected name: ${start}`);
     return requireRegularFile(start, label);
   }
   const matches = [];
@@ -218,7 +247,8 @@ function findSingleArtifact(start, predicate, label) {
 }
 
 function walk(directory, matches, predicate) {
-  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) return;
+  if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory())
+    return;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const absolute = path.join(directory, entry.name);
     if (entry.isSymbolicLink()) continue;
@@ -235,5 +265,9 @@ function copyArtifact(source, destination, mode) {
 function copySignatureIfPresent(source, destination) {
   const signature = `${source}.sig`;
   if (!fs.existsSync(signature)) return;
-  copyArtifact(requireRegularFile(signature, "updater signature"), `${destination}.sig`, 0o644);
+  copyArtifact(
+    requireRegularFile(signature, "updater signature"),
+    `${destination}.sig`,
+    0o644,
+  );
 }

@@ -31,7 +31,6 @@ test("derives GitHub latest and immutable release URLs", () => {
   fs.rmSync(root, { recursive: true });
 });
 
-
 test("derives mutable GitHub prerelease channel URLs from the channel branch", () => {
   const root = temporaryConfig(
     "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=prerelease\n",

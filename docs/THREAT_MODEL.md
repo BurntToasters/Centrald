@@ -25,10 +25,11 @@
 ### Stolen or raced invitation
 
 An invitation is short-lived, role-bound, one-time, revocable before use, and
-stored as an Argon2id hash. Enrollment locks and consumes it transactionally. Remote Argon2 work
-runs off the async executor and is fail-fast concurrency-bounded so invitation checking cannot
-monopolize the server's Tokio workers or memory. Theft before use can still authorize the thief;
-trusted delivery and short TTL are required.
+stored as an Argon2id hash. Enrollment locks and consumes it transactionally.
+Remote Argon2 work runs off the async executor and is fail-fast
+concurrency-bounded so invitation checking cannot monopolize the server's Tokio
+workers or memory. Theft before use can still authorize the thief; trusted
+delivery and short TTL are required.
 
 ### Network redirection during enrollment
 
@@ -44,8 +45,8 @@ certificate registry. Enrollment and renewal certificates remain pending until
 the endpoint durably publishes the private key and proves possession over mTLS.
 Control streams require one bounded Hello first and periodically reauthorize the
 certificate. Admin job-stream concurrency is capped, and certificate issuance
-never grants validity beyond the shortest-lived parent in the signing chain. Protocol major versions are checked at enrollment and control
-boundaries.
+never grants validity beyond the shortest-lived parent in the signing chain.
+Protocol major versions are checked at enrollment and control boundaries.
 
 ### Privileged-operation replay or substitution
 
@@ -71,19 +72,20 @@ approval. Public verification keys are compiled from tracked configuration.
 ### Destructive path or database confusion
 
 Repository cleanup is allowlisted and marker-protected. Server reset rejects
-symlinks and shallow/root paths, serializes against setup, holds the daemon lock,
-and requires the instance-bound data/environment markers, database comment and
-installation row, plus any managed-role marker. It journals authorization before
-the database drop and keeps the data-root marker until all other children are
-removed, allowing an exact retry after partial cleanup. Generated-looking
+symlinks and shallow/root paths, serializes against setup, holds the daemon
+lock, and requires the instance-bound data/environment markers, database comment
+and installation row, plus any managed-role marker. It journals authorization
+before the database drop and keeps the data-root marker until all other children
+are removed, allowing an exact retry after partial cleanup. Generated-looking
 PostgreSQL names alone are never trusted, and setup never adopts an existing
 database.
 
 ### Local secret-file tampering
 
-The server revalidates private keys and the database credential file at each runtime read. They
-must remain root-owned, single-linked regular files with no group/other permissions and bounded
-size. Package-managed paths and ancestor checks prevent configuration from redirecting these reads.
+The server revalidates private keys and the database credential file at each
+runtime read. They must remain root-owned, single-linked regular files with no
+group/other permissions and bounded size. Package-managed paths and ancestor
+checks prevent configuration from redirecting these reads.
 
 ### Stale or conflicting configuration writes
 

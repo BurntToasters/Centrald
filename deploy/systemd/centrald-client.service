@@ -1,8 +1,8 @@
 [Unit]
 Description=CentralD managed client
 Documentation=https://github.com/BurntToasters/centrald
-After=network-online.target
-Wants=network-online.target
+After=network-online.target centrald-broker.service
+Wants=network-online.target centrald-broker.service
 ConditionPathExists=/var/lib/centrald-client/configurations/current.pointer
 
 [Service]

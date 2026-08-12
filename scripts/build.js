@@ -10,12 +10,7 @@ import {
 
 const root = process.cwd();
 const options = parseArguments(process.argv.slice(2));
-const supported = new Set([
-  "windows-x64",
-  "windows-arm64",
-  "linux-x64",
-  "all",
-]);
+const supported = new Set(["windows-x64", "windows-arm64", "linux-x64", "all"]);
 if (!supported.has(options.target)) {
   throw new Error(`Unsupported --target ${JSON.stringify(options.target)}`);
 }
@@ -168,7 +163,11 @@ function buildWindowsClientZip(clientBinary, destination, output) {
   }
   try {
     fs.mkdirSync(staging, { recursive: false, mode: 0o700 });
-    copyArtifact(clientBinary, path.join(staging, "centrald-client.exe"), 0o755);
+    copyArtifact(
+      clientBinary,
+      path.join(staging, "centrald-client.exe"),
+      0o755,
+    );
     copyArtifact(
       requireRegularFile(
         path.join(root, "deploy/windows/install-client.ps1"),
@@ -277,7 +276,9 @@ function removeTemporaryConfig(file) {
 
 function requirePlatform(expected, operation) {
   if (process.platform !== expected) {
-    throw new Error(`${operation} requires ${expected}; current platform is ${process.platform}.`);
+    throw new Error(
+      `${operation} requires ${expected}; current platform is ${process.platform}.`,
+    );
   }
 }
 
@@ -297,7 +298,9 @@ function findSingleArtifact(directory, predicate, label) {
   }
   const matches = fs
     .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && predicate(path.join(directory, entry.name)))
+    .filter(
+      (entry) => entry.isFile() && predicate(path.join(directory, entry.name)),
+    )
     .map((entry) => path.join(directory, entry.name));
   if (matches.length !== 1) {
     throw new Error(
@@ -316,7 +319,9 @@ function copySignatureIfPresent(source, destination) {
   const signature = `${source}.sig`;
   if (!fs.existsSync(signature)) {
     if (options.signed) {
-      throw new Error(`Tauri did not generate the required signature: ${signature}`);
+      throw new Error(
+        `Tauri did not generate the required signature: ${signature}`,
+      );
     }
     return;
   }

@@ -28,6 +28,11 @@ impl ConfigFileLock {
     /// Local TUI callers may block until the lock is free. Async RPC handlers
     /// must use [`Self::try_acquire`] from `spawn_blocking` so a held lock
     /// cannot park Tokio worker threads indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lock file cannot be opened or the exclusive
+    /// lock cannot be acquired.
     pub fn acquire(config_path: &Path) -> Result<Self> {
         let (file, path) = open_lock_file(config_path)?;
         FileExt::lock_exclusive(&file)
@@ -38,13 +43,19 @@ impl ConfigFileLock {
     /// Attempts a non-blocking exclusive configuration lock.
     ///
     /// Returns `Ok(None)` when another writer already holds the lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lock file cannot be opened or the lock
+    /// attempt fails for a reason other than the lock being held.
     pub fn try_acquire(config_path: &Path) -> Result<Option<Self>> {
         let (file, path) = open_lock_file(config_path)?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file, path })),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error)
-                .with_context(|| format!("lock configuration writer {}", path.display())),
+            Err(error) => {
+                Err(error).with_context(|| format!("lock configuration writer {}", path.display()))
+            }
         }
     }
 
@@ -62,10 +73,10 @@ impl Drop for ConfigFileLock {
 
 fn open_lock_file(config_path: &Path) -> Result<(File, PathBuf)> {
     let path = lock_path(config_path)?;
-    if let Ok(metadata) = path.symlink_metadata() {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            bail!("refusing unsafe configuration lock path {}", path.display());
-        }
+    if let Ok(metadata) = path.symlink_metadata()
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        bail!("refusing unsafe configuration lock path {}", path.display());
     }
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -81,7 +92,10 @@ fn open_lock_file(config_path: &Path) -> Result<(File, PathBuf)> {
         .metadata()
         .with_context(|| format!("inspect configuration lock {}", path.display()))?;
     if !metadata.is_file() {
-        bail!("configuration lock is not a regular file: {}", path.display());
+        bail!(
+            "configuration lock is not a regular file: {}",
+            path.display()
+        );
     }
     Ok((file, path))
 }
@@ -95,7 +109,7 @@ struct DatabaseUpdateJournal {
     intended_revision: String,
 }
 
-/// Crash-recoverable two-file publication for the PostgreSQL environment file
+/// Crash-recoverable two-file publication for the `PostgreSQL` environment file
 /// and the non-secret server configuration that refers to it.
 #[derive(Debug)]
 pub struct DatabaseUpdateTransaction {
@@ -109,6 +123,12 @@ pub struct DatabaseUpdateTransaction {
 impl DatabaseUpdateTransaction {
     /// Stages both files while the caller holds [`ConfigFileLock`]. The secret
     /// environment bytes are never copied to a backup file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an interrupted update cannot be recovered, an
+    /// unfinished artifact already exists, or a stage or journal file cannot
+    /// be written.
     pub fn begin_locked(
         config_path: &Path,
         environment_path: &Path,
@@ -117,15 +137,25 @@ impl DatabaseUpdateTransaction {
     ) -> Result<Self> {
         recover_interrupted_database_update_locked(config_path)?;
         let paths = database_paths(config_path)?;
-        for path in [&paths.journal, &paths.environment_stage, &paths.config_stage] {
+        for path in [
+            &paths.journal,
+            &paths.environment_stage,
+            &paths.config_stage,
+        ] {
             reject_unsafe_existing(path)?;
             if path.exists() {
-                bail!("unfinished database update artifact exists: {}", path.display());
+                bail!(
+                    "unfinished database update artifact exists: {}",
+                    path.display()
+                );
             }
         }
         reject_unsafe_existing(environment_path)?;
         if !environment_path.exists() {
-            bail!("database environment file is missing: {}", environment_path.display());
+            bail!(
+                "database environment file is missing: {}",
+                environment_path.display()
+            );
         }
         write_new_file(&paths.environment_stage, environment_contents, true)?;
         if let Err(error) = write_new_file(&paths.config_stage, config_contents, true) {
@@ -138,11 +168,9 @@ impl DatabaseUpdateTransaction {
             environment_path: environment_path.to_path_buf(),
             intended_revision: revision(config_contents),
         };
-        if let Err(error) = write_new_file(
-            &paths.journal,
-            &serde_json::to_vec_pretty(&journal)?,
-            true,
-        ) {
+        if let Err(error) =
+            write_new_file(&paths.journal, &serde_json::to_vec_pretty(&journal)?, true)
+        {
             let _ = fs::remove_file(&paths.environment_stage);
             let _ = fs::remove_file(&paths.config_stage);
             return Err(error.into());
@@ -159,13 +187,21 @@ impl DatabaseUpdateTransaction {
 
     /// Publishes the environment file first and the matching configuration
     /// second. Any interruption is completed by startup recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a staged file cannot be published or a journal
+    /// file cannot be removed.
     pub fn commit(self) -> Result<()> {
         publish_database_stage(&self.environment_stage, &self.environment_path)?;
         sync_parent(&self.environment_path)?;
         publish_database_stage(&self.config_stage, &self.config_path)?;
         sync_parent(&self.config_path)?;
         fs::remove_file(&self.journal_path).with_context(|| {
-            format!("remove database update journal {}", self.journal_path.display())
+            format!(
+                "remove database update journal {}",
+                self.journal_path.display()
+            )
         })?;
         sync_parent(&self.config_path)
     }
@@ -173,11 +209,13 @@ impl DatabaseUpdateTransaction {
 
 /// Completes an interrupted database/config publication before configuration
 /// is loaded by the daemon or local TUI.
+///
+/// # Errors
+///
+/// Returns an error when an interrupted publication cannot be recovered.
 pub fn recover_interrupted_database_update(config_path: &Path) -> Result<()> {
     let paths = database_paths(config_path)?;
-    if !paths.journal.exists()
-        && !paths.environment_stage.exists()
-        && !paths.config_stage.exists()
+    if !paths.journal.exists() && !paths.environment_stage.exists() && !paths.config_stage.exists()
     {
         return Ok(());
     }
@@ -185,26 +223,38 @@ pub fn recover_interrupted_database_update(config_path: &Path) -> Result<()> {
     recover_interrupted_database_update_locked(config_path)
 }
 
+/// Completes an interrupted database/config publication while the caller holds
+/// [`ConfigFileLock`].
+///
+/// # Errors
+///
+/// Returns an error when an interrupted publication cannot be recovered or
+/// the journal does not belong to this configuration.
 pub fn recover_interrupted_database_update_locked(config_path: &Path) -> Result<()> {
     let paths = database_paths(config_path)?;
-    for path in [&paths.journal, &paths.environment_stage, &paths.config_stage] {
+    for path in [
+        &paths.journal,
+        &paths.environment_stage,
+        &paths.config_stage,
+    ] {
         reject_unsafe_existing(path)?;
     }
     if !paths.journal.exists() {
         for orphan in [&paths.environment_stage, &paths.config_stage] {
             if orphan.exists() {
-                fs::remove_file(orphan)
-                    .with_context(|| format!("remove orphan database stage {}", orphan.display()))?;
+                fs::remove_file(orphan).with_context(|| {
+                    format!("remove orphan database stage {}", orphan.display())
+                })?;
             }
         }
         sync_parent(config_path)?;
         return Ok(());
     }
-    let journal: DatabaseUpdateJournal = serde_json::from_slice(
-        &fs::read(&paths.journal)
-            .with_context(|| format!("read database update journal {}", paths.journal.display()))?,
-    )
-    .context("parse database update journal")?;
+    let journal: DatabaseUpdateJournal =
+        serde_json::from_slice(&fs::read(&paths.journal).with_context(|| {
+            format!("read database update journal {}", paths.journal.display())
+        })?)
+        .context("parse database update journal")?;
     if journal.version != 1 || journal.config_path != config_path {
         bail!("database update journal does not belong to this server configuration");
     }
@@ -288,6 +338,7 @@ struct SettingsUpdateJournal {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_field_names)]
 pub struct SettingsUpdateTransaction {
     config_path: PathBuf,
     journal_path: PathBuf,
@@ -298,6 +349,12 @@ pub struct SettingsUpdateTransaction {
 impl SettingsUpdateTransaction {
     /// Starts a crash-recoverable settings update while the caller holds the
     /// shared [`ConfigFileLock`]. No configuration bytes are changed here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an interrupted transaction cannot be recovered,
+    /// an unfinished artifact already exists, or a recovery file cannot be
+    /// written.
     pub fn begin_locked(
         config_path: &Path,
         original: &[u8],
@@ -309,21 +366,23 @@ impl SettingsUpdateTransaction {
         for path in [&paths.journal, &paths.original, &paths.published] {
             reject_unsafe_existing(path)?;
             if path.exists() {
-                bail!("unfinished settings update artifact exists: {}", path.display());
+                bail!(
+                    "unfinished settings update artifact exists: {}",
+                    path.display()
+                );
             }
         }
-        write_new_file(&paths.original, original, true)
-            .with_context(|| format!("write settings recovery copy {}", paths.original.display()))?;
+        write_new_file(&paths.original, original, true).with_context(|| {
+            format!("write settings recovery copy {}", paths.original.display())
+        })?;
         let journal = SettingsUpdateJournal {
             version: 1,
             config_path: config_path.to_path_buf(),
             intended_revision: intended_revision.to_owned(),
         };
-        if let Err(error) = write_new_file(
-            &paths.journal,
-            &serde_json::to_vec_pretty(&journal)?,
-            true,
-        ) {
+        if let Err(error) =
+            write_new_file(&paths.journal, &serde_json::to_vec_pretty(&journal)?, true)
+        {
             let _ = fs::remove_file(&paths.original);
             return Err(error).with_context(|| {
                 format!("write settings update journal {}", paths.journal.display())
@@ -339,6 +398,11 @@ impl SettingsUpdateTransaction {
     }
 
     /// Marks that the intended configuration bytes reached the final pathname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the current configuration does not match the
+    /// journal revision or the publication marker cannot be written.
     pub fn mark_published(&self) -> Result<()> {
         let current = fs::read(&self.config_path)
             .with_context(|| format!("read published settings {}", self.config_path.display()))?;
@@ -357,6 +421,10 @@ impl SettingsUpdateTransaction {
     }
 
     /// Removes the recovery transaction after the final audit append succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a recovery artifact cannot be removed.
     pub fn complete(self) -> Result<()> {
         // Removing the journal is the durable transition into
         // "committed cleanup". Recovery treats a remaining publication
@@ -370,12 +438,22 @@ impl SettingsUpdateTransaction {
     }
 
     /// Restores the original configuration and removes the transaction files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the original configuration cannot be restored or
+    /// the transaction files cannot be removed.
     pub fn rollback(self) -> Result<()> {
         rollback_settings_update_locked(&self.config_path)
     }
 }
 
 /// Recovers a settings transaction before any process reads the configuration.
+///
+/// # Errors
+///
+/// Returns an error when an interrupted settings transaction cannot be
+/// recovered.
 pub fn recover_interrupted_settings_update(config_path: &Path) -> Result<()> {
     let paths = settings_paths(config_path)?;
     if !paths.journal.exists() && !paths.original.exists() && !paths.published.exists() {
@@ -386,6 +464,11 @@ pub fn recover_interrupted_settings_update(config_path: &Path) -> Result<()> {
 }
 
 /// Recovers a settings transaction while the caller holds [`ConfigFileLock`].
+///
+/// # Errors
+///
+/// Returns an error when an interrupted settings transaction cannot be
+/// recovered or the journal does not belong to this configuration.
 pub fn recover_interrupted_settings_update_locked(config_path: &Path) -> Result<()> {
     let paths = settings_paths(config_path)?;
     for path in [&paths.journal, &paths.original, &paths.published] {
@@ -404,9 +487,7 @@ pub fn recover_interrupted_settings_update_locked(config_path: &Path) -> Result<
             let current = fs::read(config_path)
                 .with_context(|| format!("read current settings {}", config_path.display()))?;
             if revision(&current) != marker {
-                bail!(
-                    "committed settings cleanup marker does not match the current configuration"
-                );
+                bail!("committed settings cleanup marker does not match the current configuration");
             }
             remove_if_exists(&paths.original)?;
             remove_if_exists(&paths.published)?;
@@ -418,7 +499,10 @@ pub fn recover_interrupted_settings_update_locked(config_path: &Path) -> Result<
         // clean up here.
         if paths.original.exists() {
             fs::remove_file(&paths.original).with_context(|| {
-                format!("remove orphan settings recovery copy {}", paths.original.display())
+                format!(
+                    "remove orphan settings recovery copy {}",
+                    paths.original.display()
+                )
             })?;
             sync_parent(config_path)?;
         }
@@ -436,7 +520,10 @@ pub fn recover_interrupted_settings_update_locked(config_path: &Path) -> Result<
 
     let published = if paths.published.exists() {
         let marker = fs::read_to_string(&paths.published).with_context(|| {
-            format!("read settings publication marker {}", paths.published.display())
+            format!(
+                "read settings publication marker {}",
+                paths.published.display()
+            )
         })?;
         let current = fs::read(config_path)
             .with_context(|| format!("read current settings {}", config_path.display()))?;
@@ -474,7 +561,8 @@ fn restore_original(config_path: &Path, original_path: &Path) -> Result<()> {
 fn read_journal(path: &Path) -> Result<SettingsUpdateJournal> {
     reject_unsafe_existing(path)?;
     serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("read settings update journal {}", path.display()))?,
+        &fs::read(path)
+            .with_context(|| format!("read settings update journal {}", path.display()))?,
     )
     .context("parse settings update recovery journal")
 }
@@ -497,7 +585,10 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 fn reject_unsafe_existing(path: &Path) -> Result<()> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            bail!("refusing unsafe settings update artifact {}", path.display())
+            bail!(
+                "refusing unsafe settings update artifact {}",
+                path.display()
+            )
         }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -543,6 +634,7 @@ fn validate_revision(value: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn sync_parent(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -562,8 +654,6 @@ fn sync_parent(path: &Path) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::*;
-
     #[cfg(unix)]
     #[test]
     fn unmarked_transaction_restores_original() {
@@ -571,8 +661,9 @@ mod tests {
         fs::create_dir(&root).expect("test directory");
         let config = root.join("server.toml");
         write_new_file(&config, b"old", true).expect("initial config");
-        let transaction = SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
-            .expect("transaction");
+        let transaction =
+            SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
+                .expect("transaction");
         replace_file_atomically(&config, b"new", true).expect("publish replacement");
         drop(transaction);
         recover_interrupted_settings_update_locked(&config).expect("recovery");
@@ -587,8 +678,9 @@ mod tests {
         fs::create_dir(&root).expect("test directory");
         let config = root.join("server.toml");
         write_new_file(&config, b"old", true).expect("initial config");
-        let transaction = SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
-            .expect("transaction");
+        let transaction =
+            SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
+                .expect("transaction");
         replace_file_atomically(&config, b"new", true).expect("publish replacement");
         transaction.mark_published().expect("mark published");
         drop(transaction);
@@ -604,8 +696,9 @@ mod tests {
         fs::create_dir(&root).expect("test directory");
         let config = root.join("server.toml");
         write_new_file(&config, b"old", true).expect("initial config");
-        let transaction = SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
-            .expect("transaction");
+        let transaction =
+            SettingsUpdateTransaction::begin_locked(&config, b"old", &revision(b"new"))
+                .expect("transaction");
         replace_file_atomically(&config, b"new", true).expect("publish replacement");
         transaction.mark_published().expect("mark published");
         let paths = settings_paths(&config).expect("settings paths");

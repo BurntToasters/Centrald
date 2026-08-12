@@ -1,14 +1,17 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use anyhow::Context as _;
 use centrald_common::config::ServerConfig;
 use centrald_common::enrollment::{
     EnrollmentInvitationClaims, EnrollmentRole, generate_enrollment_invitation,
-    parse_enrollment_invitation, hash_enrollment_key, verify_enrollment_key,
+    hash_enrollment_key, parse_enrollment_invitation, verify_enrollment_key,
 };
 use centrald_common::grant::{GrantOperation, PrivilegedGrant};
 use centrald_common::release::ReleaseManifestV1;
@@ -22,13 +25,11 @@ use centrald_protocol::v1::enrollment_service_server::EnrollmentService;
 use centrald_protocol::v1::{
     ActivateIdentityRequest, AdminShellFrame, BeginElevationRequest, ClientFrame,
     CreateEnrollmentKeyRequest, CreateEnrollmentKeyResponse, ElevationChallenge,
-    EnrollAdminRequest, EnrollClientRequest,
-    EnrollmentKeySummary, EnrollmentResponse, GetServerSettingsRequest, HeartbeatAck, IdentityRole,
-    Job, JobDeliveryAck, JobEvent, JobKind, JobState, ListEnrollmentKeysRequest,
-    ListEnrollmentKeysResponse,
-    ListTargetsRequest, ListTargetsResponse, OperationResult, RenewCertificateRequest,
-    RenewCertificateResponse, ReplaceIdentityRequest, RevokeEnrollmentKeyRequest,
-    RevokeIdentityRequest, ServerFrame,
+    EnrollAdminRequest, EnrollClientRequest, EnrollmentKeySummary, EnrollmentResponse,
+    GetServerSettingsRequest, HeartbeatAck, IdentityRole, Job, JobDeliveryAck, JobEvent, JobKind,
+    JobState, ListEnrollmentKeysRequest, ListEnrollmentKeysResponse, ListTargetsRequest,
+    ListTargetsResponse, OperationResult, RenewCertificateRequest, RenewCertificateResponse,
+    ReplaceIdentityRequest, RevokeEnrollmentKeyRequest, RevokeIdentityRequest, ServerFrame,
     ServerSettings, StartJobRequest, StreamJobRequest, TargetSummary, UpdateServerSettingsRequest,
 };
 use chrono::{DateTime, Utc};
@@ -50,12 +51,13 @@ use crate::config_lock::{
 use crate::db::{connect_and_migrate, resolve_database_url};
 use crate::file_security::{read_root_private_text, read_root_public_text};
 use crate::manage::{
-    recover_interrupted_online_issuer_rotation_locked,
+    recover_interrupted_online_issuer_rotation_locked, recover_interrupted_root_replacement_locked,
     recover_interrupted_tls_rotation_locked,
 };
-
 const MAX_CSR_BYTES: usize = 16 * 1024;
-const MAX_PARAMETERS_BYTES: usize = 64 * 1024;
+/// Job parameters must fit the broker wire request bound (the signed grant
+/// plus exact parameter bytes).
+const MAX_PARAMETERS_BYTES: usize = 16 * 1024;
 const MAX_JOB_EVENT_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_JOB_RETAINED_OUTPUT_BYTES: i64 = 1024 * 1024;
 const MAX_JOB_EVENTS: i64 = 4096;
@@ -66,6 +68,10 @@ const MAX_HELLO_CAPABILITY_BYTES: usize = 64;
 const IDENTITY_ACTIVATION_TTL_HOURS: i64 = 24;
 const JOB_DELIVERY_LEASE_SECONDS: i64 = 60;
 const JOB_EXECUTION_START_LEASE_SECONDS: i64 = 60;
+/// Grants stay valid for the delivery lease plus a bounded execution
+/// allowance so a job queued behind another broker operation is not burned
+/// while waiting. The broker verifies grants only when it reaches them.
+const JOB_GRANT_VALIDITY_SECONDS: i64 = 60 + 900;
 const MAX_CONCURRENT_JOB_STREAMS: usize = 128;
 const MAX_CONCURRENT_ENROLLMENT_CRYPTO: usize = 2;
 const ADMIN_STREAM_REAUTH_SECONDS: u64 = 5;
@@ -73,6 +79,12 @@ const MAX_RELEASE_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAX_RELEASE_MANIFEST_BYTES_U64: u64 = 1024 * 1024;
 
 type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
+
+/// Outbound sender of one client control stream.
+type ClientStreamSender = mpsc::Sender<Result<ServerFrame, Status>>;
+
+/// Maximum concurrent shell relay streams (Admin `OpenShell` calls).
+const MAX_CONCURRENT_SHELL_STREAMS: usize = 16;
 
 #[derive(Clone)]
 pub struct RuntimeState {
@@ -90,6 +102,9 @@ pub struct RuntimeState {
     settings_lock: Arc<Mutex<()>>,
     job_stream_limit: Arc<Semaphore>,
     pub enrollment_crypto_limit: Arc<Semaphore>,
+    client_streams: Arc<std::sync::Mutex<HashMap<Uuid, ClientStreamSender>>>,
+    shell_sessions: Arc<std::sync::Mutex<HashMap<Uuid, Arc<crate::shell::ShellSessionHandle>>>>,
+    shell_stream_limit: Arc<Semaphore>,
 }
 
 impl fmt::Debug for RuntimeState {
@@ -119,11 +134,8 @@ impl RuntimeState {
             config.server.instance_id,
         )
         .await?;
-        let root_certificate_pem = read_root_public_text(
-            &config.pki.root_cert,
-            256 * 1024,
-            "root CA certificate",
-        )?;
+        let root_certificate_pem =
+            read_root_public_text(&config.pki.root_cert, 256 * 1024, "root CA certificate")?;
         let client_issuer_certificate_pem = read_root_public_text(
             &config.pki.client_issuer_cert,
             256 * 1024,
@@ -154,8 +166,7 @@ impl RuntimeState {
             128 * 1024,
             "grant-signing private key",
         )?);
-        let grant_signing_key =
-            SigningKey::from_pkcs8_pem(grant_signing_key_pem.expose_secret())?;
+        let grant_signing_key = SigningKey::from_pkcs8_pem(grant_signing_key_pem.expose_secret())?;
         Ok(Self {
             pool,
             config: Arc::new(config),
@@ -171,9 +182,125 @@ impl RuntimeState {
             settings_lock: Arc::new(Mutex::new(())),
             job_stream_limit: Arc::new(Semaphore::new(MAX_CONCURRENT_JOB_STREAMS)),
             enrollment_crypto_limit: Arc::new(Semaphore::new(MAX_CONCURRENT_ENROLLMENT_CRYPTO)),
+            client_streams: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            shell_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            shell_stream_limit: Arc::new(Semaphore::new(MAX_CONCURRENT_SHELL_STREAMS)),
         })
     }
+
+    /// Registers the outbound sender of a client control stream.
+    pub fn register_client_stream(&self, identity: Uuid, sender: ClientStreamSender) {
+        let mut streams = self
+            .client_streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if streams.insert(identity, sender).is_some() {
+            tracing::warn!(%identity, "replaced an existing client control stream");
+        }
+    }
+
+    /// Removes the client stream only if it is still the registered sender.
+    pub fn unregister_client_stream(&self, identity: Uuid, sender: &ClientStreamSender) {
+        let is_current = self.client_streams.lock().ok().is_some_and(|streams| {
+            streams
+                .get(&identity)
+                .is_some_and(|existing| existing.same_channel(sender))
+        });
+        if !is_current {
+            return;
+        }
+        if let Ok(mut streams) = self.client_streams.lock() {
+            streams.remove(&identity);
+        }
+    }
+
+    #[must_use]
+    pub fn client_stream(&self, identity: Uuid) -> Option<ClientStreamSender> {
+        self.client_streams
+            .lock()
+            .ok()
+            .and_then(|streams| streams.get(&identity).cloned())
+    }
+
+    #[must_use]
+    pub fn client_online(&self, identity: Uuid) -> bool {
+        self.client_streams
+            .lock()
+            .is_ok_and(|streams| streams.contains_key(&identity))
+    }
+
+    /// Registers a shell session for client-frame routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session registry is poisoned or the active
+    /// session limit is reached.
+    pub fn insert_shell_session(
+        &self,
+        session_id: Uuid,
+        handle: Arc<crate::shell::ShellSessionHandle>,
+    ) -> Result<(), String> {
+        let mut sessions = self
+            .shell_sessions
+            .lock()
+            .map_err(|_| "shell session registry lock was poisoned".to_owned())?;
+        if sessions.len() >= MAX_ACTIVE_SHELL_SESSIONS {
+            return Err("the active shell-session limit was reached".to_owned());
+        }
+        sessions.insert(session_id, handle);
+        Ok(())
+    }
+
+    pub fn remove_shell_session(&self, session_id: Uuid) {
+        if let Ok(mut sessions) = self.shell_sessions.lock() {
+            sessions.remove(&session_id);
+        }
+    }
+
+    #[must_use]
+    pub fn get_shell_session(
+        &self,
+        session_id: Uuid,
+    ) -> Option<Arc<crate::shell::ShellSessionHandle>> {
+        self.shell_sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(&session_id).cloned())
+    }
+
+    /// Snapshot of the currently active in-process shell session IDs.
+    #[must_use]
+    pub fn active_shell_session_ids(&self) -> Vec<Uuid> {
+        self.shell_sessions
+            .lock()
+            .ok()
+            .map(|sessions| sessions.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn grant_signing_key(&self) -> &SigningKey {
+        &self.grant_signing_key
+    }
+
+    #[must_use]
+    pub fn shell_max_frame_bytes(&self) -> u32 {
+        self.config.runtime.max_shell_frame_bytes
+    }
+
+    #[must_use]
+    pub fn shell_idle_timeout_seconds(&self) -> u32 {
+        self.config.runtime.shell_idle_timeout_seconds
+    }
+
+    #[must_use]
+    pub fn shell_stream_limit(&self) -> &Arc<Semaphore> {
+        &self.shell_stream_limit
+    }
 }
+
+/// Maximum concurrent active shell sessions across all clients.
+const MAX_ACTIVE_SHELL_SESSIONS: usize = 64;
 
 /// Runs bounded cleanup and repair for expiring identities and jobs.
 pub async fn run_maintenance(state: RuntimeState) {
@@ -184,21 +311,68 @@ pub async fn run_maintenance(state: RuntimeState) {
         if let Err(error) = maintenance_once(&state.pool).await {
             error!(%error, "CentralD maintenance pass failed");
         }
+        if let Err(error) = shell_housekeeping(&state).await {
+            error!(%error, "CentralD shell housekeeping pass failed");
+        }
     }
+}
+
+/// Bounds stale shell and elevation-challenge state: purges consumed/expired
+/// challenges and closes shell-session rows whose relay never started or
+/// already died without reporting.
+async fn shell_housekeeping(state: &RuntimeState) -> Result<(), Status> {
+    sqlx::query(
+        "DELETE FROM elevation_challenges \
+         WHERE expires_at <= NOW() \
+            OR (consumed_at IS NOT NULL AND consumed_at < NOW() - INTERVAL '1 day')",
+    )
+    .execute(&state.pool)
+    .await
+    .map_err(internal)?;
+    let candidates: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM shell_sessions \
+         WHERE ended_at IS NULL AND started_at < NOW() - INTERVAL '10 minutes'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(internal)?;
+    let active = state.active_shell_session_ids();
+    for session_id in candidates {
+        if active.contains(&session_id) {
+            continue;
+        }
+        sqlx::query(
+            "UPDATE shell_sessions SET ended_at = NOW(), outcome = 'abandoned' \
+             WHERE id = $1 AND ended_at IS NULL",
+        )
+        .bind(session_id)
+        .execute(&state.pool)
+        .await
+        .map_err(internal)?;
+        audit(
+            &state.pool,
+            None,
+            "server",
+            "shell.session.end",
+            None,
+            "abandoned",
+            serde_json::json!({ "session_id": session_id }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Checks the configured release feed without installing anything.
 ///
 /// The shared `.yml` feed is emitted as JSON-compatible YAML 1.2 so runtime
 /// parsing stays strict and bounded. Artifacts remain operator-approved and are
-/// verified again at installation time by the future package broker.
+/// verified again at installation time by the package broker.
 pub async fn run_update_checks(state: RuntimeState) {
     if !state.config.updates.enabled {
         return;
     }
-    let delay = Duration::from_secs(u64::from(
-        state.config.updates.check_interval_seconds,
-    ));
+    let delay = Duration::from_secs(u64::from(state.config.updates.check_interval_seconds));
     loop {
         if let Err(error) = check_release_manifest(&state).await {
             warn!(%error, "CentralD release-manifest check failed");
@@ -207,6 +381,7 @@ pub async fn run_update_checks(state: RuntimeState) {
     }
 }
 
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -257,6 +432,10 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
         }
         body.extend_from_slice(&chunk);
     }
+    // The manifest itself is Minisign-verified (`<url>.minisig`) so a feed
+    // compromise cannot spoof channel/version fields to the operator; artifact
+    // signatures remain the second gate at installation time.
+    verify_manifest_signature(&client, &state.config.updates.manifest_url, &body).await?;
     let manifest: ReleaseManifestV1 = serde_json::from_slice(&body)?;
     manifest.validate()?;
     if manifest.channel != state.config.updates.channel {
@@ -273,7 +452,10 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
         anyhow::bail!("release feed returned a prerelease while prereleases are disabled");
     }
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
-    let available = manifest.version > current;
+    // Strict precedence comparison: build-metadata variants of the same
+    // version are not "available" (and can never be relabeled as newer).
+    use std::cmp::Ordering as CmpOrdering;
+    let available = manifest.version.cmp_precedence(&current) == CmpOrdering::Greater;
     let snapshot = serde_json::json!({
         "available": available,
         "current_version": current.to_string(),
@@ -284,9 +466,9 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
         "artifact_count": manifest.artifacts.len(),
     });
     let expires_at = Utc::now()
-        + chrono::Duration::seconds(i64::from(
-            state.config.updates.check_interval_seconds,
-        ).saturating_mul(2));
+        + chrono::Duration::seconds(
+            i64::from(state.config.updates.check_interval_seconds).saturating_mul(2),
+        );
     let mut transaction = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO update_snapshots (id, target_id, scope, updates, expires_at) \
@@ -307,6 +489,48 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
+    Ok(())
+}
+
+/// Fetches and verifies the Minisign signature for a release manifest before
+/// any channel/version field is trusted.
+async fn verify_manifest_signature(
+    client: &reqwest::Client,
+    manifest_url: &str,
+    manifest_bytes: &[u8],
+) -> anyhow::Result<()> {
+    let key = centrald_common::build_info::MINISIGN_PUBLIC_KEY;
+    if key.is_empty() {
+        anyhow::bail!(
+            "this server build has no Minisign public key; release verification is disabled"
+        );
+    }
+    let signature_url = format!("{manifest_url}.minisig");
+    let response = client
+        .get(&signature_url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await?
+        .error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > 4096)
+    {
+        anyhow::bail!("release manifest signature exceeds the size limit");
+    }
+    let signature_bytes = response.bytes().await?;
+    if signature_bytes.len() > 4096 {
+        anyhow::bail!("release manifest signature exceeds the size limit");
+    }
+    let public_key =
+        minisign::PublicKey::from_base64(key).context("parse the Minisign public key")?;
+    let signature_text = String::from_utf8(signature_bytes.to_vec())
+        .context("release manifest signature is not valid text")?;
+    let signature_box = minisign::SignatureBox::from_string(&signature_text)
+        .context("decode the release manifest signature")?;
+    let mut cursor = std::io::Cursor::new(manifest_bytes);
+    minisign::verify(&public_key, &signature_box, &mut cursor, true, false, false)
+        .context("release manifest Minisign verification failed")?;
     Ok(())
 }
 
@@ -433,8 +657,8 @@ impl EnrollmentService for EnrollmentRpc {
                 "elevation public key must be empty or 32-byte Ed25519",
             ));
         }
-        let elevation_public_key = (!request.elevation_public_key.is_empty())
-            .then_some(request.elevation_public_key);
+        let elevation_public_key =
+            (!request.elevation_public_key.is_empty()).then_some(request.elevation_public_key);
         let response = enroll(
             &self.state,
             IdentityRole::Admin,
@@ -465,14 +689,18 @@ impl ClientService for ClientRpc {
             .map_err(|_| Status::deadline_exceeded("client Hello was not received in time"))?
             .map_err(|_| Status::invalid_argument("could not decode client Hello"))?
             .ok_or_else(|| Status::invalid_argument("client stream closed before Hello"))?;
-        let hello = match first.payload {
-            Some(centrald_protocol::v1::client_frame::Payload::Hello(hello)) => hello,
-            _ => return Err(Status::failed_precondition("the first client frame must be Hello")),
+        let Some(centrald_protocol::v1::client_frame::Payload::Hello(hello)) = first.payload else {
+            return Err(Status::failed_precondition(
+                "the first client frame must be Hello",
+            ));
         };
         handle_client_hello(&self.state, identity, hello).await?;
 
         let state = self.state.clone();
         let (sender, receiver) = mpsc::channel(32);
+        state.register_client_stream(identity, sender.clone());
+        let unregister_identity = identity;
+        let unregister_sender = sender.clone();
         tokio::spawn(async move {
             let mut authorization = tokio::time::interval(Duration::from_secs(5));
             authorization.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -516,6 +744,7 @@ impl ClientService for ClientRpc {
                     }
                 }
             }
+            state.unregister_client_stream(unregister_identity, &unregister_sender);
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
@@ -576,6 +805,7 @@ impl ClientService for ClientRpc {
 }
 
 #[tonic::async_trait]
+#[allow(clippy::too_many_lines)]
 impl AdminService for AdminRpc {
     type StreamJobStream = RpcStream<JobEvent>;
     type OpenShellStream = RpcStream<AdminShellFrame>;
@@ -845,13 +1075,12 @@ impl AdminService for AdminRpc {
         validate_name(&request.reason, 512)?;
         let identity_id = parse_uuid(&request.identity_id, "identity_id")?;
         let mut transaction = self.state.pool.begin().await.map_err(internal)?;
-        let identity: Option<(String, Option<DateTime<Utc>>)> = sqlx::query_as(
-            "SELECT role, revoked_at FROM identities WHERE id = $1 FOR UPDATE",
-        )
-        .bind(identity_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(internal)?;
+        let identity: Option<(String, Option<DateTime<Utc>>)> =
+            sqlx::query_as("SELECT role, revoked_at FROM identities WHERE id = $1 FOR UPDATE")
+                .bind(identity_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(internal)?;
         let Some((role, revoked_at)) = identity else {
             return Err(Status::not_found("identity not found"));
         };
@@ -913,12 +1142,15 @@ impl AdminService for AdminRpc {
             serde_json::from_slice(&request.parameters_json)
                 .map_err(|_| Status::invalid_argument("parameters_json is invalid JSON"))?
         };
+        let parameters = if kind == JobKind::UpdateClient {
+            approve_client_update_parameters(&self.state, parameters).await?
+        } else {
+            parameters
+        };
         let id = Uuid::now_v7();
         let idempotency_key = request_id;
         let expires_at = Utc::now()
-            + chrono::Duration::seconds(i64::from(
-                self.state.config.runtime.job_ttl_seconds,
-            ));
+            + chrono::Duration::seconds(i64::from(self.state.config.runtime.job_ttl_seconds));
         let mut transaction = self.state.pool.begin().await.map_err(internal)?;
         let active_target: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM identities \
@@ -1025,22 +1257,21 @@ impl AdminService for AdminRpc {
         let job_id = parse_uuid(&request.job_id, "job_id")?;
         let mut next = i64::try_from(request.from_sequence)
             .map_err(|_| Status::invalid_argument("from_sequence is too large"))?;
-        let expires_at: DateTime<Utc> = sqlx::query_scalar(
-            "SELECT expires_at FROM jobs WHERE id = $1",
-        )
-        .bind(job_id)
-        .fetch_optional(&self.state.pool)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| Status::not_found("job does not exist"))?;
+        let expires_at: DateTime<Utc> =
+            sqlx::query_scalar("SELECT expires_at FROM jobs WHERE id = $1")
+                .bind(job_id)
+                .fetch_optional(&self.state.pool)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| Status::not_found("job does not exist"))?;
         let stream_deadline = expires_at + chrono::Duration::minutes(5);
         let pool = self.state.pool.clone();
         let follow = request.follow;
         let (sender, receiver) = mpsc::channel(64);
         tokio::spawn(async move {
             let _stream_permit = stream_permit;
-            let mut next_authorization = tokio::time::Instant::now()
-                + Duration::from_secs(ADMIN_STREAM_REAUTH_SECONDS);
+            let mut next_authorization =
+                tokio::time::Instant::now() + Duration::from_secs(ADMIN_STREAM_REAUTH_SECONDS);
             loop {
                 if Utc::now() > stream_deadline {
                     let _ = sender
@@ -1049,13 +1280,9 @@ impl AdminService for AdminRpc {
                     break;
                 }
                 if tokio::time::Instant::now() >= next_authorization {
-                    if let Err(status) = authorize_existing_identity(
-                        &pool,
-                        actor,
-                        &presented_fingerprint,
-                        "admin",
-                    )
-                    .await
+                    if let Err(status) =
+                        authorize_existing_identity(&pool, actor, &presented_fingerprint, "admin")
+                            .await
                     {
                         let _ = sender.send(Err(status)).await;
                         break;
@@ -1076,7 +1303,9 @@ impl AdminService for AdminRpc {
                     Ok(rows) => rows,
                     Err(error) => {
                         error!(%error, %job_id, "stream job query failed");
-                        let _ = sender.send(Err(Status::internal("job stream failed"))).await;
+                        let _ = sender
+                            .send(Err(Status::internal("job stream failed")))
+                            .await;
                         break;
                     }
                 };
@@ -1113,20 +1342,120 @@ impl AdminService for AdminRpc {
         &self,
         request: Request<BeginElevationRequest>,
     ) -> Result<Response<ElevationChallenge>, Status> {
-        let _actor = authenticate(&self.state.pool, &request, "admin").await?;
-        Err(Status::unimplemented(
-            "elevated shell challenge transport is not enabled yet",
-        ))
+        let actor = authenticate(&self.state.pool, &request, "admin").await?;
+        let challenge =
+            crate::shell::begin_elevation(&self.state.pool, actor, request.into_inner()).await?;
+        Ok(Response::new(challenge))
     }
 
     async fn open_shell(
         &self,
         request: Request<Streaming<AdminShellFrame>>,
     ) -> Result<Response<Self::OpenShellStream>, Status> {
-        let _actor = authenticate(&self.state.pool, &request, "admin").await?;
-        Err(Status::unimplemented(
-            "remote shell relay is disabled until broker PTY isolation is complete",
-        ))
+        let actor = authenticate(&self.state.pool, &request, "admin").await?;
+        let presented_fingerprint = peer_certificate_fingerprint(&request)?;
+        // The permit lives for the whole session (moved into the relay task),
+        // bounding concurrently active shell streams rather than just opens.
+        let permit = self
+            .state
+            .shell_stream_limit()
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Status::resource_exhausted("too many shell streams"))?;
+        let mut inbound = request.into_inner();
+        let first = tokio::time::timeout(Duration::from_secs(10), inbound.message())
+            .await
+            .map_err(|_| Status::deadline_exceeded("shell open was not received in time"))?
+            .map_err(|_| Status::invalid_argument("could not decode the shell open frame"))?
+            .ok_or_else(|| Status::invalid_argument("shell stream closed before open"))?;
+        let Some(open) = first
+            .shell
+            .and_then(|frame| frame.payload)
+            .and_then(|payload| match payload {
+                centrald_protocol::v1::shell_frame::Payload::Open(open) => Some(open),
+                _ => None,
+            })
+        else {
+            return Err(Status::failed_precondition(
+                "the first Admin shell frame must be an open frame",
+            ));
+        };
+        let plan =
+            crate::shell::validate_shell_open(&self.state.pool, &self.state, actor, &open).await?;
+        let (client_frame, signed_grant) =
+            crate::shell::create_shell_session(&self.state.pool, &self.state, actor, &open, &plan)
+                .await?;
+        let (admin_in_tx, mut admin_in_rx) = mpsc::channel(64);
+        let (response_tx, response_rx) = mpsc::channel(64);
+        let client_tx = crate::shell::deliver_shell_open_to_client(
+            &self.state,
+            plan.target_id,
+            &client_frame,
+            &signed_grant,
+        )
+        .await?;
+        let handle = Arc::new(crate::shell::ShellSessionHandle {
+            session_id: plan.session_id,
+            admin_in_tx,
+            target_id: plan.target_id,
+            actor_id: actor,
+            privilege: plan.privilege.clone(),
+            max_frame_bytes: usize::try_from(self.state.shell_max_frame_bytes()).unwrap_or(65_536),
+            started_at: std::sync::Mutex::new(std::time::Instant::now()),
+            last_activity: std::sync::Mutex::new(std::time::Instant::now()),
+            admin_sequence: AtomicU64::new(0),
+            client_sequence: AtomicU64::new(0),
+            input_bytes: AtomicU64::new(0),
+            output_bytes: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+        });
+        crate::shell::register_shell_session(&self.state, plan.session_id, handle.clone())?;
+        response_tx
+            .send(Ok(AdminShellFrame {
+                shell: Some(client_frame.clone()),
+            }))
+            .await
+            .map_err(|_| Status::cancelled("Admin shell stream closed during open"))?;
+        let state = self.state.clone();
+        let close_client_tx = client_tx.clone();
+        let close_response_tx = response_tx.clone();
+        let relay_actor = actor;
+        let relay_fingerprint = presented_fingerprint;
+        tokio::spawn(async move {
+            let _session_permit = permit;
+            let outcome = run_shell_relay(
+                &state,
+                plan.session_id,
+                &handle,
+                &mut inbound,
+                &mut admin_in_rx,
+                &response_tx,
+                client_tx,
+                relay_actor,
+                &relay_fingerprint,
+            )
+            .await;
+            handle.closed.store(true, Ordering::Relaxed);
+            crate::shell::unregister_shell_session(&state, plan.session_id);
+            let reason = match &outcome {
+                Ok(()) => "session ended".to_owned(),
+                Err(status) => status.message().to_owned(),
+            };
+            crate::shell::end_shell_session(
+                &state.pool,
+                plan.session_id,
+                &reason,
+                &Some(close_client_tx),
+                &Some(close_response_tx),
+                Some(plan.target_id),
+            )
+            .await;
+            if let Err(status) = outcome {
+                tracing::warn!(session = %plan.session_id, %status, "shell session ended with an error");
+            }
+        });
+        Ok(Response::new(Box::pin(ReceiverStream::new(response_rx))))
     }
 
     async fn get_server_settings(
@@ -1139,7 +1468,9 @@ impl AdminService for AdminRpc {
         recover_server_transactions_locked(&self.state.config_path)?;
         let (config, revision) = load_server_settings(&self.state.config_path)?;
         let restart_required = revision != self.state.loaded_config_revision.as_str();
-        Ok(Response::new(server_settings(&config, revision, restart_required)))
+        Ok(Response::new(
+            server_settings(&self.state, &config, revision, restart_required).await?,
+        ))
     }
 
     async fn update_server_settings(
@@ -1165,14 +1496,10 @@ impl AdminService for AdminRpc {
             ));
         }
         validate_read_only_settings(&config, &requested)?;
-        config.server.enrollment_listen = parse_listener(
-            &requested.enrollment_listen,
-            "enrollment_listen",
-        )?;
-        config.server.client_listen =
-            parse_listener(&requested.client_listen, "client_listen")?;
-        config.server.admin_listen =
-            parse_listener(&requested.admin_listen, "admin_listen")?;
+        config.server.enrollment_listen =
+            parse_listener(&requested.enrollment_listen, "enrollment_listen")?;
+        config.server.client_listen = parse_listener(&requested.client_listen, "client_listen")?;
+        config.server.admin_listen = parse_listener(&requested.admin_listen, "admin_listen")?;
         config.database.max_connections = requested.database_max_connections;
         config.runtime.heartbeat_interval_seconds = requested.heartbeat_interval_seconds;
         config.runtime.offline_after_seconds = requested.offline_after_seconds;
@@ -1206,17 +1533,23 @@ impl AdminService for AdminRpc {
             &new_revision,
         )
         .map_err(internal)?;
-        if let Err(error) = replace_file_atomically(
-            &self.state.config_path,
-            serialized.as_bytes(),
-            true,
-        ) {
+        if let Err(error) =
+            replace_file_atomically(&self.state.config_path, serialized.as_bytes(), true)
+        {
             let rollback = transaction.rollback();
-            return Err(settings_update_failure("publish configuration", error, rollback));
+            return Err(settings_update_failure(
+                "publish configuration",
+                error,
+                rollback,
+            ));
         }
         if let Err(error) = transaction.mark_published() {
             let rollback = transaction.rollback();
-            return Err(settings_update_failure("mark configuration published", error, rollback));
+            return Err(settings_update_failure(
+                "mark configuration published",
+                error,
+                rollback,
+            ));
         }
         if let Err(error) = audit(
             &self.state.pool,
@@ -1230,7 +1563,11 @@ impl AdminService for AdminRpc {
         .await
         {
             let rollback = transaction.rollback();
-            return Err(settings_update_failure("append final audit entry", error, rollback));
+            return Err(settings_update_failure(
+                "append final audit entry",
+                error,
+                rollback,
+            ));
         }
         if let Err(error) = transaction.complete() {
             warn!(%error, "server settings committed but recovery transaction cleanup was incomplete");
@@ -1242,7 +1579,9 @@ impl AdminService for AdminRpc {
                 },
             )?;
         }
-        Ok(Response::new(server_settings(&config, new_revision, true)))
+        Ok(Response::new(
+            server_settings(&self.state, &config, new_revision, true).await?,
+        ))
     }
 }
 
@@ -1265,14 +1604,15 @@ fn recover_server_transactions_locked(path: &std::path::Path) -> Result<(), Stat
     recover_interrupted_database_update_locked(path).map_err(internal)?;
     recover_interrupted_settings_update_locked(path).map_err(internal)?;
     recover_interrupted_online_issuer_rotation_locked(path).map_err(internal)?;
+    recover_interrupted_root_replacement_locked(path).map_err(internal)?;
     recover_interrupted_tls_rotation_locked(path).map_err(internal)?;
     Ok(())
 }
 
 fn load_server_settings(path: &std::path::Path) -> Result<(ServerConfig, String), Status> {
     let raw = std::fs::read(path).map_err(internal)?;
-    let config = ServerConfig::load(path)
-        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+    let config =
+        ServerConfig::load(path).map_err(|error| Status::failed_precondition(error.to_string()))?;
     Ok((config, settings_revision(&raw)))
 }
 
@@ -1280,12 +1620,23 @@ fn settings_revision(raw: &[u8]) -> String {
     hex::encode(sha256(raw))
 }
 
-fn server_settings(
+async fn server_settings(
+    state: &RuntimeState,
     config: &ServerConfig,
     revision: String,
     restart_required: bool,
-) -> ServerSettings {
-    ServerSettings {
+) -> Result<ServerSettings, Status> {
+    let snapshot = sqlx::query_as::<_, (String, String)>(
+        "SELECT updates->>'version', updates->>'available' FROM update_snapshots \
+         WHERE scope = 'server_release_manifest' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?;
+    let (update_latest_version, update_available) = snapshot
+        .map(|(version, available)| (version, available == "true"))
+        .unwrap_or_default();
+    Ok(ServerSettings {
         revision,
         instance_id: config.server.instance_id.to_string(),
         public_host: config.server.public_host.clone(),
@@ -1323,7 +1674,9 @@ fn server_settings(
             "nuke".into(),
         ],
         restart_required,
-    }
+        update_latest_version,
+        update_available,
+    })
 }
 
 fn validate_read_only_settings(
@@ -1392,8 +1745,7 @@ async fn renew_identity_certificate(
     )
     .map_err(|_| Status::invalid_argument("invalid certificate request"))?;
     let expires_at = issued_expiration(&issued)?;
-    let activation_expires_at = Utc::now()
-        + chrono::Duration::hours(IDENTITY_ACTIVATION_TTL_HOURS);
+    let activation_expires_at = Utc::now() + chrono::Duration::hours(IDENTITY_ACTIVATION_TTL_HOURS);
     let mut transaction = state.pool.begin().await.map_err(internal)?;
     let presented_is_active: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM identity_certificates \
@@ -1447,6 +1799,7 @@ async fn renew_identity_certificate(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn enroll(
     state: &RuntimeState,
     role: IdentityRole,
@@ -1569,8 +1922,7 @@ async fn enroll(
         &state.root_certificate_pem,
     )
     .map_err(|_| Status::invalid_argument("invalid certificate request"))?;
-    let activation_expires_at = Utc::now()
-        + chrono::Duration::hours(IDENTITY_ACTIVATION_TTL_HOURS);
+    let activation_expires_at = Utc::now() + chrono::Duration::hours(IDENTITY_ACTIVATION_TTL_HOURS);
     sqlx::query(
         "INSERT INTO identities \
          (id, role, name, certificate_serial, certificate_fingerprint, elevation_public_key, \
@@ -1684,8 +2036,11 @@ fn peer_certificate_fingerprint<T>(request: &Request<T>) -> Result<String, Statu
 }
 
 fn issued_expiration(issued: &IssuedCertificate) -> Result<DateTime<Utc>, Status> {
-    DateTime::from_timestamp(issued.expires_at.unix_timestamp(), issued.expires_at.nanosecond())
-        .ok_or_else(|| Status::internal("issued certificate expiration is outside the supported range"))
+    DateTime::from_timestamp(
+        issued.expires_at.unix_timestamp(),
+        issued.expires_at.nanosecond(),
+    )
+    .ok_or_else(|| Status::internal("issued certificate expiration is outside the supported range"))
 }
 
 async fn activate_identity_certificate(
@@ -1722,19 +2077,25 @@ async fn activate_identity_certificate(
     .map_err(internal)?
     .ok_or_else(|| Status::unauthenticated("unknown identity certificate"))?;
     if row.0 != expected_role || row.1.is_some() || row.8.is_some() || row.7 <= Utc::now() {
-        return Err(Status::permission_denied("identity certificate is not authorized"));
+        return Err(Status::permission_denied(
+            "identity certificate is not authorized",
+        ));
     }
     if row.5 == "active" {
         transaction.commit().await.map_err(internal)?;
         return Ok(());
     }
     if row.5 != "pending" {
-        return Err(Status::unauthenticated("identity certificate has an invalid state"));
+        return Err(Status::unauthenticated(
+            "identity certificate has an invalid state",
+        ));
     }
     if row.6.is_none_or(|deadline| deadline <= Utc::now())
         || (row.2.is_none() && row.3.is_none_or(|deadline| deadline <= Utc::now()))
     {
-        return Err(Status::unauthenticated("identity activation window expired"));
+        return Err(Status::unauthenticated(
+            "identity activation window expired",
+        ));
     }
 
     sqlx::query(
@@ -1790,7 +2151,9 @@ async fn replace_client_identity(
     reason: &str,
 ) -> Result<(), Status> {
     if current_identity == replacement_identity {
-        return Err(Status::invalid_argument("replacement identity must be different"));
+        return Err(Status::invalid_argument(
+            "replacement identity must be different",
+        ));
     }
     let mut transaction = pool.begin().await.map_err(internal)?;
     let replacement_is_active: bool = sqlx::query_scalar(
@@ -1817,7 +2180,9 @@ async fn replace_client_identity(
     .map_err(internal)?
     .rows_affected();
     if affected != 1 {
-        return Err(Status::aborted("current client identity changed before replacement"));
+        return Err(Status::aborted(
+            "current client identity changed before replacement",
+        ));
     }
     sqlx::query(
         "UPDATE identity_certificates SET revoked_at = NOW() \
@@ -1906,7 +2271,11 @@ async fn handle_client_hello(
     validate_protocol(hello.protocol.as_ref())?;
     validate_hello_text(&hello.hostname, MAX_HELLO_HOSTNAME_BYTES, "hostname")?;
     validate_hello_text(&hello.os_version, MAX_HELLO_TEXT_BYTES, "os_version")?;
-    validate_hello_text(&hello.client_version, MAX_HELLO_TEXT_BYTES, "client_version")?;
+    validate_hello_text(
+        &hello.client_version,
+        MAX_HELLO_TEXT_BYTES,
+        "client_version",
+    )?;
     validate_hello_text(&hello.boot_id, MAX_HELLO_TEXT_BYTES, "boot_id")?;
     if !matches!(hello.os.as_str(), "linux" | "windows") {
         return Err(Status::invalid_argument("unsupported client OS"));
@@ -1919,11 +2288,7 @@ async fn handle_client_hello(
     }
     let mut capabilities = std::collections::BTreeSet::new();
     for capability in hello.capabilities {
-        validate_hello_text(
-            &capability,
-            MAX_HELLO_CAPABILITY_BYTES,
-            "capability",
-        )?;
+        validate_hello_text(&capability, MAX_HELLO_CAPABILITY_BYTES, "capability")?;
         if !capabilities.insert(capability) {
             return Err(Status::invalid_argument("duplicate client capability"));
         }
@@ -1951,10 +2316,7 @@ async fn handle_client_hello(
 }
 
 fn validate_hello_text(value: &str, maximum: usize, field: &str) -> Result<(), Status> {
-    if value.is_empty()
-        || value.len() > maximum
-        || value.chars().any(char::is_control)
-    {
+    if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
         return Err(Status::invalid_argument(format!("{field} is invalid")));
     }
     Ok(())
@@ -2002,19 +2364,137 @@ async fn handle_client_frame(
                     .map_err(|_| Status::cancelled("control stream closed"))?;
             }
         }
-        Some(Payload::JobDeliveryAck(ack)) => acknowledge_job_delivery(&state.pool, identity, ack).await?,
-        Some(Payload::JobEvent(event)) => persist_job_event(&state.pool, identity, event).await?,
-        Some(Payload::Shell(_)) => {
-            return Err(Status::failed_precondition(
-                "shell frame received without an active session",
-            ));
+        Some(Payload::JobDeliveryAck(ack)) => {
+            acknowledge_job_delivery(&state.pool, identity, ack).await?;
         }
+        Some(Payload::JobEvent(event)) => persist_job_event(&state.pool, identity, event).await?,
+        Some(Payload::Shell(frame)) => route_client_shell_frame(state, identity, frame).await?,
         Some(Payload::Hello(_)) => {
-            return Err(Status::failed_precondition("client Hello may be sent only once"));
+            return Err(Status::failed_precondition(
+                "client Hello may be sent only once",
+            ));
         }
         None => return Err(Status::invalid_argument("empty client frame")),
     }
     Ok(())
+}
+
+/// Routes one client shell frame into its session's Admin stream.
+///
+/// # Errors
+///
+/// Returns a status terminating the client control stream on protocol
+/// violations; session-level failures close the session instead.
+#[allow(clippy::unused_async)]
+async fn route_client_shell_frame(
+    state: &RuntimeState,
+    identity: Uuid,
+    frame: centrald_protocol::v1::ShellFrame,
+) -> Result<(), Status> {
+    let Some(payload) = frame.payload else {
+        return Err(Status::invalid_argument("empty client shell frame"));
+    };
+    let session_id = match &payload {
+        centrald_protocol::v1::shell_frame::Payload::Data(data) => data.session_id.clone(),
+        centrald_protocol::v1::shell_frame::Payload::Close(close) => close.session_id.clone(),
+        _ => {
+            return Err(Status::failed_precondition(
+                "clients may only send shell data or close frames",
+            ));
+        }
+    };
+    let session_id: Uuid = session_id
+        .parse()
+        .map_err(|_| Status::invalid_argument("invalid shell session ID"))?;
+    let Some(handle) = crate::shell::shell_session_for_client(state, session_id, identity) else {
+        // A duplicate close after the session already ended is harmless.
+        if matches!(
+            payload,
+            centrald_protocol::v1::shell_frame::Payload::Close(_)
+        ) {
+            return Ok(());
+        }
+        return Err(Status::failed_precondition(
+            "shell session is not active for this client",
+        ));
+    };
+    match payload {
+        centrald_protocol::v1::shell_frame::Payload::Data(data) => {
+            let Some(forwarded) = crate::shell::relay_client_data(&handle, &data)? else {
+                return Ok(());
+            };
+            // A slow/stalled Admin must not back-pressure the client's whole
+            // control stream; if the Admin queue is full the frame is dropped
+            // and the broker's own backpressure eventually stalls the PTY.
+            if handle.admin_in_tx.try_send(Ok(forwarded)).is_err() {
+                tracing::warn!(%session_id, "dropped client shell output: Admin stream is backed up");
+            }
+        }
+        centrald_protocol::v1::shell_frame::Payload::Close(_) => {
+            handle.closed.store(true, Ordering::Relaxed);
+        }
+        _ => unreachable!("validated above"),
+    }
+    Ok(())
+}
+
+/// Runs the shell relay task for one session until either side closes or a
+/// bound is exceeded. The Admin identity is re-authorized periodically so a
+/// revoked Admin cannot keep a shell alive for the full session timeout.
+#[allow(clippy::too_many_arguments)]
+async fn run_shell_relay(
+    state: &RuntimeState,
+    session_id: Uuid,
+    handle: &Arc<crate::shell::ShellSessionHandle>,
+    inbound: &mut Streaming<AdminShellFrame>,
+    admin_in_rx: &mut mpsc::Receiver<Result<AdminShellFrame, Status>>,
+    response_tx: &mpsc::Sender<Result<AdminShellFrame, Status>>,
+    client_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+    actor: Uuid,
+    fingerprint: &str,
+) -> Result<(), Status> {
+    let idle_timeout = state.shell_idle_timeout_seconds();
+    let absolute_timeout = crate::shell::SHELL_ABSOLUTE_TIMEOUT_SECONDS;
+    let mut reauth = tokio::time::interval(Duration::from_secs(5));
+    reauth.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = reauth.tick() => {
+                authorize_existing_identity(&state.pool, actor, fingerprint, "admin")
+                    .await
+                    .map_err(|_| Status::unauthenticated("Admin identity was revoked or expired"))?;
+            }
+            frame = crate::shell::next_admin_frame(inbound, handle, idle_timeout, absolute_timeout) => {
+                match frame {
+                    Ok(Some(frame)) => {
+                        crate::shell::relay_admin_frame(handle, frame, &client_tx).await?;
+                    }
+                    Ok(None) => {
+                        return Err(Status::failed_precondition(
+                            "Admin closed the shell stream",
+                        ));
+                    }
+                    Err(status) => return Err(status),
+                }
+            }
+            forwarded = admin_in_rx.recv() => {
+                match forwarded {
+                    Some(frame) => {
+                        if response_tx.send(frame).await.is_err() {
+                            return Err(Status::cancelled("Admin shell stream closed"));
+                        }
+                    }
+                    None => return Err(Status::cancelled("Admin shell stream closed")),
+                }
+            }
+        }
+        if handle.closed.load(Ordering::Relaxed) {
+            return Err(Status::failed_precondition(
+                "client closed the shell session",
+            ));
+        }
+        let _ = session_id;
+    }
 }
 
 async fn claim_next_job(
@@ -2088,7 +2568,7 @@ async fn claim_next_job(
         operation: grant_operation(&kind)?,
         parameters_sha256: hex::encode(sha256(&parameters_bytes)),
         issued_at: now - chrono::Duration::seconds(5),
-        expires_at: now + chrono::Duration::seconds(JOB_DELIVERY_LEASE_SECONDS),
+        expires_at: now + chrono::Duration::seconds(JOB_GRANT_VALIDITY_SECONDS),
         nonce: delivery_id.to_string(),
     }
     .sign(&state.grant_signing_key)
@@ -2105,7 +2585,16 @@ async fn acknowledge_job_delivery(
     let job_id = parse_uuid(&acknowledgement.job_id, "job_id")?;
     let delivery_id = parse_uuid(&acknowledgement.delivery_id, "delivery_id")?;
     let mut transaction = pool.begin().await.map_err(internal)?;
-    let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<DateTime<Utc>>, DateTime<Utc>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<DateTime<Utc>>,
+            DateTime<Utc>,
+        ),
+    >(
         "SELECT target_id, state, delivery_id, delivery_lease_expires_at, expires_at \
          FROM jobs WHERE id = $1 FOR UPDATE",
     )
@@ -2122,7 +2611,9 @@ async fn acknowledge_job_delivery(
         || row.3.is_none_or(|deadline| deadline <= Utc::now())
         || row.4 <= Utc::now()
     {
-        return Err(Status::failed_precondition("job delivery lease is not active"));
+        return Err(Status::failed_precondition(
+            "job delivery lease is not active",
+        ));
     }
     let execution_start_expires_at =
         Utc::now() + chrono::Duration::seconds(JOB_EXECUTION_START_LEASE_SECONDS);
@@ -2140,6 +2631,7 @@ async fn acknowledge_job_delivery(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn persist_job_event(pool: &PgPool, identity: Uuid, event: JobEvent) -> Result<(), Status> {
     let job_id = parse_uuid(&event.job_id, "job_id")?;
     let sequence = i64::try_from(event.sequence)
@@ -2236,20 +2728,16 @@ async fn persist_job_event(pool: &PgPool, identity: Uuid, event: JobEvent) -> Re
         "UPDATE jobs SET state = $2, execution_start_expires_at = NULL, \
          updated_at = NOW() WHERE id = $1",
     )
-        .bind(job_id)
-        .bind(state)
-        .execute(&mut *transaction)
-        .await
-        .map_err(internal)?;
+    .bind(job_id)
+    .bind(state)
+    .execute(&mut *transaction)
+    .await
+    .map_err(internal)?;
     transaction.commit().await.map_err(internal)?;
     Ok(())
 }
 
-fn validate_job_event_shape(
-    state: JobState,
-    terminal: bool,
-    exit_code: i32,
-) -> Result<(), Status> {
+fn validate_job_event_shape(state: JobState, terminal: bool, exit_code: i32) -> Result<(), Status> {
     let terminal_state = is_terminal_job_state(state);
     if terminal != terminal_state {
         return Err(Status::invalid_argument(
@@ -2273,12 +2761,10 @@ fn validate_job_event_shape(
 fn validate_job_transition(current: JobState, next: JobState) -> Result<(), Status> {
     let allowed = matches!(
         (current, next),
-        (JobState::Acknowledged, JobState::Running)
-            | (JobState::Acknowledged, JobState::Succeeded)
-            | (JobState::Acknowledged, JobState::Failed)
-            | (JobState::Running, JobState::Running)
-            | (JobState::Running, JobState::Succeeded)
-            | (JobState::Running, JobState::Failed)
+        (
+            JobState::Acknowledged | JobState::Running,
+            JobState::Running | JobState::Succeeded | JobState::Failed
+        )
     );
     if !allowed {
         return Err(Status::failed_precondition(format!(
@@ -2297,7 +2783,7 @@ fn is_terminal_job_state(state: JobState) -> bool {
     )
 }
 
-async fn audit(
+pub(crate) async fn audit(
     pool: &PgPool,
     actor_id: Option<Uuid>,
     actor_label: &str,
@@ -2331,19 +2817,18 @@ async fn append_audit(
     metadata: serde_json::Value,
 ) -> Result<(), Status> {
     let id = Uuid::now_v7();
-    let created_at = Utc::now();
+    let created_at = normalized_audit_timestamp(Utc::now());
     // Serialize all audit appends behind a transaction-scoped advisory lock so
     // concurrent RPCs cannot fork the hash chain.
     sqlx::query("SELECT pg_advisory_xact_lock(1129601348)")
         .execute(&mut **transaction)
         .await
         .map_err(internal)?;
-    let previous_hash: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1",
-    )
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(internal)?;
+    let previous_hash: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT entry_hash FROM audit_entries ORDER BY sequence DESC LIMIT 1")
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(internal)?;
     let canonical = serde_json::to_vec(&serde_json::json!({
         "id": id,
         "actorId": actor_id,
@@ -2447,6 +2932,65 @@ fn job_kind_name(kind: JobKind) -> Result<&'static str, Status> {
     }
 }
 
+/// Turns an operator's `UpdateClient` request into server-approved job
+/// parameters: the pinned version must match the server's latest verified
+/// release snapshot, and the feed policy always comes from the server
+/// configuration rather than the Admin request.
+///
+/// # Errors
+///
+/// Returns a status when updates are disabled, the pinned version is missing,
+/// malformed, or not the server-verified version.
+async fn approve_client_update_parameters(
+    state: &RuntimeState,
+    requested: serde_json::Value,
+) -> Result<serde_json::Value, Status> {
+    if !state.config.updates.enabled {
+        return Err(Status::failed_precondition(
+            "release updates are disabled on this server",
+        ));
+    }
+    let expected_version = requested
+        .get("expected_version")
+        .or_else(|| requested.get("expectedVersion"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            Status::invalid_argument(
+                "update-client jobs require an expected_version the operator approved",
+            )
+        })?;
+    let pinned: semver::Version = expected_version
+        .parse()
+        .map_err(|_| Status::invalid_argument("expected_version is not a semantic version"))?;
+    let row = sqlx::query_as::<_, (String, DateTime<Utc>)>(
+        "SELECT updates->>'version', created_at FROM update_snapshots \
+         WHERE scope = 'server_release_manifest' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?;
+    let Some((verified_version, verified_at)) = row else {
+        return Err(Status::failed_precondition(
+            "the server has not verified a release manifest yet; enable updates and wait for a check",
+        ));
+    };
+    let verified: semver::Version = verified_version
+        .parse()
+        .map_err(|_| Status::failed_precondition("the verified release snapshot is invalid"))?;
+    if pinned != verified {
+        return Err(Status::failed_precondition(format!(
+            "the approved version must match the server-verified version {verified} (checked at {verified_at})"
+        )));
+    }
+    Ok(serde_json::json!({
+        "manifest_url": state.config.updates.manifest_url,
+        "channel": state.config.updates.channel,
+        "allow_prerelease": state.config.updates.allow_prerelease,
+        "expected_version": expected_version,
+    }))
+}
+
 fn job_kind_from_name(kind: &str) -> JobKind {
     match kind {
         "restart_client_service" => JobKind::RestartClientService,
@@ -2536,7 +3080,9 @@ async fn hash_enrollment_key_bounded(
         .enrollment_crypto_limit
         .clone()
         .try_acquire_owned()
-        .map_err(|_| Status::resource_exhausted("enrollment cryptography is busy; retry shortly"))?;
+        .map_err(|_| {
+            Status::resource_exhausted("enrollment cryptography is busy; retry shortly")
+        })?;
     let (key, result) = tokio::task::spawn_blocking(move || {
         let result = hash_enrollment_key(&key);
         (key, result)
@@ -2556,7 +3102,9 @@ async fn verify_enrollment_key_bounded(
         .enrollment_crypto_limit
         .clone()
         .try_acquire_owned()
-        .map_err(|_| Status::resource_exhausted("enrollment cryptography is busy; retry shortly"))?;
+        .map_err(|_| {
+            Status::resource_exhausted("enrollment cryptography is busy; retry shortly")
+        })?;
     tokio::task::spawn_blocking(move || verify_enrollment_key(&key, &encoded_hash))
         .await
         .map_err(|_| Status::internal("enrollment verification worker failed"))?
@@ -2568,7 +3116,7 @@ fn invalid_key(error: impl std::fmt::Display) -> Status {
     Status::unauthenticated("invalid enrollment key")
 }
 
-fn internal(error: impl std::fmt::Display) -> Status {
+pub(crate) fn internal(error: impl std::fmt::Display) -> Status {
     error!(%error, "internal RPC failure");
     Status::internal("internal server error")
 }
@@ -2576,4 +3124,12 @@ fn internal(error: impl std::fmt::Display) -> Status {
 fn sha256(bytes: &[u8]) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).to_vec()
+}
+
+/// Truncates an audit timestamp to microsecond precision so the canonical
+/// record bytes stay byte-stable after a `PostgreSQL` `timestamptz` round trip
+/// (the export verifier rehashes each record from read-back rows).
+pub(crate) fn normalized_audit_timestamp(value: DateTime<Utc>) -> DateTime<Utc> {
+    DateTime::from_timestamp(value.timestamp(), value.timestamp_subsec_micros() * 1000)
+        .unwrap_or(value)
 }

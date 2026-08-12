@@ -24,7 +24,9 @@ pub fn canonical_host(input: &str) -> Result<String, HostError> {
         || value.len() > 253
         || !value.is_ascii()
         || value.chars().any(char::is_whitespace)
-        || value.chars().any(|character| matches!(character, '/' | '\\' | '@' | '%'))
+        || value
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '@' | '%'))
     {
         return Err(HostError::Invalid);
     }
@@ -39,7 +41,10 @@ pub fn canonical_host(input: &str) -> Result<String, HostError> {
         }
         return Ok(address.to_string());
     }
-    if value.chars().any(|character| matches!(character, '[' | ']' | ':')) {
+    if value
+        .chars()
+        .any(|character| matches!(character, '[' | ']' | ':'))
+    {
         return Err(HostError::Invalid);
     }
 
@@ -62,7 +67,7 @@ pub fn canonical_host(input: &str) -> Result<String, HostError> {
     Ok(domain.to_ascii_lowercase())
 }
 
-/// Builds an HTTPS origin for a CentralD service, adding IPv6 brackets only
+/// Builds an `HTTPS` origin for a `CentralD` service, adding `IPv6` brackets only
 /// where URL syntax requires them.
 ///
 /// # Errors
@@ -86,7 +91,10 @@ mod tests {
 
     #[test]
     fn canonicalizes_supported_hosts() {
-        assert_eq!(canonical_host("CentralD.Home.Arpa"), Ok("centrald.home.arpa".into()));
+        assert_eq!(
+            canonical_host("CentralD.Home.Arpa"),
+            Ok("centrald.home.arpa".into())
+        );
         assert_eq!(canonical_host("192.0.2.10"), Ok("192.0.2.10".into()));
         assert_eq!(canonical_host("2001:db8::10"), Ok("2001:db8::10".into()));
         assert_eq!(canonical_host("[2001:db8::10]"), Ok("2001:db8::10".into()));

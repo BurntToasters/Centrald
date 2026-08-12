@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
 use serde::Serialize;
-use tauri::Manager;
 
 mod profiles;
+mod shell;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +30,7 @@ fn runtime_info() -> RuntimeInfo {
 /// event loop cannot start.
 pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
+        .manage(shell::ShellSessions::default())
         .setup(|app| {
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -46,7 +47,12 @@ pub fn run() -> tauri::Result<()> {
             profiles::revoke_client,
             profiles::start_job,
             profiles::get_server_settings,
-            profiles::update_server_settings
+            profiles::update_server_settings,
+            shell::begin_elevation,
+            shell::open_shell,
+            shell::shell_input,
+            shell::shell_resize,
+            shell::shell_close
         ])
         .run(tauri::generate_context!())
 }

@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     version,
     about = "CentralD management server"
 )]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerCli {
     #[arg(long = "config", global = true, default_value = crate::DEFAULT_CONFIG_PATH)]
     pub config_path: PathBuf,
@@ -15,7 +16,7 @@ pub struct ServerCli {
     pub json: bool,
     #[arg(long, global = true)]
     pub no_color: bool,
-    /// Permanently drop the CentralD database and remove this server install.
+    /// Permanently drop the `CentralD` database and remove this server install.
     #[arg(long, requires = "yes_i_want_to_do_this")]
     pub nuke: bool,
     /// Required literal acknowledgement for --nuke.

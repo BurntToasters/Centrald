@@ -20,6 +20,10 @@ pub const SERVER_DATABASE_ENV_FILE: &str = "/etc/centrald/server.env";
 /// This location is intentionally not configurable. Privileged repair and
 /// service ACL operations must never take their target root from daemon-writable
 /// configuration or process environment variables.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` when the Windows known-folder lookup fails.
 #[cfg(windows)]
 pub fn client_data_dir() -> Result<PathBuf, ConfigError> {
     crate::windows_paths::program_data_dir()
@@ -30,6 +34,10 @@ pub fn client_data_dir() -> Result<PathBuf, ConfigError> {
 }
 
 /// Returns the one supported client state root on Unix platforms.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` when the Unix state root cannot be constructed.
 #[cfg(not(windows))]
 pub fn client_data_dir() -> Result<PathBuf, ConfigError> {
     Ok(PathBuf::from("/var/lib/centrald-client"))
@@ -39,6 +47,10 @@ pub fn client_data_dir() -> Result<PathBuf, ConfigError> {
 ///
 /// The managed client account has read/execute access to the installation
 /// directory but must not be able to change this operator policy.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` when the Windows known-folder lookup fails.
 #[cfg(windows)]
 pub fn client_manual_start_marker() -> Result<PathBuf, ConfigError> {
     Ok(client_install_dir()?.join("manual-start.optout"))
@@ -46,6 +58,10 @@ pub fn client_manual_start_marker() -> Result<PathBuf, ConfigError> {
 
 /// Returns the package-managed Windows installation directory without trusting
 /// `ProgramFiles` from the process environment or guessing a drive on failure.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` when the Windows known-folder lookup fails.
 #[cfg(windows)]
 pub fn client_install_dir() -> Result<PathBuf, ConfigError> {
     crate::windows_paths::program_files_dir()
@@ -106,7 +122,7 @@ pub struct DatabaseSection {
     pub url_env: String,
     pub environment_file: PathBuf,
     pub max_connections: u32,
-    /// Dedicated local PostgreSQL role created by the guided setup, when used.
+    /// Dedicated local `PostgreSQL` role created by the guided setup, when used.
     pub managed_local_role: Option<String>,
 }
 
@@ -223,16 +239,17 @@ impl ServerConfig {
         if !(1..=100).contains(&self.database.max_connections) {
             return invalid("database.max_connections must be between 1 and 100");
         }
-        if let Some(role) = &self.database.managed_local_role {
-            if role.len() < 10
+        if let Some(role) = &self.database.managed_local_role
+            && (role.len() < 10
                 || role.len() > 63
                 || !role.starts_with("centrald_")
-                || !role
-                    .chars()
-                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_')
-            {
-                return invalid("database.managed_local_role is not a valid CentralD-managed PostgreSQL role");
-            }
+                || !role.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+                }))
+        {
+            return invalid(
+                "database.managed_local_role is not a valid CentralD-managed PostgreSQL role",
+            );
         }
         let ports = [
             self.server.enrollment_listen.port(),
@@ -366,25 +383,18 @@ impl ClientConfig {
     }
 
     fn identity_generation_id(&self) -> Result<Uuid, ConfigError> {
-        let generation_dir = self
-            .identity_key
-            .parent()
-            .ok_or_else(|| {
-                ConfigError::Validation(
-                    "client identity key has no generation directory".into(),
-                )
-            })?;
+        let generation_dir = self.identity_key.parent().ok_or_else(|| {
+            ConfigError::Validation("client identity key has no generation directory".into())
+        })?;
         let generation_text = generation_dir
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| {
                 ConfigError::Validation("client identity generation name is invalid".into())
             })?;
-        let generation = generation_text
-            .parse::<Uuid>()
-            .map_err(|_| {
-                ConfigError::Validation("client identity generation is not a UUID".into())
-            })?;
+        let generation = generation_text.parse::<Uuid>().map_err(|_| {
+            ConfigError::Validation("client identity generation is not a UUID".into())
+        })?;
         let expected_dir = self
             .data_dir
             .join("identities")
@@ -424,8 +434,10 @@ fn validate_runtime(runtime: &RuntimeSection) -> Result<(), ConfigError> {
             "runtime.offline_after_seconds must exceed the heartbeat interval and be no more than 86400",
         );
     }
-    if !(60..=604_800).contains(&runtime.job_ttl_seconds) {
-        return invalid("runtime.job_ttl_seconds must be between 60 and 604800");
+    if !(1800..=604_800).contains(&runtime.job_ttl_seconds) {
+        return invalid(
+            "runtime.job_ttl_seconds must be at least 1800 seconds so long broker operations can report their terminal event",
+        );
     }
     if !(30..=86_400).contains(&runtime.shell_idle_timeout_seconds) {
         return invalid("runtime.shell_idle_timeout_seconds must be between 30 and 86400");
@@ -464,9 +476,8 @@ fn valid_channel(value: &str) -> bool {
 }
 
 fn validate_https_url(value: &str, label: &str, allow_path: bool) -> Result<(), ConfigError> {
-    let parsed = Url::parse(value).map_err(|_| {
-        ConfigError::Validation(format!("{label} must be an absolute HTTPS URL"))
-    })?;
+    let parsed = Url::parse(value)
+        .map_err(|_| ConfigError::Validation(format!("{label} must be an absolute HTTPS URL")))?;
     if parsed.scheme() != "https"
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
@@ -489,9 +500,7 @@ fn validate_host(value: &str, label: &str) -> Result<(), ConfigError> {
         ))
     })?;
     if canonical != value {
-        return invalid(format!(
-            "{label} must use its canonical form: {canonical}"
-        ));
+        return invalid(format!("{label} must use its canonical form: {canonical}"));
     }
     Ok(())
 }
@@ -543,6 +552,7 @@ fn validate_server_path_parent_security(path: &Path, label: &str) -> Result<(), 
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn validate_server_path_parent_security(_path: &Path, _label: &str) -> Result<(), ConfigError> {
     Ok(())
 }
@@ -565,7 +575,11 @@ fn validate_server_fixed_paths(config: &ServerConfig) -> Result<(), ConfigError>
             &config.database.environment_file,
             PathBuf::from(SERVER_DATABASE_ENV_FILE),
         ),
-        ("pki.root_cert", &config.pki.root_cert, pki.join("root-ca.pem")),
+        (
+            "pki.root_cert",
+            &config.pki.root_cert,
+            pki.join("root-ca.pem"),
+        ),
         (
             "pki.server_chain",
             &config.pki.server_chain,
@@ -632,7 +646,10 @@ fn server_paths(config: &ServerConfig) -> [(&'static str, &Path); 14] {
     [
         ("server.data_dir", &config.server.data_dir),
         ("server.local_socket", &config.server.local_socket),
-        ("database.environment_file", &config.database.environment_file),
+        (
+            "database.environment_file",
+            &config.database.environment_file,
+        ),
         ("pki.root_cert", &config.pki.root_cert),
         ("pki.server_chain", &config.pki.server_chain),
         ("pki.server_key", &config.pki.server_key),
@@ -775,10 +792,11 @@ mod tests {
     #[test]
     fn rejects_client_configuration_filename_mismatch() {
         let (config, _path) = valid_client_config();
-        let wrong_path = config
-            .data_dir
-            .join("configurations")
-            .join(format!("client-{}-{}.toml", config.identity_id, Uuid::now_v7()));
+        let wrong_path = config.data_dir.join("configurations").join(format!(
+            "client-{}-{}.toml",
+            config.identity_id,
+            Uuid::now_v7()
+        ));
         assert!(config.validate_storage_path(&wrong_path).is_err());
     }
 }

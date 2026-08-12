@@ -19,6 +19,7 @@ ed25519-dalek.workspace = true
 fs2.workspace = true
 hex.workspace = true
 humantime.workspace = true
+minisign.workspace = true
 pkcs8.workspace = true
 prost-types.workspace = true
 rand.workspace = true

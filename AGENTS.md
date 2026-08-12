@@ -189,6 +189,22 @@ checkout, or clean source files.
 
 Preserve unrelated user changes and double-check destructive/privileged logic.
 
+## Website
+
+- `site/` is a static Astro 7 documentation site deployed to Cloudflare Pages
+  at `centrald.dev` (Pages project root `site`, build `npm ci && npm run build`,
+  output `dist`).
+- `docs/*.md` and root `SECURITY.md` are the canonical content source.
+  `site/scripts/sync-docs.mjs` copies them into the gitignored
+  `site/src/content/docs/` with generated frontmatter (title, description,
+  order, group); the build always re-syncs first. Never edit
+  `site/src/content/docs/` directly and never duplicate doc content in
+  site-authored pages.
+- `npm run site:dev`, `site:check` (`astro check`), and `site:build` wrap the
+  site commands; `npm run qa` runs `site:check` + `site:build`.
+- Site pages and layout live in `site/src/pages` and `site/src/layouts`; the
+  docs route map (slug/order/group per document) lives in the sync script.
+
 ## Quality gates
 
 Run the relevant subset before completion:

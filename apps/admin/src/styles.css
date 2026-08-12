@@ -595,7 +595,9 @@ code {
 
 .invitation-row {
   display: grid;
-  grid-template-columns: minmax(190px, 1.2fr) minmax(170px, 0.9fr) minmax(170px, 0.9fr) 90px 90px;
+  grid-template-columns:
+    minmax(190px, 1.2fr) minmax(170px, 0.9fr) minmax(170px, 0.9fr)
+    90px 90px;
   align-items: center;
   gap: 16px;
   min-height: 66px;
@@ -630,7 +632,9 @@ code {
 
 .device-row {
   display: grid;
-  grid-template-columns: minmax(210px, 1.3fr) minmax(150px, 0.8fr) minmax(160px, 0.85fr) 90px minmax(290px, 1.4fr);
+  grid-template-columns:
+    minmax(210px, 1.3fr) minmax(150px, 0.8fr) minmax(160px, 0.85fr)
+    90px minmax(290px, 1.4fr);
   align-items: center;
   gap: 16px;
   min-height: 66px;
@@ -1064,7 +1068,6 @@ label small,
     grid-column: 1 / -1;
   }
 }
-
 
 .getting-started {
   border: 1px solid #24485b;

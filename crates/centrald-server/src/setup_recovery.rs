@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use centrald_common::config::SERVER_DATA_DIR;
-use secrecy::ExposeSecret;
 use centrald_common::secure_fs::{
     replace_file_atomically, validate_no_symlink_ancestors, write_new_file,
 };
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -23,6 +23,7 @@ use crate::setup::{
 const JOURNAL_VERSION: u32 = 3;
 const JOURNAL_NAME: &str = ".centrald-initial-setup-recovery.json";
 const MAX_JOURNAL_BYTES: u64 = 64 * 1024;
+#[allow(dead_code)]
 const SETUP_MUTATION_LOCK: &str = "/var/lib/centrald-initial-setup.lock";
 
 /// Serializes first-run provisioning, interrupted-setup recovery, and a
@@ -76,7 +77,10 @@ pub fn acquire_setup_mutation_lock() -> Result<SetupMutationLock> {
         }
         if let Ok(metadata) = path.symlink_metadata() {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!("setup mutation lock is not a regular file: {}", path.display());
+                bail!(
+                    "setup mutation lock is not a regular file: {}",
+                    path.display()
+                );
             }
         }
         let file = OpenOptions::new()
@@ -148,7 +152,7 @@ struct SetupRecoveryJournal {
     owner: ProcessOwner,
 }
 
-/// Writes durable, non-secret recovery state before the first PostgreSQL
+/// Writes durable, non-secret recovery state before the first `PostgreSQL`
 /// mutation for either the recommended managed-local flow or the advanced
 /// external flow. Credentials are never copied into this journal.
 ///
@@ -197,11 +201,17 @@ pub fn begin_setup(options: &SetupOptions) -> Result<()> {
     Ok(())
 }
 
-/// Recovers a dead recommended local-PostgreSQL setup before starting another
+/// Recovers a dead recommended local-`PostgreSQL` setup before starting another
 /// setup attempt. A live owner is never treated as abandoned.
 ///
 /// Returns `true` when a committed journal was retired. The caller should then
 /// report that setup already completed rather than starting a second install.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe, does not belong to this
+/// configuration, a live setup owner is detected, or cleanup of an abandoned
+/// setup fails.
 pub async fn recover_before_initial_setup(config_path: &Path) -> Result<bool> {
     let Some(journal) = read_journal_if_present()? else {
         return Ok(false);
@@ -234,8 +244,14 @@ pub async fn recover_before_initial_setup(config_path: &Path) -> Result<bool> {
 }
 
 /// Prevents normal server commands from using an installation while its
-/// recommended local PostgreSQL setup is incomplete. A committed leftover
+/// recommended local `PostgreSQL` setup is incomplete. A committed leftover
 /// journal is safely retired.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe or does not belong to this
+/// configuration, or when the installation's setup is incomplete.
+#[allow(clippy::unused_async)]
 pub async fn prepare_for_normal_command(config_path: &Path) -> Result<()> {
     let Some(journal) = read_journal_if_present()? else {
         return Ok(());
@@ -264,6 +280,11 @@ pub async fn prepare_for_normal_command(config_path: &Path) -> Result<()> {
 /// retired; the normal nuke path must then validate and remove the published
 /// installation. Returns `true` only when an uncommitted setup was completely
 /// removed and there is no published installation left to reset.
+///
+/// # Errors
+///
+/// Returns an error when the journal is unsafe or does not belong to this
+/// configuration, a live setup owner is detected, or destructive cleanup fails.
 pub async fn reset_interrupted_setup_for_nuke(config_path: &Path) -> Result<bool> {
     let Some(journal) = read_journal_if_present()? else {
         return Ok(false);
@@ -296,6 +317,11 @@ pub async fn reset_interrupted_setup_for_nuke(config_path: &Path) -> Result<bool
 /// Rolls back the setup attempt owned by the current process after an ordinary
 /// error. This uses the same idempotent cleanup as crash recovery, without
 /// treating the current live PID as a competing setup process.
+///
+/// # Errors
+///
+/// Returns an error when the journal is missing, does not belong to this
+/// configuration, is committed, or cleanup fails.
 pub async fn rollback_current_setup(config_path: &Path) -> Result<()> {
     let journal = read_journal_required()?;
     validate_journal_for_config(&journal, config_path)?;
@@ -307,6 +333,11 @@ pub async fn rollback_current_setup(config_path: &Path) -> Result<()> {
 
 /// Marks the installation durable after database hardening and initial Admin
 /// creation, before the one-time Admin key is printed.
+///
+/// # Errors
+///
+/// Returns an error when the journal is missing, does not belong to this
+/// configuration, is not in provisioning state, or cannot be rewritten.
 pub fn mark_committed(config_path: &Path) -> Result<()> {
     let mut journal = read_journal_required()?;
     validate_journal_for_config(&journal, config_path)?;
@@ -322,6 +353,11 @@ pub fn mark_committed(config_path: &Path) -> Result<()> {
 
 /// Removes the recovery journal after a committed installation is known to be
 /// recoverable through its normal configuration and local management console.
+///
+/// # Errors
+///
+/// Returns an error when the journal is missing, does not belong to this
+/// configuration, is not committed, or cannot be removed.
 pub fn retire_committed(config_path: &Path) -> Result<()> {
     let journal = read_journal_required()?;
     validate_journal_for_config(&journal, config_path)?;
@@ -332,7 +368,12 @@ pub fn retire_committed(config_path: &Path) -> Result<()> {
 }
 
 /// Removes the recovery journal only after the caller has successfully cleaned
-/// every managed PostgreSQL and filesystem output from a failed setup.
+/// every managed `PostgreSQL` and filesystem output from a failed setup.
+///
+/// # Errors
+///
+/// Returns an error when the journal is missing, does not belong to this
+/// configuration, is committed, or cannot be removed.
 pub fn retire_after_rollback(config_path: &Path) -> Result<()> {
     let journal = read_journal_required()?;
     validate_journal_for_config(&journal, config_path)?;
@@ -386,19 +427,26 @@ async fn cleanup_external_database(journal: &SetupRecoveryJournal) -> Result<()>
     let raw = match fs::read_to_string(&journal.environment_file) {
         Ok(raw) => raw,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).with_context(|| {
-            format!("read {} for external setup recovery", journal.environment_file.display())
-        }),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "read {} for external setup recovery",
+                    journal.environment_file.display()
+                )
+            });
+        }
     };
     if raw.len() > 128 * 1024 || raw.contains('\r') {
         bail!("external setup database environment file is malformed");
     }
     let mut lines = raw.lines();
-    let marker = lines.next().context("external setup database environment marker is missing")?;
-    let assignment = lines.next().context("external setup database URL is missing")?;
-    if lines.next().is_some()
-        || marker != format!("# centrald-instance:{}", journal.instance_id)
-    {
+    let marker = lines
+        .next()
+        .context("external setup database environment marker is missing")?;
+    let assignment = lines
+        .next()
+        .context("external setup database URL is missing")?;
+    if lines.next().is_some() || marker != format!("# centrald-instance:{}", journal.instance_id) {
         bail!("external setup database environment file is not bound to this server instance");
     }
     let (name, url) = assignment
@@ -431,7 +479,7 @@ fn validate_journal_for_config(journal: &SetupRecoveryJournal, config_path: &Pat
     if journal.instance_id.is_nil() {
         bail!("initial-setup recovery journal contains a nil server instance ID");
     }
-    if journal.data_dir != PathBuf::from(SERVER_DATA_DIR) {
+    if journal.data_dir != *SERVER_DATA_DIR {
         bail!("initial-setup recovery journal contains an unexpected server data directory");
     }
     if journal.database_url_env.is_empty()
@@ -543,7 +591,10 @@ fn validate_journal_parent() -> Result<()> {
 
 fn validate_journal_metadata(path: &Path, metadata: &fs::Metadata) -> Result<()> {
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("initial-setup recovery journal is not a regular file: {}", path.display());
+        bail!(
+            "initial-setup recovery journal is not a regular file: {}",
+            path.display()
+        );
     }
     #[cfg(unix)]
     {
@@ -597,7 +648,11 @@ fn read_boot_id() -> Result<String> {
     let value = fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .context("read Linux boot ID for setup recovery")?;
     let value = value.trim();
-    if value.len() != 36 || !value.chars().all(|character| character.is_ascii_hexdigit() || character == '-') {
+    if value.len() != 36
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
         bail!("Linux boot ID has an unexpected format");
     }
     Ok(value.to_owned())
@@ -605,8 +660,9 @@ fn read_boot_id() -> Result<String> {
 
 #[cfg(target_os = "linux")]
 fn read_process_start_ticks(pid: u32) -> Result<u64> {
-    read_process_start_ticks_if_present(pid)?
-        .with_context(|| format!("process {pid} disappeared while setup recovery state was created"))
+    read_process_start_ticks_if_present(pid)?.with_context(|| {
+        format!("process {pid} disappeared while setup recovery state was created")
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -622,7 +678,9 @@ fn read_process_start_ticks_if_present(pid: u32) -> Result<Option<u64>> {
 
 #[cfg(target_os = "linux")]
 fn parse_process_start_ticks(stat: &str) -> Result<u64> {
-    let close = stat.rfind(')').context("Linux process stat is missing command terminator")?;
+    let close = stat
+        .rfind(')')
+        .context("Linux process stat is missing command terminator")?;
     let remainder = stat
         .get(close + 1..)
         .context("Linux process stat command boundary is invalid")?
@@ -631,14 +689,14 @@ fn parse_process_start_ticks(stat: &str) -> Result<u64> {
         .split_whitespace()
         .nth(19)
         .context("Linux process stat is missing start time")?;
-    start.parse::<u64>().context("parse Linux process start time")
+    start
+        .parse::<u64>()
+        .context("parse Linux process start time")
 }
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::*;
-
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_proc_start_ticks_after_parenthesized_command() {
@@ -647,6 +705,9 @@ mod tests {
         fields.push("424242".to_owned());
         fields.push("23".to_owned());
         let stat = format!("123 (centrald worker) {}", fields.join(" "));
-        assert_eq!(parse_process_start_ticks(&stat).expect("parse start ticks"), 424242);
+        assert_eq!(
+            parse_process_start_ticks(&stat).expect("parse start ticks"),
+            424242
+        );
     }
 }

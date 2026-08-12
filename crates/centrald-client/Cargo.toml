@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 centrald-common.workspace = true
 centrald-platform.workspace = true
 centrald-protocol.workspace = true
@@ -17,11 +18,14 @@ chrono.workspace = true
 clap.workspace = true
 hostname.workspace = true
 hex.workspace = true
+minisign.workspace = true
+portable-pty.workspace = true
 prost-types.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
 rpassword.workspace = true
 secrecy.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -33,13 +37,31 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 url.workspace = true
+zeroize.workspace = true
+zip.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pam.workspace = true
+zbus.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
-windows-sys = { version = "0.60", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authentication_Identity",
+  "Win32_Security_Authorization",
+  "Win32_Security_Cryptography",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Shutdown",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

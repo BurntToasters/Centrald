@@ -1,0 +1,100 @@
+---
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:site_name" content="CentralD" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="stylesheet" href="/global.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="site-nav" aria-label="Primary">
+        <a class="site-brand" href="/">
+          <span class="site-mark">C</span>
+          <span>CentralD</span>
+        </a>
+        <a href="/docs/quickstart">Get started</a>
+        <a href="/docs/architecture">Architecture</a>
+        <a href="/docs/operations">Operations</a>
+        <a href="/docs/threat-model">Security</a>
+        <a href="https://github.com/BurntToasters/centrald">GitHub</a>
+      </nav>
+    </header>
+    <slot />
+    <footer class="site-footer">
+      <p>
+        CentralD is free software under GPL-3.0-or-later. Built for private LAN
+        and VPN homelabs.
+      </p>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .site-header {
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .site-nav {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 0.75rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+  }
+  .site-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    margin-right: auto;
+  }
+  .site-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 0.5rem;
+    background: linear-gradient(135deg, #38bdf8, #6366f1);
+    color: #0b1220;
+    font-weight: 800;
+  }
+  .site-footer {
+    border-top: 1px solid var(--border);
+    margin-top: 4rem;
+  }
+  .site-footer p {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 1.5rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  @media (max-width: 640px) {
+    .site-nav a:not(.site-brand) {
+      display: none;
+    }
+  }
+</style>

@@ -2,8 +2,7 @@
 
 ## Public configuration
 
-Before signed releases, set both public verification keys in
-`centrald.config`:
+Before signed releases, set both public verification keys in `centrald.config`:
 
 ```text
 TAURI_UPDATER_PUBKEY=<public Tauri updater key>
@@ -31,16 +30,17 @@ Every file has `<artifact>.minisig`. Admin updater artifacts also have
 
 The immutable version release is created as a draft, accepts each asset exactly
 once, is verified, and is then published without `--clobber`. It contains
-artifacts, signatures, and both manifests. For GitHub repositories, non-stable channel manifests such as `prerelease` are
-published together in one Git commit on the dedicated `centrald-channels` branch
-and read through `raw.githubusercontent.com`; immutable version artifacts remain in
-GitHub Releases. The branch ref is updated non-forced, so a racing publisher must
-rebuild from the new head instead of overwriting it.
-Channel versions are compared using strict Semantic Versioning precedence. A
-normal publish cannot point a channel backward or replace different bytes at the
-same version. A deliberate emergency rollback additionally requires
-`CENTRALD_ALLOW_CHANNEL_ROLLBACK=YES`.
-Generic HTTPS/S3 deployments can provide their own mutable `UPDATE_BASE_URL`.
+artifacts, signatures, and both manifests. For GitHub repositories, non-stable
+channel manifests such as `prerelease` are published together in one Git commit
+on the dedicated `centrald-channels` branch and read through
+`raw.githubusercontent.com`; immutable version artifacts remain in GitHub
+Releases. The branch ref is updated non-forced, so a racing publisher must
+rebuild from the new head instead of overwriting it. Channel versions are
+compared using strict Semantic Versioning precedence. A normal publish cannot
+point a channel backward or replace different bytes at the same version. A
+deliberate emergency rollback additionally requires
+`CENTRALD_ALLOW_CHANNEL_ROLLBACK=YES`. Generic HTTPS/S3 deployments can provide
+their own mutable `UPDATE_BASE_URL`.
 
 ## Local commands
 
@@ -55,8 +55,8 @@ npm run release:verify
 
 `release:sign` reads the private key path from `MINISIGN_SECRET_KEY_FILE`. An
 interactive encrypted key is supported locally. CI may materialize an ephemeral
-unprotected key and set `CENTRALD_MINISIGN_UNPROTECTED_KEY=YES`; the file must be
-mode `0600` and removed afterward.
+unprotected key and set `CENTRALD_MINISIGN_UNPROTECTED_KEY=YES`; the file must
+be mode `0600` and removed afterward.
 
 Tauri signing reads `TAURI_SIGNING_PRIVATE_KEY` and, when needed,
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the process environment.

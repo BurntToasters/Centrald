@@ -6,6 +6,10 @@
 /coverage/
 /.env
 /.centrald-dev/
+# dotenv environment variable files
+.env
+.env.*
+!.env.example
 /apps/admin/dist/
 /apps/admin/src-tauri/target/
 /site/dist/

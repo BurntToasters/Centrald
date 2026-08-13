@@ -151,6 +151,17 @@ execution and credential saving visibly disabled.
 - Signing private keys come only from process environment or an ephemeral secret
   file. They are never command-line values, tracked files, Docker build args, or
   generated manifests.
+- `.env.example` documents every release secret; `.env` is gitignored and loaded
+  by release/build scripts via `node --env-file-if-exists=.env`.
+- `npm run release` builds every platform the host can produce (Windows hosts
+  build Linux artifacts in the Docker Linux engine and Windows artifacts in the
+  Docker Windows engine via `build.js --target all --container`), and with
+  `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<package-version>`
+  tag before publishing. The Docker-built Linux AppImage and Windows NSIS
+  installers are Tauri-signed on the host with `tauri signer sign`, never
+  inside Docker. The host and both builder images refresh to the latest stable
+  Rust before building (`rustup update stable`); `rust-toolchain.toml` pins
+  `stable`.
 
 ## Security requirements
 

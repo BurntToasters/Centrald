@@ -240,6 +240,19 @@ artifact and Minisign URLs.
 See [Operations](docs/OPERATIONS.md), [Releases](docs/RELEASES.md), and
 [Architecture](docs/ARCHITECTURE.md).
 
+## Release workflow
+
+Copy `.env.example` to `.env` and set the signing keys and publish gates, then:
+
+```text
+npm run release
+```
+
+On a Windows host this builds Windows x64/ARM64 and the Linux x64 artifacts
+through Docker, signs everything, creates and pushes the `v<version>` tag,
+uploads the GitHub release, and publishes the channel manifests. See
+[Releases](docs/RELEASES.md) for key generation and the step-by-step flow.
+
 ## Documentation site
 
 The `site/` folder is a static Astro 7 site deployed to Cloudflare Pages at

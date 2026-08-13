@@ -103,6 +103,15 @@ production-ready.
 - Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.
+- One-command release orchestration: `npm run release` builds every platform a
+  Windows or Linux host can produce (Windows hosts build inside both the Docker
+  Linux and Docker Windows engines and extract the artifacts), signs the Linux
+  AppImage and Windows NSIS installers on the host with the Tauri signer, and
+  with `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<version>` tag
+  and publishes. The host and both builder images refresh to the latest stable
+  Rust (`rustup update stable`). A `release:bump` helper keeps `package.json`,
+  the workspace `Cargo.toml`, and `tauri.conf.json` in lockstep; `.env.example`
+  documents all release secrets.
 
 ## Deliberately gated
 

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -17,10 +18,8 @@ if (!supported.has(options.target)) {
 if (options.native && options.target !== "linux-x64") {
   throw new Error("--native is supported only with --target linux-x64");
 }
-if (options.signed && options.target === "all") {
-  throw new Error(
-    "Signed all-platform releases must run as separate native platform jobs.",
-  );
+if (options.container && options.native) {
+  throw new Error("--container and --native are mutually exclusive");
 }
 
 const packageJson = JSON.parse(
@@ -33,16 +32,28 @@ ensureGeneratedDirectory(root, "dist");
 if (options.signed) validateSigningEnvironment(buildConfig);
 
 if (options.target === "all") {
-  requirePlatform("win32", "--target all");
-  buildWindows("x64");
-  buildWindows("arm64");
-  buildLinuxDocker();
+  if (options.container) {
+    buildAllContainerized();
+  } else {
+    requirePlatform("win32", "--target all");
+    buildWindows("x64");
+    buildWindows("arm64");
+    buildLinuxDocker();
+  }
 } else if (options.target === "windows-x64") {
-  requirePlatform("win32", options.target);
-  buildWindows("x64");
+  if (options.container) {
+    buildWindowsContainer(["windows-x64"]);
+  } else {
+    requirePlatform("win32", options.target);
+    buildWindows("x64");
+  }
 } else if (options.target === "windows-arm64") {
-  requirePlatform("win32", options.target);
-  buildWindows("arm64");
+  if (options.container) {
+    buildWindowsContainer(["windows-arm64"]);
+  } else {
+    requirePlatform("win32", options.target);
+    buildWindows("arm64");
+  }
 } else if (options.native) {
   requirePlatform("linux", "--native Linux build");
   buildLinuxNative();
@@ -51,7 +62,12 @@ if (options.target === "all") {
 }
 
 function parseArguments(args) {
-  const result = { target: "", signed: false, native: false };
+  const result = {
+    target: "",
+    signed: false,
+    native: false,
+    container: false,
+  };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--target") {
@@ -64,6 +80,8 @@ function parseArguments(args) {
       result.signed = true;
     } else if (argument === "--native") {
       result.native = true;
+    } else if (argument === "--container") {
+      result.container = true;
     } else {
       throw new Error(`Unknown argument ${argument}`);
     }
@@ -191,11 +209,7 @@ function buildWindowsClientZip(clientBinary, destination, output) {
 }
 
 function buildLinuxDocker() {
-  if (options.signed) {
-    throw new Error(
-      "Signed Linux artifacts must use --target linux-x64 --native so the Tauri signing key is not passed as a Docker build argument.",
-    );
-  }
+  ensureDockerEngine("linux", "Linux builder");
   cleanGeneratedDirectory(root, "dist/linux-x64");
   run("docker", [
     "build",
@@ -205,6 +219,174 @@ function buildLinuxDocker() {
     "type=local,dest=dist/linux-x64",
     ".",
   ]);
+  // The updater signing key must never enter a Docker build argument. The
+  // Docker-built Linux AppImage is therefore signed on the host afterwards;
+  // `tauri signer sign` reads TAURI_SIGNING_PRIVATE_KEY and the optional
+  // TAURI_SIGNING_PRIVATE_KEY_PASSWORD from the process environment.
+  if (options.signed) signHostUpdaterArtifact(findLinuxAppImage());
+}
+
+/// Builds the Windows targets inside a Windows-container image and extracts the
+/// artifacts with `docker create` + `docker cp`, so the host machine only ever
+/// runs Docker and never the native MSVC/Rust toolchain. The image builds both
+/// targets; only the requested architectures are extracted.
+function buildWindowsContainer(architectures) {
+  ensureDockerEngine("windows", "Windows container builder");
+  run("docker", [
+    "build",
+    "--file",
+    "docker/windows-builder.Dockerfile",
+    "--tag",
+    "centrald-windows-builder:latest",
+    ".",
+  ]);
+  const containerName = `centrald-windows-extract-${process.pid}`;
+  const staging = path.join(root, "dist", `.windows-container-${process.pid}`);
+  try {
+    run("docker", [
+      "create",
+      "--name",
+      containerName,
+      "centrald-windows-builder:latest",
+    ]);
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+    for (const architecture of architectures) {
+      const destination = `dist/${architecture}`;
+      cleanGeneratedDirectory(root, destination);
+      ensureGeneratedDirectory(root, destination);
+      // Windows-container paths use drive letters and backslashes; docker cp
+      // from a created (not started) container reads the image's filesystem.
+      // The directory is copied whole into staging, then its contents are
+      // moved, so the copy semantics do not depend on trailing separators.
+      run("docker", [
+        "cp",
+        `${containerName}:C:\\src\\dist\\${architecture}`,
+        staging,
+      ]);
+      const extracted = path.join(staging, architecture);
+      if (!fs.existsSync(extracted) || !fs.statSync(extracted).isDirectory()) {
+        throw new Error(
+          `Windows container produced no ${architecture} artifact directory.`,
+        );
+      }
+      for (const entry of fs.readdirSync(extracted, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        fs.copyFileSync(
+          path.join(extracted, entry.name),
+          path.join(root, destination, entry.name),
+        );
+      }
+      console.log(
+        `Extracted ${architecture} artifacts from the Windows container.`,
+      );
+    }
+  } finally {
+    run("docker", ["rm", "-f", containerName]);
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+  if (options.signed) {
+    for (const architecture of architectures) {
+      signHostUpdaterArtifact(
+        findSingleArtifact(
+          path.join(root, "dist", architecture),
+          (file) => file.endsWith(".exe"),
+          `CentralD Admin NSIS installer (${architecture})`,
+        ),
+      );
+    }
+  }
+}
+
+/// Builds every platform inside Docker containers: the Linux engine produces
+/// the Linux artifacts, then the Windows engine produces both Windows targets.
+/// Docker Desktop supports only one engine mode at a time, so the engine is
+/// switched between the two container images.
+function buildAllContainerized() {
+  buildLinuxDocker();
+  buildWindowsContainer(["windows-x64", "windows-arm64"]);
+}
+
+/// Returns the Docker engine's OSType ("linux" or "windows") or an empty
+/// string when Docker is unavailable or not running.
+function dockerOstype() {
+  try {
+    const output = execFileSync("docker", ["info", "--format", "{{.OSType}}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return output.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+/// Ensures the Docker engine is running the expected OS type. Docker Desktop
+/// supports one engine mode at a time; when the engine reports the other mode
+/// the switch command restarts the engine.
+function ensureDockerEngine(expected, operation) {
+  const current = dockerOstype();
+  if (current === expected) return;
+  if (!current) {
+    throw new Error(
+      `${operation} requires Docker; install Docker Desktop and start the engine before running release builds.`,
+    );
+  }
+  const dockerCli = "C:\\Program Files\\Docker\\Docker\\DockerCli.exe";
+  if (!fs.existsSync(dockerCli)) {
+    throw new Error(
+      `${operation} requires the ${expected} Docker engine mode, but the engine is in ${current} mode. Switch Docker Desktop to ${expected} containers and retry.`,
+    );
+  }
+  console.log(
+    `Switching the Docker engine to ${expected} containers (this restarts the engine)...`,
+  );
+  run(dockerCli, [
+    expected === "windows"
+      ? "-SwitchWindowsContainers"
+      : "-SwitchLinuxContainers",
+  ]);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (dockerOstype() === expected) return;
+    sleepSeconds(10);
+  }
+  throw new Error(
+    `Docker engine did not switch to ${expected} mode within 120 seconds. Switch it manually in Docker Desktop and retry.`,
+  );
+}
+
+function sleepSeconds(seconds) {
+  const shared = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(shared, 0, 0, seconds * 1000);
+}
+
+/// Signs a single updater artifact on the host with `tauri signer sign`. The
+/// command reads TAURI_SIGNING_PRIVATE_KEY and the optional
+/// TAURI_SIGNING_PRIVATE_KEY_PASSWORD from the process environment; a key held
+/// as a file path is passed with -f and the env-var value cleared to avoid
+/// clap's conflicts_with between -k and -f.
+function signHostUpdaterArtifact(artifact) {
+  const key = process.env.TAURI_SIGNING_PRIVATE_KEY ?? "";
+  const args = ["tauri", "signer", "sign"];
+  const childEnvironment = { ...process.env };
+  if (key && fs.existsSync(key)) {
+    args.push("-f", key);
+    delete childEnvironment.TAURI_SIGNING_PRIVATE_KEY;
+  }
+  args.push(artifact);
+  run("npx", args, { env: childEnvironment });
+  requireRegularFile(
+    `${artifact}.sig`,
+    "Tauri updater signature for the host-signed artifact",
+  );
+}
+
+function findLinuxAppImage() {
+  return findSingleArtifact(
+    path.join(root, "dist/linux-x64"),
+    (file) => file.endsWith(".AppImage"),
+    "CentralD Admin AppImage",
+  );
 }
 
 function buildLinuxNative() {

@@ -16,6 +16,9 @@ jobs:
   linux:
     name: Linux x64 artifacts
     runs-on: ubuntu-24.04
+    # The workflow needs the Tauri signing key; without it (local-host
+    # releases, unconfigured secrets) the tag was published by another path.
+    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -52,6 +55,7 @@ jobs:
   windows:
     name: Windows x64 and ARM64 artifacts
     runs-on: windows-2022
+    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -83,6 +87,7 @@ jobs:
     name: Verify, sign, and publish
     needs: [linux, windows]
     runs-on: ubuntu-24.04
+    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       GH_TOKEN: ${{ github.token }}
       CENTRALD_RELEASE_PUBLISH: YES
@@ -129,10 +134,12 @@ jobs:
           echo "MINISIGN_SECRET_KEY_FILE=$RUNNER_TEMP/centrald-minisign.key" >> "$GITHUB_ENV"
       - name: Assemble release artifacts
         run: npm run release:assemble
-      - name: Sign and verify every artifact
+      - name: Sign every artifact before manifest generation
         run: npm run release:sign
       - name: Generate immutable release manifests
         run: npm run release:manifests
+      - name: Sign the generated manifests
+        run: npm run release:sign
       - name: Publish GitHub releases
         run: npm run release:publish
       - name: Remove ephemeral signing key

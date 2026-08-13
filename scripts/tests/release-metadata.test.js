@@ -121,3 +121,89 @@ test("manifest generation is reproducible for one release timestamp", async () =
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("version bump updates package.json, Cargo.toml, and tauri.conf.json in lockstep", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "centrald-bump-test-"));
+  try {
+    await writeFile(
+      path.join(root, "package.json"),
+      '{"version":"0.1.0-alpha.1","type":"module"}\n',
+    );
+    await writeFile(
+      path.join(root, "Cargo.toml"),
+      '[workspace.package]\nversion = "0.1.0-alpha.1"\n',
+    );
+    await mkdir(path.join(root, "apps", "admin", "src-tauri"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(root, "apps", "admin", "src-tauri", "tauri.conf.json"),
+      '{"version":"0.1.0-alpha.1"}\n',
+    );
+    const bumper = fileURLToPath(
+      new URL("../bump-version.js", import.meta.url),
+    );
+    const result = spawnSync(process.execPath, [bumper, "0.1.0-alpha.2"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
+        .version,
+      "0.1.0-alpha.2",
+    );
+    const cargo = await readFile(path.join(root, "Cargo.toml"), "utf8");
+    assert.match(cargo, /version = "0\.1\.0-alpha\.2"/);
+    assert.doesNotMatch(cargo, /0\.1\.0-alpha\.1/);
+    assert.equal(
+      JSON.parse(
+        await readFile(
+          path.join(root, "apps", "admin", "src-tauri", "tauri.conf.json"),
+          "utf8",
+        ),
+      ).version,
+      "0.1.0-alpha.2",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("version bump rejects invalid versions and unknown current versions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "centrald-bump-reject-"));
+  try {
+    await writeFile(
+      path.join(root, "package.json"),
+      '{"version":"0.1.0-alpha.1","type":"module"}\n',
+    );
+    await writeFile(
+      path.join(root, "Cargo.toml"),
+      '[workspace.package]\nversion = "0.1.0-alpha.1"\n',
+    );
+    await mkdir(path.join(root, "apps", "admin", "src-tauri"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(root, "apps", "admin", "src-tauri", "tauri.conf.json"),
+      '{"version":"0.1.0-alpha.1"}\n',
+    );
+    const bumper = fileURLToPath(
+      new URL("../bump-version.js", import.meta.url),
+    );
+    const invalid = spawnSync(process.execPath, [bumper, "not-a-version"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /not valid strict SemVer/);
+    const same = spawnSync(process.execPath, [bumper, "0.1.0-alpha.1"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.notEqual(same.status, 0);
+    assert.match(same.stderr, /nothing to bump/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

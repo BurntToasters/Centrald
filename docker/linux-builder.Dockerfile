@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM node:22.16.0-bookworm-slim AS node-toolchain
-FROM rust:1.85.1-bookworm AS rust-toolchain
+FROM rust:bookworm AS rust-toolchain
 
 FROM ubuntu:24.04 AS builder
 ARG DEBIAN_FRONTEND=noninteractive
@@ -37,7 +37,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts=false
 COPY . .
 
-RUN rustup target add x86_64-unknown-linux-gnu \
+# The project always builds on the latest stable Rust: refresh the toolchain
+# even when the floating `rust:bookworm` base image was cached locally.
+RUN rustup update stable \
+    && rustup target add x86_64-unknown-linux-gnu \
     && cargo build --locked --release --target x86_64-unknown-linux-gnu \
       -p centrald-server -p centrald-client \
     && cd apps/admin \

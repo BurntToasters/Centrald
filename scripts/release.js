@@ -35,7 +35,7 @@ const version = packageJson.version;
 const config = loadBuildConfig(root);
 
 if (action === "prepare") prepare();
-if (action === "build") buildCurrentPlatform();
+if (action === "build") buildAllPlatforms();
 if (action === "assemble") assembleArtifacts();
 if (action === "sign") signReleaseArtifacts();
 if (action === "manifests") generateManifests();
@@ -44,11 +44,26 @@ if (action === "publish") publish();
 if (action === "publish-channel") publishChannelOnly();
 if (action === "all") {
   prepare();
-  buildCurrentPlatform();
+  buildAllPlatforms();
   assembleArtifacts();
+  // Artifacts are signed before manifest generation so every described
+  // artifact has a signature_url. Manifests are generated from the signed
+  // artifact set and then signed again so their own .minisig files exist for
+  // the release upload.
   signReleaseArtifacts();
   generateManifests();
-  verify();
+  signReleaseArtifacts();
+  if (process.env.CENTRALD_RELEASE_PUBLISH === "YES") {
+    requirePublishEnvironment();
+    createAndPushVersionTag();
+    // publish() runs its own full verification before uploading.
+    publish();
+  } else {
+    verify();
+    console.log(
+      "Release artifacts are built and verified. Publishing was skipped: set CENTRALD_RELEASE_PUBLISH=YES in .env to create the version tag and publish.",
+    );
+  }
 }
 
 function git(args) {
@@ -59,8 +74,23 @@ function prepare() {
   requireCleanTree();
   verifyVersionSync();
   verifyOrigin();
+  refreshHostRustStable();
   ensureGeneratedDirectory(root, "release");
   console.log(`Release preflight passed for v${version}.`);
+}
+
+/// The project always builds on the latest stable Rust. Refresh the host
+/// toolchain so a native build (or rustup-driven step) matches what the
+/// container images provide; container images run their own rustup update.
+function refreshHostRustStable() {
+  if (!commandExists("rustup", ["--version"])) {
+    console.log(
+      "Host rustup is not installed; container builds supply their own latest-stable Rust toolchain.",
+    );
+    return;
+  }
+  run("rustup", ["update", "stable"]);
+  console.log("Host Rust stable toolchain is up to date.");
 }
 
 function requireCleanTree() {
@@ -105,21 +135,22 @@ function normalizeRepository(value) {
   return normalized.replace(/\/+$/u, "").toLowerCase();
 }
 
-function buildCurrentPlatform() {
+function buildAllPlatforms() {
   prepare();
   const signed = Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY);
   const signingArguments = signed ? ["--signed"] : [];
   if (process.platform === "win32") {
+    // A Windows host builds every platform inside Docker containers (Linux
+    // engine for Linux artifacts, Windows engine for Windows artifacts), so
+    // build issues stay isolated from the machine. The Docker-built Linux
+    // AppImage and Windows NSIS installers are Tauri-signed on the host
+    // afterwards (build.js), keeping signing keys out of Docker build
+    // arguments.
     run("node", [
       "scripts/build.js",
       "--target",
-      "windows-x64",
-      ...signingArguments,
-    ]);
-    run("node", [
-      "scripts/build.js",
-      "--target",
-      "windows-arm64",
+      "all",
+      "--container",
       ...signingArguments,
     ]);
   } else if (process.platform === "linux") {
@@ -275,6 +306,46 @@ function requireExactVersionTag() {
     throw new Error(`Publish must run from exact tag ${expectedTag}.`);
   }
   return expectedTag;
+}
+
+/// Creates the `v<version>` tag at HEAD when missing and pushes it to origin,
+/// refusing to move an existing tag. Publishing then runs from that tag.
+function createAndPushVersionTag() {
+  requireCleanTree();
+  verifyVersionSync();
+  verifyOrigin();
+  const expectedTag = `v${version}`;
+  const head = git(["rev-parse", "HEAD"]);
+  if (
+    spawnSucceeded("git", [
+      "rev-parse",
+      "-q",
+      "--verify",
+      `refs/tags/${expectedTag}`,
+    ])
+  ) {
+    const local = git(["rev-list", "-n", "1", expectedTag]);
+    if (local !== head) {
+      throw new Error(
+        `Local tag ${expectedTag} points at ${local}, not HEAD; refusing to move it.`,
+      );
+    }
+  } else {
+    run("git", ["tag", expectedTag]);
+  }
+  const remote = git(["ls-remote", "--tags", "origin", expectedTag]).trim();
+  if (remote) {
+    const remoteSha = remote.split(/\s+/u)[0];
+    if (remoteSha !== head) {
+      throw new Error(
+        `Remote tag ${expectedTag} points at ${remoteSha}, not HEAD; refusing to move it.`,
+      );
+    }
+    console.log(`Version tag ${expectedTag} already exists on origin.`);
+  } else {
+    run("git", ["push", "origin", expectedTag]);
+    console.log(`Created and pushed version tag ${expectedTag}.`);
+  }
 }
 
 function publishImmutableVersionRelease(tag, files) {

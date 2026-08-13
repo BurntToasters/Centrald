@@ -1,5 +1,11 @@
 # Releases
 
+## Release environment
+
+Copy `.env.example` to `.env` and fill in the secrets. The release and build
+scripts load `.env` automatically through `node --env-file-if-exists=.env`, so
+no shell exports are needed. `.env` is gitignored.
+
 ## Public configuration
 
 Before signed releases, set both public verification keys in `centrald.config`:
@@ -10,6 +16,27 @@ MINISIGN_PUBLIC_KEY=<RW... Minisign public key>
 ```
 
 Do not put private keys or passwords in the tracked file.
+
+## Signing keys
+
+Generate the Tauri updater key pair once:
+
+```text
+npx tauri signer generate -w ~/.tauri/centrald.key
+```
+
+`~/.tauri/centrald.key.pub` contents go into `centrald.config` as
+`TAURI_UPDATER_PUBKEY`; the private key goes into `.env` as
+`TAURI_SIGNING_PRIVATE_KEY` (content, not a path).
+
+Generate the Minisign key pair once:
+
+```text
+minisign -G -s ~/.config/centrald/minisign.key -p ~/.config/centrald/minisign.pub
+```
+
+The public key (`RW...`) goes into `centrald.config` as `MINISIGN_PUBLIC_KEY`;
+the private key path goes into `.env` as `MINISIGN_SECRET_KEY_FILE`.
 
 ## Artifact layout
 
@@ -44,6 +71,53 @@ their own mutable `UPDATE_BASE_URL`.
 
 ## Local commands
 
+Bump the version in lockstep (package.json, workspace `Cargo.toml`,
+`tauri.conf.json`) before releasing:
+
+```text
+npm run release:bump -- 0.1.0-alpha.2
+```
+
+The helper rejects invalid SemVer, refuses to bump to a version whose tag
+already exists on `origin`, and refuses to touch a tree whose three version
+fields disagree.
+
+One command builds every platform the current host can produce, assembles the
+artifacts, signs them, generates the manifests, verifies everything, and - when
+`.env` sets `CENTRALD_RELEASE_PUBLISH=YES` - creates and pushes the
+`v<package-version>` tag, uploads the release, and publishes channel manifests:
+
+```text
+npm run release
+```
+
+A Windows host builds every platform inside Docker containers so build issues
+stay isolated from the machine:
+
+- The **Linux engine** builds the Linux artifacts
+  (`docker/linux-builder.Dockerfile`); the Docker-built Linux AppImage is then
+  Tauri-signed on the host, keeping the signing key out of Docker build
+  arguments.
+- The **Windows engine** builds both Windows targets
+  (`docker/windows-builder.Dockerfile`); artifacts are extracted with
+  `docker create` + `docker cp` and the NSIS installers are Tauri-signed on the
+  host.
+- Docker Desktop supports one engine mode at a time, so the release flow
+  switches engines between the two images automatically when `DockerCli.exe` is
+  available.
+
+A Linux host builds the Linux x64 artifacts natively; it cannot build the
+Windows artifacts.
+
+Both container images and the host refresh to the latest stable Rust before
+building, matching the `stable` channel in `rust-toolchain.toml`:
+
+```text
+rustup update stable
+```
+
+The individual steps are also available:
+
 ```text
 npm run release:prepare
 npm run release:build
@@ -53,20 +127,41 @@ npm run release:manifests
 npm run release:verify
 ```
 
+Direct container builds (without the full release flow):
+
+```text
+npm run build:all:container   # Linux + Windows x64 + Windows ARM64 in Docker
+npm run build:win:container   # Windows x64 (and ARM64 image) in Docker
+```
+
 `release:sign` reads the private key path from `MINISIGN_SECRET_KEY_FILE`. An
 interactive encrypted key is supported locally. CI may materialize an ephemeral
 unprotected key and set `CENTRALD_MINISIGN_UNPROTECTED_KEY=YES`; the file must
 be mode `0600` and removed afterward.
 
 Tauri signing reads `TAURI_SIGNING_PRIVATE_KEY` and, when needed,
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the process environment.
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the process environment. Both the
+Windows NSIS installers and the Docker-built Linux AppImage are signed from the
+host so the key is never a command-line value or Docker build argument.
 
-Publishing additionally requires an exact `v<package-version>` Git tag, GitHub
-CLI authentication, a clean source tree, and:
+Publishing requires GitHub CLI authentication (or `GH_TOKEN` in `.env`), a clean
+source tree, and git push credentials (set up with `gh auth setup-git` or your
+normal git credential helper):
+
+```text
+CENTRALD_RELEASE_PUBLISH=YES npm run release
+```
+
+`npm run release` creates and pushes the exact `v<package-version>` Git tag at
+HEAD when it does not exist, refusing to move an existing tag that points
+elsewhere. To publish a previously built, verified artifact set without
+rebuilding, run:
 
 ```text
 CENTRALD_RELEASE_PUBLISH=YES npm run release:publish
 ```
+
+This requires the exact `v<package-version>` tag to already exist at HEAD.
 
 If the immutable version release already published successfully but channel
 publication failed, retry only the mutable pointer step. The retry downloads the

@@ -1,0 +1,18 @@
+# Keep the Linux builder context small and secret-free.
+.env
+.env.*
+**/.env
+**/.env.*
+node_modules
+target
+dist
+release
+coverage
+site/node_modules
+site/dist
+site/.astro
+apps/admin/dist
+apps/admin/node_modules
+apps/admin/src-tauri/target
+.git
+.github

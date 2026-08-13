@@ -410,7 +410,7 @@ test("channel publication commits both mutable manifests atomically and is separ
   ]);
   assert.equal(
     pkg.scripts["release:publish-channel"],
-    "node scripts/release.js publish-channel",
+    "node --env-file-if-exists=.env scripts/release.js publish-channel",
   );
   assert.match(release, /publishChannelOnly/);
   assert.match(release, /git\/blobs/);
@@ -419,6 +419,91 @@ test("channel publication commits both mutable manifests atomically and is separ
   assert.match(release, /git\/refs\/heads/);
   assert.match(release, /force: false/);
   assert.doesNotMatch(release, /repos\/\$\{repository\}\/contents\//);
+});
+
+test("one-command release builds every host platform, tags, and publishes only when gated", async () => {
+  const [release, build, pkg] = await Promise.all([
+    read("scripts/release.js"),
+    read("scripts/build.js"),
+    read("package.json").then(JSON.parse),
+  ]);
+  // A Windows host must produce Windows and Linux artifacts in one build step,
+  // with every updater artifact Tauri-signed on the host (never inside Docker).
+  assert.match(release, /buildAllPlatforms/);
+  assert.match(
+    release,
+    /--target"[\s\S]*"all"[\s\S]*--container"[\s\S]*--target"[\s\S]*"linux-x64"/,
+  );
+  assert.equal(
+    pkg.scripts["release"],
+    "node --env-file-if-exists=.env scripts/release.js all",
+  );
+  assert.equal(
+    pkg.scripts["build:all:container"],
+    "node --env-file-if-exists=.env scripts/build.js --target all --container",
+  );
+  // The version tag is created and pushed only when publishing is explicitly
+  // requested; a plain run stops after verification.
+  assert.match(release, /createAndPushVersionTag/);
+  assert.match(release, /CENTRALD_RELEASE_PUBLISH === "YES"/);
+  assert.match(release, /git", \["tag", expectedTag\]/);
+  assert.match(release, /git", \["push", "origin", expectedTag\]/);
+  assert.match(release, /refusing to move it/);
+  // Manifests are signed after generation so their .minisig files exist for
+  // the release upload, not only the artifacts.
+  assert.match(
+    release,
+    /signReleaseArtifacts\(\);\n[ ]{2}generateManifests\(\);\n[ ]{2}signReleaseArtifacts\(\)/,
+  );
+  // The Docker-built Linux AppImage and Windows NSIS installers are signed on
+  // the host with tauri signer, which reads the key from the environment,
+  // never a Docker build argument.
+  assert.match(build, /signHostUpdaterArtifact/);
+  assert.match(build, /tauri", "signer", "sign/);
+  assert.match(build, /TAURI_SIGNING_PRIVATE_KEY/);
+  assert.doesNotMatch(
+    build,
+    /--build-arg[\s\S]*SIGNING|--build-arg[\s\S]*PRIVATE/,
+  );
+});
+
+test("containerized builds isolate the host and refresh Rust stable everywhere", async () => {
+  const [build, release, linuxDockerfile, windowsDockerfile] =
+    await Promise.all([
+      read("scripts/build.js"),
+      read("scripts/release.js"),
+      read("docker/linux-builder.Dockerfile"),
+      read("docker/windows-builder.Dockerfile"),
+    ]);
+  // Windows artifacts are built in a Windows container and extracted with
+  // docker create + docker cp; the engine is switched between the Linux and
+  // Windows builder images.
+  assert.match(build, /buildWindowsContainer/);
+  assert.match(build, /ensureDockerEngine/);
+  assert.match(build, /-SwitchWindowsContainers/);
+  assert.match(build, /-SwitchLinuxContainers/);
+  assert.match(build, /"create",\n\s+"--name"/);
+  assert.match(build, /\$\{containerName\}:C:/);
+  assert.match(build, /"rm", "-f", containerName/);
+  // The release preflight refreshes the host Rust stable toolchain.
+  assert.match(release, /refreshHostRustStable/);
+  assert.match(release, /rustup", \["update", "stable"\]/);
+  // Both builder images use the latest stable Rust, not a pinned toolchain.
+  assert.match(linuxDockerfile, /rust:bookworm/);
+  assert.match(linuxDockerfile, /rustup update stable/);
+  assert.match(windowsDockerfile, /servercore:ltsc2022/);
+  assert.match(windowsDockerfile, /rustup update stable/);
+  assert.match(windowsDockerfile, /rustup-init\.exe/);
+  // The Windows container image must never receive signing keys.
+  assert.doesNotMatch(windowsDockerfile, /SIGNING|PRIVATE_KEY/);
+  assert.match(
+    windowsDockerfile,
+    /node scripts\/build\.js --target windows-x64/,
+  );
+  assert.match(
+    windowsDockerfile,
+    /node scripts\/build\.js --target windows-arm64/,
+  );
 });
 
 test("Linux enrollment publishes only the active pointer and enables the service", async () => {

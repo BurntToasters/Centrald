@@ -12,7 +12,8 @@ import {
 } from "./lib/safe-path.js";
 
 const root = process.cwd();
-const action = process.argv[2];
+const rawArguments = process.argv.slice(2);
+const action = rawArguments[0];
 const supported = new Set([
   "prepare",
   "build",
@@ -22,16 +23,23 @@ const supported = new Set([
   "verify",
   "publish",
   "publish-channel",
+  "sync-channel",
   "all",
 ]);
 if (!supported.has(action)) {
   throw new Error(`Unknown release action: ${action}`);
 }
+const channel = parseChannelArgument(rawArguments.slice(1));
 
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const version = packageJson.version;
+if (channel) {
+  // Let the release channel override flow into every child process (builds
+  // and build.rs bakes) without editing the tracked centrald.config.
+  process.env.CENTRALD_RELEASE_CHANNEL = channel;
+}
 const config = loadBuildConfig(root);
 
 if (action === "prepare") prepare();
@@ -42,6 +50,7 @@ if (action === "manifests") generateManifests();
 if (action === "verify") verify();
 if (action === "publish") publish();
 if (action === "publish-channel") publishChannelOnly();
+if (action === "sync-channel") syncChannelToCdn();
 if (action === "all") {
   prepare();
   buildAllPlatforms();
@@ -68,6 +77,21 @@ if (action === "all") {
 
 function git(args) {
   return execFileSync("git", args, { encoding: "utf8" }).trim();
+}
+
+/// Parses the optional `--channel <name>` release-channel override. The
+/// channel is public build metadata: alpha/beta/stable builds of the same
+/// tree differ only by this value baked into their binaries.
+function parseChannelArgument(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--channel") continue;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("--channel requires a value");
+    }
+    return value;
+  }
+  return "";
 }
 
 function prepare() {
@@ -139,6 +163,7 @@ function buildAllPlatforms() {
   prepare();
   const signed = Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY);
   const signingArguments = signed ? ["--signed"] : [];
+  const channelArguments = channel ? ["--channel", channel] : [];
   if (process.platform === "win32") {
     // A Windows host builds every platform inside Docker containers (Linux
     // engine for Linux artifacts, Windows engine for Windows artifacts), so
@@ -151,6 +176,7 @@ function buildAllPlatforms() {
       "--target",
       "all",
       "--container",
+      ...channelArguments,
       ...signingArguments,
     ]);
   } else if (process.platform === "linux") {
@@ -159,6 +185,7 @@ function buildAllPlatforms() {
       "--target",
       "linux-x64",
       "--native",
+      ...channelArguments,
       ...signingArguments,
     ]);
   } else {
@@ -255,9 +282,10 @@ function publish() {
   const expectedTag = requireExactVersionTag();
   publishImmutableVersionRelease(expectedTag, releaseFiles(true));
 
-  if (config.releaseChannel !== "stable") {
+  if (config.releaseChannel !== "stable" || config.cdnBaseUrl) {
     publishMutableChannelManifests(config.releaseChannel);
   }
+  if (config.cdnBaseUrl) syncChannelToCdn();
   console.log(`Published CentralD v${version}.`);
 }
 
@@ -268,9 +296,9 @@ function publishChannelOnly() {
   run("npm", ["run", "qa"]);
   requirePublishEnvironment();
   const expectedTag = requireExactVersionTag();
-  if (config.releaseChannel === "stable") {
+  if (config.releaseChannel === "stable" && !config.cdnBaseUrl) {
     throw new Error(
-      "Stable updates are served by the immutable latest version release; there is no mutable stable channel branch to publish.",
+      "Stable updates are served by the immutable latest version release; there is no mutable stable channel branch to publish. Configure CDN_BASE_URL to serve stable through a mutable channel.",
     );
   }
   const entries = immutableReleaseChannelEntries(
@@ -278,9 +306,22 @@ function publishChannelOnly() {
     config.releaseChannel,
   );
   publishMutableChannelManifests(config.releaseChannel, entries);
+  if (config.cdnBaseUrl) syncChannelToCdn();
   console.log(
     `Published CentralD ${config.releaseChannel} channel manifests for v${version}.`,
   );
+}
+
+/// Uploads the signed channel manifests to the configured S3-compatible CDN
+/// bucket so binaries that bake `<CDN_BASE_URL>/<channel>` resolve their
+/// update pointers. This mirrors the GitHub channel branch (the source of
+/// truth) and is the automatic last publish step when CDN_BASE_URL is set.
+function syncChannelToCdn() {
+  verifyVersionSync();
+  run("node", [
+    "scripts/sync-channel.js",
+    ...(channel ? ["--channel", channel] : []),
+  ]);
 }
 
 function requirePublishEnvironment() {

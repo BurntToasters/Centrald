@@ -5,10 +5,11 @@ const DEFAULT_REPO_URL: &str = "https://github.com/BurntToasters/centrald";
 const DEFAULT_RELEASE_CHANNEL: &str = "prerelease";
 const DEFAULT_RELEASE_MANIFEST: &str = "centrald-release.yml";
 const DEFAULT_TAURI_MANIFEST: &str = "centrald-admin-updater.json";
-const ALLOWED_KEYS: [&str; 8] = [
+const ALLOWED_KEYS: [&str; 9] = [
     "REPO_URL",
     "UPDATE_BASE_URL",
     "ARTIFACT_BASE_URL_TEMPLATE",
+    "CDN_BASE_URL",
     "RELEASE_CHANNEL",
     "RELEASE_MANIFEST",
     "TAURI_UPDATE_MANIFEST",
@@ -22,17 +23,32 @@ fn main() {
     let root = manifest_dir.join("../..");
     let config_path = root.join("centrald.config");
     println!("cargo:rerun-if-changed={}", config_path.display());
+    println!("cargo:rerun-if-env-changed=CENTRALD_RELEASE_CHANNEL");
 
     let values = read_config(&config_path);
     let repo_url = value(&values, "REPO_URL", DEFAULT_REPO_URL);
     validate_https_base(&repo_url, "REPO_URL");
-    let release_channel = value(&values, "RELEASE_CHANNEL", DEFAULT_RELEASE_CHANNEL);
+    // The CENTRALD_RELEASE_CHANNEL environment variable (set by the release
+    // tooling for alpha/beta/stable builds) overrides the tracked file so one
+    // tree can produce every channel without editing centrald.config.
+    let release_channel = std::env::var("CENTRALD_RELEASE_CHANNEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| value(&values, "RELEASE_CHANNEL", DEFAULT_RELEASE_CHANNEL));
     assert!(
         is_channel(&release_channel),
         "RELEASE_CHANNEL must be a lowercase channel name"
     );
+    let cdn_base = match values.get("CDN_BASE_URL").map(String::as_str) {
+        Some(value) if !value.trim().is_empty() => {
+            validate_https_base(value, "CDN_BASE_URL");
+            value.trim_end_matches('/').to_owned()
+        }
+        _ => String::new(),
+    };
     let update_base = match values.get("UPDATE_BASE_URL").map(String::as_str) {
         Some(value) if !value.trim().is_empty() => value.to_owned(),
+        _ if !cdn_base.is_empty() => format!("{cdn_base}/{release_channel}"),
         _ => default_update_base(&repo_url, &release_channel),
     };
     validate_https_base(&update_base, "UPDATE_BASE_URL");

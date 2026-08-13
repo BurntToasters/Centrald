@@ -142,6 +142,18 @@ execution and credential saving visibly disabled.
 - Release manifests use immutable version URLs. Mutable non-stable channel manifests live outside immutable GitHub Releases;
   the default GitHub layout publishes both manifests in one compare-and-swap commit
   on the `centrald-channels` branch.
+- Every build bakes exactly one release channel (alpha/beta/stable or any
+  lowercase name); an install only follows its own channel and promotion is a
+  new build. `--channel` on the release/build tools and the
+  `CENTRALD_RELEASE_CHANNEL` environment variable override the tracked
+  `centrald.config` in both the JS tooling and `centrald-common/build.rs`.
+- With `CDN_BASE_URL` set in `centrald.config`, all channels (including
+  stable) resolve `<CDN_BASE_URL>/<channel>` and the release flow mirrors the
+  signed channel manifests to an S3-compatible bucket (DO Spaces or any S3
+  endpoint via the `aws` CLI, credentials in `.env`) as the automatic last
+  publish step. Artifacts always remain on immutable GitHub tag URLs. Without
+  `CDN_BASE_URL`, stable stays on the immutable `/releases/latest/download`
+  pointer and non-stable channels on the channel branch.
 - Channel updates are monotonic by strict Semantic Versioning. Same-version byte
   replacement is forbidden. Emergency rollback requires the exact explicit
   `CENTRALD_ALLOW_CHANNEL_ROLLBACK=YES` environment variable.

@@ -43,6 +43,56 @@ test("derives mutable GitHub prerelease channel URLs from the channel branch", (
   fs.rmSync(root, { recursive: true });
 });
 
+test("derives per-channel CDN URLs for every channel when CDN_BASE_URL is set", () => {
+  const root = temporaryConfig(
+    [
+      "REPO_URL=https://github.com/example/centrald",
+      "RELEASE_CHANNEL=stable",
+      "CDN_BASE_URL=https://updated.example.test",
+    ].join("\n"),
+  );
+  const stable = loadBuildConfig(root);
+  assert.equal(
+    releaseManifestUrl(stable),
+    "https://updated.example.test/stable/centrald-release.yml",
+  );
+  assert.equal(stable.cdnBaseUrl, "https://updated.example.test");
+
+  const beta = loadBuildConfig(root, { releaseChannel: "beta" });
+  assert.equal(
+    releaseManifestUrl(beta),
+    "https://updated.example.test/beta/centrald-release.yml",
+  );
+  assert.equal(beta.releaseChannel, "beta");
+  fs.rmSync(root, { recursive: true });
+});
+
+test("release channel override beats the tracked configuration", () => {
+  const root = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=stable\n",
+  );
+  const config = loadBuildConfig(root, { releaseChannel: "alpha" });
+  assert.equal(config.releaseChannel, "alpha");
+  assert.match(
+    releaseManifestUrl(config),
+    /channels\/alpha\/latest\/centrald-release\.yml$/u,
+  );
+  fs.rmSync(root, { recursive: true });
+});
+
+test("without CDN, stable stays on the GitHub latest pointer", () => {
+  const root = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=stable\n",
+  );
+  const config = loadBuildConfig(root);
+  assert.equal(config.cdnBaseUrl, "");
+  assert.equal(
+    releaseManifestUrl(config),
+    "https://github.com/example/centrald/releases/latest/download/centrald-release.yml",
+  );
+  fs.rmSync(root, { recursive: true });
+});
+
 test("supports static object storage layouts", () => {
   const root = temporaryConfig(
     [

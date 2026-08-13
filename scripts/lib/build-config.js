@@ -5,6 +5,7 @@ const DEFAULTS = Object.freeze({
   REPO_URL: "https://github.com/BurntToasters/centrald",
   UPDATE_BASE_URL: "",
   ARTIFACT_BASE_URL_TEMPLATE: "",
+  CDN_BASE_URL: "",
   RELEASE_CHANNEL: "stable",
   RELEASE_MANIFEST: "centrald-release.yml",
   TAURI_UPDATE_MANIFEST: "centrald-admin-updater.json",
@@ -14,8 +15,13 @@ const DEFAULTS = Object.freeze({
 
 const ALLOWED_KEYS = new Set(Object.keys(DEFAULTS));
 const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const CHANNEL_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/u;
 
-export function loadBuildConfig(root = process.cwd()) {
+/// Loads the tracked build configuration. `overrides.releaseChannel` wins over
+/// the CENTRALD_RELEASE_CHANNEL environment variable, which wins over the
+/// tracked file, so one tree can produce alpha/beta/stable builds without
+/// editing centrald.config.
+export function loadBuildConfig(root = process.cwd(), overrides = {}) {
   const configPath = path.join(root, "centrald.config");
   const source = fs.readFileSync(configPath, "utf8");
   const values = { ...DEFAULTS };
@@ -43,12 +49,21 @@ export function loadBuildConfig(root = process.cwd()) {
   }
 
   const repoUrl = validateHttpsBase(values.REPO_URL, "REPO_URL");
-  if (!/^[a-z0-9][a-z0-9._-]{0,31}$/u.test(values.RELEASE_CHANNEL)) {
+  const releaseChannel =
+    overrides.releaseChannel ??
+    process.env.CENTRALD_RELEASE_CHANNEL ??
+    values.RELEASE_CHANNEL;
+  if (!CHANNEL_NAME.test(releaseChannel)) {
     throw new Error("RELEASE_CHANNEL must be a lowercase channel name");
   }
+  const cdnBaseUrl = values.CDN_BASE_URL
+    ? validateHttpsBase(values.CDN_BASE_URL, "CDN_BASE_URL")
+    : "";
   const updateBaseUrl = values.UPDATE_BASE_URL
     ? validateHttpsBase(values.UPDATE_BASE_URL, "UPDATE_BASE_URL")
-    : defaultUpdateBase(repoUrl, values.RELEASE_CHANNEL);
+    : cdnBaseUrl
+      ? `${cdnBaseUrl}/${releaseChannel}`
+      : defaultUpdateBase(repoUrl, releaseChannel);
   const artifactBaseUrlTemplate = values.ARTIFACT_BASE_URL_TEMPLATE
     ? validateArtifactTemplate(values.ARTIFACT_BASE_URL_TEMPLATE)
     : defaultArtifactTemplate(repoUrl);
@@ -63,7 +78,8 @@ export function loadBuildConfig(root = process.cwd()) {
     repoUrl,
     updateBaseUrl,
     artifactBaseUrlTemplate,
-    releaseChannel: values.RELEASE_CHANNEL,
+    cdnBaseUrl,
+    releaseChannel,
     releaseManifest: values.RELEASE_MANIFEST,
     tauriUpdateManifest: values.TAURI_UPDATE_MANIFEST,
     tauriUpdaterPubkey: validateSingleLinePublicValue(

@@ -26,7 +26,15 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 );
 const version = packageJson.version;
-const buildConfig = loadBuildConfig(root);
+const buildConfig = loadBuildConfig(root, {
+  releaseChannel: options.channel,
+});
+if (options.channel) {
+  // build.rs bakes CENTRALD_RELEASE_CHANNEL; native cargo children inherit it
+  // from the process environment. Container builds receive it as a build arg
+  // (public value, not a secret).
+  process.env.CENTRALD_RELEASE_CHANNEL = options.channel;
+}
 ensureGeneratedDirectory(root, "dist");
 
 if (options.signed) validateSigningEnvironment(buildConfig);
@@ -67,6 +75,7 @@ function parseArguments(args) {
     signed: false,
     native: false,
     container: false,
+    channel: "",
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -76,6 +85,12 @@ function parseArguments(args) {
         throw new Error("--target requires a value");
       }
       result.target = value;
+    } else if (argument === "--channel") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--channel requires a value");
+      }
+      result.channel = value;
     } else if (argument === "--signed") {
       result.signed = true;
     } else if (argument === "--native") {
@@ -214,6 +229,7 @@ function buildLinuxDocker() {
   run(dockerExecutable(), [
     "build",
     "--pull",
+    ...dockerChannelArguments(),
     "--file",
     "docker/linux-builder.Dockerfile",
     "--output",
@@ -227,6 +243,14 @@ function buildLinuxDocker() {
   if (options.signed) signHostUpdaterArtifact(findLinuxAppImage());
 }
 
+/// The channel is public build metadata; it is passed to container builds as
+/// a build argument so the builder's build.rs bakes the overridden channel.
+function dockerChannelArguments() {
+  return options.channel
+    ? ["--build-arg", `CENTRALD_RELEASE_CHANNEL=${options.channel}`]
+    : [];
+}
+
 /// Builds the Windows targets inside a Windows-container image and extracts the
 /// artifacts with `docker create` + `docker cp`, so the host machine only ever
 /// runs Docker and never the native MSVC/Rust toolchain. The image builds both
@@ -236,6 +260,7 @@ function buildWindowsContainer(architectures) {
   run(dockerExecutable(), [
     "build",
     "--pull",
+    ...dockerChannelArguments(),
     "--file",
     "docker/windows-builder.Dockerfile",
     "--tag",

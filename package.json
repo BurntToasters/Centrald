@@ -38,6 +38,7 @@
     "release:verify": "node --env-file-if-exists=.env scripts/release.js verify",
     "release:publish": "node --env-file-if-exists=.env scripts/release.js publish",
     "release:publish-channel": "node --env-file-if-exists=.env scripts/release.js publish-channel",
+    "release:sync-channel": "node --env-file-if-exists=.env scripts/sync-channel.js",
     "release": "node --env-file-if-exists=.env scripts/release.js all",
     "config:check": "node scripts/check-config.js",
     "build:linux:x64:native": "node --env-file-if-exists=.env scripts/build.js --target linux-x64 --native",

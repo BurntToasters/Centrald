@@ -1,5 +1,41 @@
 # Releases
 
+## Release channels
+
+Every build bakes one channel (`alpha`, `beta`, `stable`, or any lowercase name)
+into its binaries; an install only follows its own channel. Promotion is a new
+build: an alpha install never auto-upgrades into beta, and beta into stable.
+Version precedence uses strict SemVer, so `0.2.0-alpha.1`, `0.2.0-beta.1`, and
+`0.2.0` are monotonic within their channels.
+
+Build a specific channel from one tree without touching the tracked
+configuration:
+
+```text
+npm run release -- --channel beta
+```
+
+The `--channel` flag (or `CENTRALD_RELEASE_CHANNEL`) overrides `centrald.config`
+in the build tooling and in the Rust build script that bakes the value into the
+binaries.
+
+## Channel hosting
+
+Artifacts always live at immutable GitHub release tag URLs. The mutable
+per-channel manifests (the yml/json files that point at the latest tag) live on
+the `centrald-channels` branch, served through raw.githubusercontent.com. With
+`CDN_BASE_URL=https://updated.centrald.dev` set in `centrald.config`, every
+channel instead resolves `<CDN_BASE_URL>/<channel>` — a unified `/stable/`,
+`/beta/`, `/alpha/` layout on an S3-compatible bucket — and the release flow
+mirrors the signed manifests to the bucket automatically as the last publish
+step (DigitalOcean Spaces or any S3 endpoint; requires the `aws` CLI and the S3
+values in `.env`). The GitHub branch remains the source of truth; the bucket is
+a mirror of the same bytes.
+
+Without `CDN_BASE_URL`, stable keeps serving from GitHub's immutable
+`/releases/latest/download` pointer and non-stable channels keep serving from
+the channel branch.
+
 ## Docker setup
 
 One command prepares everything the release flow needs on a Windows host:

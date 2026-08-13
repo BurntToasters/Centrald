@@ -6,6 +6,11 @@ FROM rust:bookworm AS rust-toolchain
 
 FROM ubuntu:24.04 AS builder
 ARG DEBIAN_FRONTEND=noninteractive
+# The release channel is public build metadata. CENTRALD_RELEASE_CHANNEL is
+# read by centrald-common's build.rs and baked into every binary; it must
+# never carry secrets.
+ARG CENTRALD_RELEASE_CHANNEL=
+ENV CENTRALD_RELEASE_CHANNEL=${CENTRALD_RELEASE_CHANNEL}
 
 COPY --from=node-toolchain /usr/local/ /usr/local/
 COPY --from=rust-toolchain /usr/local/cargo/ /usr/local/cargo/

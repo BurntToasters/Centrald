@@ -13,6 +13,12 @@ FROM mcr.microsoft.com/windows/servercore:ltsc2022
 
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
+# The release channel is public build metadata. CENTRALD_RELEASE_CHANNEL is
+# read by centrald-common's build.rs and baked into every binary; it must
+# never carry secrets.
+ARG CENTRALD_RELEASE_CHANNEL=
+ENV CENTRALD_RELEASE_CHANNEL=${CENTRALD_RELEASE_CHANNEL}
+
 # Node 22 LTS (pinned to the repository toolchain version). The project
 # requires npm >= 12.0.1, so npm is upgraded from the Node 22 bundle.
 ADD https://nodejs.org/dist/v22.16.0/node-v22.16.0-win-x64.zip C:\\node.zip

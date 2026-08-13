@@ -461,10 +461,7 @@ test("one-command release builds every host platform, tags, and publishes only w
   assert.match(build, /signHostUpdaterArtifact/);
   assert.match(build, /tauri", "signer", "sign/);
   assert.match(build, /TAURI_SIGNING_PRIVATE_KEY/);
-  assert.doesNotMatch(
-    build,
-    /--build-arg[\s\S]*SIGNING|--build-arg[\s\S]*PRIVATE/,
-  );
+  assert.doesNotMatch(build, /--build-arg[^\n]*(?:SIGNING|PRIVATE)/);
 });
 
 test("containerized builds isolate the host and refresh Rust stable everywhere", async () => {
@@ -553,6 +550,59 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   assert.match(setupDocker, /rust:bookworm/);
   // The npm age gate belongs to the .npmrc files, not the setup script.
   assert.doesNotMatch(setupDocker, /min-release-age/);
+});
+
+test("channels are baked per build and CDN manifests are mirrored to S3 after publish", async () => {
+  const [buildConfig, release, sync, build, envExample, buildRust] =
+    await Promise.all([
+      read("scripts/lib/build-config.js"),
+      read("scripts/release.js"),
+      read("scripts/sync-channel.js"),
+      read("scripts/build.js"),
+      read(".env.example"),
+      read("crates/centrald-common/build.rs"),
+    ]);
+  // A single tree builds any channel: --channel on build/release and the
+  // CENTRALD_RELEASE_CHANNEL env override beat the tracked config in both the
+  // JS tooling and the Rust build script that bakes values into binaries.
+  assert.match(buildConfig, /overrides\.releaseChannel/);
+  assert.match(buildConfig, /CENTRALD_RELEASE_CHANNEL/);
+  assert.match(build, /--channel/);
+  assert.match(build, /CENTRALD_RELEASE_CHANNEL/);
+  assert.match(release, /parseChannelArgument/);
+  assert.match(release, /--channel/);
+  assert.match(buildRust, /CENTRALD_RELEASE_CHANNEL/);
+  assert.match(buildRust, /rerun-if-env-changed=CENTRALD_RELEASE_CHANNEL/);
+  // CDN_BASE_URL unifies every channel (including stable) under
+  // <cdn>/<channel>, and stable falls back to the GitHub latest pointer
+  // without it.
+  assert.match(buildConfig, /CDN_BASE_URL/);
+  assert.match(
+    buildConfig,
+    /cdnBaseUrl\s*\?\s*`\$\{cdnBaseUrl\}\/\$\{releaseChannel\}`/,
+  );
+  assert.match(
+    release,
+    /config\.releaseChannel !== "stable" \|\| config\.cdnBaseUrl/,
+  );
+  assert.match(
+    release,
+    /config\.releaseChannel === "stable" && !config\.cdnBaseUrl/,
+  );
+  // The S3 sync mirrors the signed manifests (not artifacts) and is the
+  // automatic last publish step when the CDN is configured.
+  assert.match(release, /syncChannelToCdn/);
+  assert.match(release, /if \(config\.cdnBaseUrl\) syncChannelToCdn\(\);/);
+  assert.match(sync, /CENTRALD_S3_ENDPOINT/);
+  assert.match(sync, /CENTRALD_S3_BUCKET/);
+  assert.match(sync, /s3",\n\s+"cp"/);
+  assert.match(sync, /minisig/);
+  assert.match(sync, /Amazon\.AWSCli/);
+  assert.match(sync, /Refusing symbolic-link release manifest/);
+  assert.match(envExample, /CENTRALD_S3_ENDPOINT/);
+  assert.match(envExample, /updated\.centrald\.dev/);
+  // Manifests are mirrored, but artifacts stay on immutable GitHub tag URLs.
+  assert.doesNotMatch(sync, /release\/artifacts/);
 });
 
 test("Linux enrollment publishes only the active pointer and enables the service", async () => {

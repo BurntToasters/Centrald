@@ -20,6 +20,9 @@ console.log(`Release manifest: ${releaseManifestUrl(config)}`);
 console.log(`Admin updater manifest: ${tauriManifestUrl(config)}`);
 console.log(`Immutable artifacts: ${artifactBaseUrl(config, version)}`);
 console.log(
+  `CDN: ${config.cdnBaseUrl ? `${config.cdnBaseUrl}/${config.releaseChannel} (channel manifests mirrored to S3)` : "not configured (channel manifests served from GitHub)"}`,
+);
+console.log(
   `Tauri updater key: ${config.tauriUpdaterPubkey ? "configured" : "not configured (signed release builds disabled)"}`,
 );
 console.log(

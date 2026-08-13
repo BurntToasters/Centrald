@@ -1,6 +1,9 @@
 # GitHub Copilot Instructions
-Spec version: 1.0.0 
-- (This is an identifier for the user maintaining these specialized instructions)
+
+Spec version: 1.0.0
+
+- (This is an identifier for the user maintaining these specialized
+  instructions)
 
 ## Commit messages
 
@@ -18,7 +21,8 @@ Keep commit messages brief and informative.
 
 - Prefer one concise summary line.
 - Target 60 characters or fewer and avoid exceeding 72 characters.
-- Use imperative, present-tense wording such as `Add`, `Fix`, `Update`, `Remove`, or `Refactor`.
+- Use imperative, present-tense wording such as `Add`, `Fix`, `Update`,
+  `Remove`, or `Refactor`.
 - Use sentence casing.
 - End the summary with a period.
 - Describe the logical change rather than listing changed files.
@@ -27,7 +31,8 @@ Keep commit messages brief and informative.
 - Do not add issue or PR numbers unless they are relevant to the change.
 - Do not invent details that cannot be inferred from the changes.
 - Do not add `Co-authored-by`, `Signed-off-by`, or other git trailers.
-- In GitHub Desktop, leave the description field empty unless the summary cannot capture the change.
+- In GitHub Desktop, leave the description field empty unless the summary cannot
+  capture the change.
 
 Use these BCLS-derived categories when applicable:
 

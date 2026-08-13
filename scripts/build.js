@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { run } from "./command.js";
 import { loadBuildConfig, tauriManifestUrl } from "./lib/build-config.js";
+import { ensureDockerEngine, dockerExecutable } from "./lib/docker-engine.js";
 import {
   cleanGeneratedDirectory,
   ensureGeneratedDirectory,
@@ -211,8 +211,9 @@ function buildWindowsClientZip(clientBinary, destination, output) {
 function buildLinuxDocker() {
   ensureDockerEngine("linux", "Linux builder");
   cleanGeneratedDirectory(root, "dist/linux-x64");
-  run("docker", [
+  run(dockerExecutable(), [
     "build",
+    "--pull",
     "--file",
     "docker/linux-builder.Dockerfile",
     "--output",
@@ -232,8 +233,9 @@ function buildLinuxDocker() {
 /// targets; only the requested architectures are extracted.
 function buildWindowsContainer(architectures) {
   ensureDockerEngine("windows", "Windows container builder");
-  run("docker", [
+  run(dockerExecutable(), [
     "build",
+    "--pull",
     "--file",
     "docker/windows-builder.Dockerfile",
     "--tag",
@@ -243,7 +245,7 @@ function buildWindowsContainer(architectures) {
   const containerName = `centrald-windows-extract-${process.pid}`;
   const staging = path.join(root, "dist", `.windows-container-${process.pid}`);
   try {
-    run("docker", [
+    run(dockerExecutable(), [
       "create",
       "--name",
       containerName,
@@ -259,7 +261,7 @@ function buildWindowsContainer(architectures) {
       // from a created (not started) container reads the image's filesystem.
       // The directory is copied whole into staging, then its contents are
       // moved, so the copy semantics do not depend on trailing separators.
-      run("docker", [
+      run(dockerExecutable(), [
         "cp",
         `${containerName}:C:\\src\\dist\\${architecture}`,
         staging,
@@ -282,7 +284,7 @@ function buildWindowsContainer(architectures) {
       );
     }
   } finally {
-    run("docker", ["rm", "-f", containerName]);
+    run(dockerExecutable(), ["rm", "-f", containerName]);
     fs.rmSync(staging, { recursive: true, force: true });
   }
   if (options.signed) {
@@ -305,59 +307,6 @@ function buildWindowsContainer(architectures) {
 function buildAllContainerized() {
   buildLinuxDocker();
   buildWindowsContainer(["windows-x64", "windows-arm64"]);
-}
-
-/// Returns the Docker engine's OSType ("linux" or "windows") or an empty
-/// string when Docker is unavailable or not running.
-function dockerOstype() {
-  try {
-    const output = execFileSync("docker", ["info", "--format", "{{.OSType}}"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return output.toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-/// Ensures the Docker engine is running the expected OS type. Docker Desktop
-/// supports one engine mode at a time; when the engine reports the other mode
-/// the switch command restarts the engine.
-function ensureDockerEngine(expected, operation) {
-  const current = dockerOstype();
-  if (current === expected) return;
-  if (!current) {
-    throw new Error(
-      `${operation} requires Docker; install Docker Desktop and start the engine before running release builds.`,
-    );
-  }
-  const dockerCli = "C:\\Program Files\\Docker\\Docker\\DockerCli.exe";
-  if (!fs.existsSync(dockerCli)) {
-    throw new Error(
-      `${operation} requires the ${expected} Docker engine mode, but the engine is in ${current} mode. Switch Docker Desktop to ${expected} containers and retry.`,
-    );
-  }
-  console.log(
-    `Switching the Docker engine to ${expected} containers (this restarts the engine)...`,
-  );
-  run(dockerCli, [
-    expected === "windows"
-      ? "-SwitchWindowsContainers"
-      : "-SwitchLinuxContainers",
-  ]);
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    if (dockerOstype() === expected) return;
-    sleepSeconds(10);
-  }
-  throw new Error(
-    `Docker engine did not switch to ${expected} mode within 120 seconds. Switch it manually in Docker Desktop and retry.`,
-  );
-}
-
-function sleepSeconds(seconds) {
-  const shared = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(shared, 0, 0, seconds * 1000);
 }
 
 /// Signs a single updater artifact on the host with `tauri signer sign`. The

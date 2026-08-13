@@ -5,12 +5,12 @@
   "type": "module",
   "engines": {
     "node": ">=22.12",
-    "npm": ">=10"
+    "npm": ">=12.0.1"
   },
   "scripts": {
     "setup": "node scripts/setup.js",
     "setup:win": "node scripts/setup.js --windows",
-    "setup:docker:win": "node scripts/setup-docker-win.js",
+    "setup:docker": "node scripts/setup-docker.js",
     "dev:server": "cargo run --locked -p centrald-server -- run",
     "dev:client": "cargo run --locked -p centrald-client -- rescue",
     "dev:admin": "tauri dev --config apps/admin/src-tauri/tauri.conf.json",

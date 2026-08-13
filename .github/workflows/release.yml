@@ -42,6 +42,8 @@ jobs:
             patchelf \
             protobuf-compiler \
             xz-utils
+      - name: Install npm 12 (project requires >= 12.0.1)
+        run: npm install -g npm@12.0.2
       - run: npm ci
       - run: npm run config:check
       - name: Build signed Linux artifacts
@@ -66,6 +68,8 @@ jobs:
         with:
           node-version: 22.16.0
           cache: npm
+      - name: Install npm 12 (project requires >= 12.0.1)
+        run: npm install -g npm@12.0.2
       - run: npm ci
       - run: npm run config:check
       - name: Build signed Windows x64 artifacts
@@ -112,6 +116,8 @@ jobs:
             librsvg2-dev \
             minisign \
             protobuf-compiler
+      - name: Install npm 12 (project requires >= 12.0.1)
+        run: npm install -g npm@12.0.2
       - run: npm ci
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

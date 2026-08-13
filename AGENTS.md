@@ -153,6 +153,14 @@ execution and credential saving visibly disabled.
   generated manifests.
 - `.env.example` documents every release secret; `.env` is gitignored and loaded
   by release/build scripts via `node --env-file-if-exists=.env`.
+- `.npmrc` (root and `site/`) hard-enforces `min-release-age=3`; the Docker
+  builder images copy it before `npm ci`. `npm >= 12.0.1` is required by both
+  package.json engines and installed inside the builder images. Install
+  scripts are allowed in the builder images with the allowlist in
+  `package.json` (`allowScripts`).
+- `npm run setup:docker` is the handsfree Docker setup for release hosts:
+  installs/starts Docker Desktop, enables the Windows `Containers` feature,
+  verifies Linux/Windows engine switching, and pre-pulls builder base images.
 - `npm run release` builds every platform the host can produce (Windows hosts
   build Linux artifacts in the Docker Linux engine and Windows artifacts in the
   Docker Windows engine via `build.js --target all --container`), and with

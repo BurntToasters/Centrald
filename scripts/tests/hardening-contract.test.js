@@ -468,20 +468,21 @@ test("one-command release builds every host platform, tags, and publishes only w
 });
 
 test("containerized builds isolate the host and refresh Rust stable everywhere", async () => {
-  const [build, release, linuxDockerfile, windowsDockerfile] =
+  const [build, release, linuxDockerfile, windowsDockerfile, dockerEngine] =
     await Promise.all([
       read("scripts/build.js"),
       read("scripts/release.js"),
       read("docker/linux-builder.Dockerfile"),
       read("docker/windows-builder.Dockerfile"),
+      read("scripts/lib/docker-engine.js"),
     ]);
   // Windows artifacts are built in a Windows container and extracted with
   // docker create + docker cp; the engine is switched between the Linux and
   // Windows builder images.
   assert.match(build, /buildWindowsContainer/);
   assert.match(build, /ensureDockerEngine/);
-  assert.match(build, /-SwitchWindowsContainers/);
-  assert.match(build, /-SwitchLinuxContainers/);
+  assert.match(dockerEngine, /-SwitchWindowsContainers/);
+  assert.match(dockerEngine, /-SwitchLinuxContainers/);
   assert.match(build, /"create",\n\s+"--name"/);
   assert.match(build, /\$\{containerName\}:C:/);
   assert.match(build, /"rm", "-f", containerName/);
@@ -504,6 +505,54 @@ test("containerized builds isolate the host and refresh Rust stable everywhere",
     windowsDockerfile,
     /node scripts\/build\.js --target windows-arm64/,
   );
+});
+
+test("npm supply-chain policy requires npm 12 and a three-day release age", async () => {
+  const [rootNpmrc, siteNpmrc, rootPackage, sitePackage, setupDocker, pkg] =
+    await Promise.all([
+      read(".npmrc"),
+      read("site/.npmrc"),
+      read("package.json").then(JSON.parse),
+      read("site/package.json").then(JSON.parse),
+      read("scripts/setup-docker.js"),
+      read("package.json").then((value) => JSON.parse(value)),
+    ]);
+  // Every project-level npm operation (local and inside the Docker builders,
+  // which copy the repo) hard-enforces a minimum package release age.
+  assert.match(rootNpmrc, /min-release-age=3/);
+  assert.match(siteNpmrc, /min-release-age=3/);
+  assert.equal(rootPackage.engines.npm, ">=12.0.1");
+  assert.equal(sitePackage.engines.npm, ">=12.0.1");
+  const linuxDockerfile = await read("docker/linux-builder.Dockerfile");
+  const windowsDockerfile = await read("docker/windows-builder.Dockerfile");
+  // The builder images upgrade npm and copy the policy file before npm ci.
+  assert.match(linuxDockerfile, /npm install -g npm@12\.0\.2/);
+  assert.match(windowsDockerfile, /npm install -g npm@12\.0\.2/);
+  assert.match(
+    linuxDockerfile,
+    /COPY package\.json package-lock\.json \.npmrc \.\//,
+  );
+  assert.match(
+    windowsDockerfile,
+    /COPY package\.json package-lock\.json \.npmrc \.\//,
+  );
+  // Install scripts are explicitly allowed inside the builder images while
+  // the allowlist stays in package.json (allowScripts).
+  assert.match(linuxDockerfile, /--ignore-scripts=false/);
+  assert.match(windowsDockerfile, /--ignore-scripts=false/);
+  assert.equal(pkg.scripts["setup:docker"], "node scripts/setup-docker.js");
+  // The handsfree setup installs/starts Docker Desktop, enables the Windows
+  // Containers feature, verifies both engine modes, and pre-pulls base images.
+  assert.match(setupDocker, /Docker\.DockerDesktop/);
+  assert.match(setupDocker, /Enable-WindowsOptionalFeature.*Containers/);
+  assert.match(setupDocker, /verifyEngineSwitching/);
+  assert.match(
+    setupDocker,
+    /mcr\.microsoft\.com\/windows\/servercore:ltsc2022/,
+  );
+  assert.match(setupDocker, /rust:bookworm/);
+  // The npm age gate belongs to the .npmrc files, not the setup script.
+  assert.doesNotMatch(setupDocker, /min-release-age/);
 });
 
 test("Linux enrollment publishes only the active pointer and enables the service", async () => {

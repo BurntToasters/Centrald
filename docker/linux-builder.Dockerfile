@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM node:22.16.0-bookworm-slim AS node-toolchain
+# The project requires npm >= 12.0.1; the Node 22 base image ships npm 10.
+RUN npm install -g npm@12.0.2
 FROM rust:bookworm AS rust-toolchain
 
 FROM ubuntu:24.04 AS builder
@@ -33,7 +35,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
+# Install scripts are allowed inside the builder image; the allowlist lives in
+# package.json (allowScripts). The project .npmrc enforces min-release-age=3.
 RUN npm ci --ignore-scripts=false
 COPY . .
 

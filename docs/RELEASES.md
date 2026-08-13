@@ -1,5 +1,30 @@
 # Releases
 
+## Docker setup
+
+One command prepares everything the release flow needs on a Windows host:
+
+```text
+npm run setup:docker
+```
+
+It installs Docker Desktop through winget when missing (an elevated shell is
+required), starts the engine, enables the Windows `Containers` feature (a reboot
+may be required once), verifies the engine can switch between Linux and Windows
+containers, and pre-pulls every builder base image. Add `--yes` to also upgrade
+npm when it is older than the required 12.0.1, `--build-images` to warm both
+builder images (several GB on the first run), or `--skip-images` to skip the
+pulls. Re-run the command after any missed reboot; it is idempotent.
+
+## npm supply-chain policy
+
+`.npmrc` (repository root and `site/`) sets `min-release-age=3`: npm refuses to
+install any package version published less than three days ago. The builder
+images copy the policy file before `npm ci`, so containers enforce it too.
+Install scripts are allowed inside the builder images (`--ignore-scripts=false`)
+with the allowlist managed in `package.json` (`allowScripts`). Both projects
+require `npm >= 12.0.1`.
+
 ## Release environment
 
 Copy `.env.example` to `.env` and fill in the secrets. The release and build

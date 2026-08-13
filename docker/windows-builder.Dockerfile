@@ -13,9 +13,10 @@ FROM mcr.microsoft.com/windows/servercore:ltsc2022
 
 SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-# Node 22 LTS (pinned to the repository toolchain version).
+# Node 22 LTS (pinned to the repository toolchain version). The project
+# requires npm >= 12.0.1, so npm is upgraded from the Node 22 bundle.
 ADD https://nodejs.org/dist/v22.16.0/node-v22.16.0-win-x64.zip C:\\node.zip
-RUN Expand-Archive -Path C:\\node.zip -DestinationPath C:\\; Remove-Item C:\\node.zip
+RUN Expand-Archive -Path C:\\node.zip -DestinationPath C:\\; Remove-Item C:\\node.zip; npm install -g npm@12.0.2
 ENV PATH="C:\\node-v22.16.0-win-x64;${PATH}"
 
 # Latest stable Rust toolchain via rustup. --no-modify-path keeps the registry
@@ -30,7 +31,9 @@ ADD https://aka.ms/vs/17/release/vs_BuildTools.exe C:\\vs_BuildTools.exe
 RUN Start-Process -FilePath C:\\vs_BuildTools.exe -ArgumentList '--quiet','--wait','--norestart','--nocache','--add','Microsoft.VisualStudio.Component.VC.Tools.x86.x64','--add','Microsoft.VisualStudio.Component.VC.Tools.ARM64','--add','Microsoft.VisualStudio.Component.Windows10SDK.20348' -Wait -NoNewWindow; Remove-Item C:\\vs_BuildTools.exe
 
 WORKDIR C:\\src
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
+# Install scripts are allowed inside the builder image; the allowlist lives in
+# package.json (allowScripts). The project .npmrc enforces min-release-age=3.
 RUN npm ci --ignore-scripts=false
 COPY . .
 

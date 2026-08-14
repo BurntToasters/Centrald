@@ -6,7 +6,7 @@ const DEFAULTS = Object.freeze({
   UPDATE_BASE_URL: "",
   ARTIFACT_BASE_URL_TEMPLATE: "",
   CDN_BASE_URL: "",
-  RELEASE_CHANNEL: "stable",
+  RELEASE_CHANNEL: "",
   RELEASE_MANIFEST: "centrald-release.yml",
   TAURI_UPDATE_MANIFEST: "centrald-admin-updater.json",
   TAURI_UPDATER_PUBKEY: "",
@@ -15,12 +15,46 @@ const DEFAULTS = Object.freeze({
 
 const ALLOWED_KEYS = new Set(Object.keys(DEFAULTS));
 const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const CHANNEL_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/u;
+const CHANNEL_NAME = /^(?:stable|alpha|beta)$/u;
+
+/// The only release channels CentralD serves.
+export const SUPPORTED_CHANNELS = ["stable", "alpha", "beta"];
+
+/// Resolves the release channel. Precedence: an explicit `overrides` value,
+/// then the CENTRALD_RELEASE_CHANNEL environment variable, then the tracked
+/// `centrald.config`, then auto-detection from the package version (no
+/// prerelease suffix = stable; otherwise the prerelease identifier, e.g.
+/// `alpha` or `beta`).
+export function resolveReleaseChannel(values, version, overrides = {}) {
+  const explicit =
+    overrides.releaseChannel ?? process.env.CENTRALD_RELEASE_CHANNEL ?? "";
+  if (explicit) return explicit;
+  const configured = values.RELEASE_CHANNEL.trim();
+  if (configured) return configured;
+  return detectChannelFromVersion(version);
+}
+
+/// Derives the channel from a SemVer version: `1.2.3` -> `stable`,
+/// `1.2.3-alpha.1` -> `alpha`, `1.2.3-beta.2` -> `beta`. Any other prerelease
+/// identifier is rejected because CentralD serves exactly three channels.
+export function detectChannelFromVersion(version) {
+  const hyphen = version.indexOf("-");
+  if (hyphen === -1) return "stable";
+  const prerelease = version.slice(hyphen + 1);
+  const identifier = prerelease.split(".")[0].toLowerCase();
+  if (!identifier) return "stable";
+  if (!CHANNEL_NAME.test(identifier)) {
+    throw new Error(
+      `Version ${version} detects unsupported channel ${identifier}; CentralD serves exactly stable, alpha, and beta`,
+    );
+  }
+  return identifier;
+}
 
 /// Loads the tracked build configuration. `overrides.releaseChannel` wins over
 /// the CENTRALD_RELEASE_CHANNEL environment variable, which wins over the
-/// tracked file, so one tree can produce alpha/beta/stable builds without
-/// editing centrald.config.
+/// tracked file, which wins over version auto-detection, so one tree can
+/// produce alpha/beta/stable builds without editing centrald.config.
 export function loadBuildConfig(root = process.cwd(), overrides = {}) {
   const configPath = path.join(root, "centrald.config");
   const source = fs.readFileSync(configPath, "utf8");
@@ -49,13 +83,24 @@ export function loadBuildConfig(root = process.cwd(), overrides = {}) {
   }
 
   const repoUrl = validateHttpsBase(values.REPO_URL, "REPO_URL");
-  const releaseChannel =
-    overrides.releaseChannel ??
-    process.env.CENTRALD_RELEASE_CHANNEL ??
-    values.RELEASE_CHANNEL;
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(root, "package.json"), "utf8"),
+  );
+  const version = packageJson.version;
+  const explicit =
+    overrides.releaseChannel ?? process.env.CENTRALD_RELEASE_CHANNEL ?? "";
+  const configured = values.RELEASE_CHANNEL.trim();
+  const releaseChannel = resolveReleaseChannel(values, version, overrides);
   if (!CHANNEL_NAME.test(releaseChannel)) {
-    throw new Error("RELEASE_CHANNEL must be a lowercase channel name");
+    throw new Error(
+      `RELEASE_CHANNEL must be one of ${SUPPORTED_CHANNELS.join(", ")}`,
+    );
   }
+  const channelSource = explicit
+    ? "override"
+    : configured
+      ? "configured"
+      : "detected";
   const cdnBaseUrl = values.CDN_BASE_URL
     ? validateHttpsBase(values.CDN_BASE_URL, "CDN_BASE_URL")
     : "";
@@ -80,6 +125,7 @@ export function loadBuildConfig(root = process.cwd(), overrides = {}) {
     artifactBaseUrlTemplate,
     cdnBaseUrl,
     releaseChannel,
+    channelSource,
     releaseManifest: values.RELEASE_MANIFEST,
     tauriUpdateManifest: values.TAURI_UPDATE_MANIFEST,
     tauriUpdaterPubkey: validateSingleLinePublicValue(

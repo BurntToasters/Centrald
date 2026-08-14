@@ -182,6 +182,26 @@ stable manifests stay in GitHub Releases; mutable non-stable channel manifests
 are published to the dedicated `centrald-channels` branch. Generic deployments
 may set an explicitly managed `UPDATE_BASE_URL` at build/setup time.
 
+Switch the release channel the server follows for client updates:
+
+```text
+sudo centrald-server channel beta
+```
+
+This updates `updates.channel`, derives the matching `updates.manifest_url` from
+the baked CDN/GitHub layout (`alpha`, `beta`, and `stable` all resolve under
+`<CDN_BASE_URL>/<channel>` when a CDN is baked; without one, stable uses
+GitHub's latest pointer and other channels use the `centrald-channels` branch),
+and sets `allow_prerelease` for every channel except `stable`. The server
+refuses to present a release feed whose manifest channel differs from the
+configured channel, so switching channels changes what clients are offered.
+Restart the server after switching. Fresh setups already bake the detected
+channel from the installed package version.
+
+The Admin desktop app checks its own baked updater manifest URL
+(`<CDN_BASE_URL>/<channel>/centrald-admin-updater.json` when a CDN is baked) and
+does not depend on GitHub's `/latest` pointer except on no-CDN stable builds.
+
 Non-stable channel updates are monotonic by Semantic Versioning and both
 manifests move in one branch commit. A channel-only retry downloads the exact
 immutable release assets and does not regenerate them. Emergency rollback is an

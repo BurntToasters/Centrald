@@ -194,7 +194,13 @@ used by Rust builds and release tooling. Supported keys are:
 - `REPO_URL`: source repository and default release origin;
 - `UPDATE_BASE_URL`: optional mutable channel-feed directory;
 - `ARTIFACT_BASE_URL_TEMPLATE`: immutable versioned artifact directory;
-- `RELEASE_CHANNEL`: `stable`, `prerelease`, or another lowercase channel;
+- `CDN_BASE_URL`: optional CDN base hosting the mutable channel manifests
+  (`<CDN_BASE_URL>/<channel>` for every channel);
+- `RELEASE_CHANNEL`: optional explicit channel (`alpha`, `beta`, `stable` —
+  these are the only channels CentralD serves); when blank, the channel is
+  auto-detected from the package version (no prerelease suffix = stable,
+  otherwise the prerelease identifier). Override per build with `--channel` or
+  `CENTRALD_RELEASE_CHANNEL`;
 - `RELEASE_MANIFEST`: shared server/client release manifest filename;
 - `TAURI_UPDATE_MANIFEST`: desktop updater manifest filename;
 - `TAURI_UPDATER_PUBKEY`: public Tauri updater key;

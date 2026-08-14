@@ -625,17 +625,7 @@ fn arch_name(arch: Architecture) -> &'static str {
 }
 
 fn valid_channel(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    value.len() <= 32
-        && first.is_ascii_lowercase()
-        && characters.all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '.' | '_' | '-')
-        })
+    centrald_common::build_info::is_supported_channel(value)
 }
 
 #[cfg(test)]
@@ -646,7 +636,7 @@ mod tests {
     fn parameters() -> UpdateParameters {
         UpdateParameters {
             manifest_url: "https://example.test/centrald/centrald-release.yml".into(),
-            channel: "prerelease".into(),
+            channel: "beta".into(),
             allow_prerelease: true,
             expected_version: "0.2.0".into(),
         }

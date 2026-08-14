@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use centrald_common::config::ServerConfig;
+use centrald_common::config::{ServerConfig, valid_channel};
 use centrald_common::enrollment::{
     EnrollmentInvitationClaims, EnrollmentRole, generate_enrollment_invitation, hash_enrollment_key,
 };
@@ -898,6 +898,39 @@ fn configure_updates(
         .interact()?;
     replacement.validate()?;
     confirm_and_save(config_path, config, replacement, theme)
+}
+
+/// Switches the release channel this server follows for client updates.
+///
+/// Updates `updates.channel`, derives the matching `updates.manifest_url`
+/// from the baked CDN/GitHub layout, and sets `allow_prerelease` (any channel
+/// except `stable` allows prereleases). Persists through the same locked,
+/// journaled, audited save path as the guided console.
+///
+/// # Errors
+///
+/// Returns an error when the caller is not root, the channel name is invalid,
+/// the server configuration cannot be loaded or saved, or another process
+/// changed the configuration concurrently.
+pub fn set_channel(config_path: &Path, channel: &str) -> Result<()> {
+    require_root()?;
+    let channel = channel.trim().to_ascii_lowercase();
+    if !valid_channel(&channel) {
+        bail!("channel must be a lowercase channel name");
+    }
+    let mut config = ServerConfig::load(config_path)?;
+    let mut replacement = config.clone();
+    replacement.updates.channel.clone_from(&channel);
+    replacement.updates.manifest_url =
+        centrald_common::build_info::manifest_url_for_channel(&channel);
+    replacement.updates.allow_prerelease = channel != "stable";
+    replacement.validate()?;
+    save_config(config_path, &mut config, replacement)?;
+    println!(
+        "Server update channel is now {channel}; clients will follow {}. Restart the server for the change to take effect.",
+        config.updates.manifest_url
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

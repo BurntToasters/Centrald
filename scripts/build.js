@@ -401,15 +401,21 @@ function buildLinuxNative() {
   ]);
 }
 
+/// Writes the Tauri updater configuration that must be baked into the Admin
+/// binary: the public verification key and the manifest endpoints. The pubkey
+/// and endpoints are public build metadata and are baked for every build
+/// (native and container, signed and unsigned) so installed Admin apps can
+/// always locate and verify updates. Tauri only generates its own `.sig`
+/// updater artifacts when `--signed` is set, because producing those requires
+/// the private signing key.
 function createTauriReleaseConfig() {
-  if (!options.signed) return "";
+  if (!buildConfig.tauriUpdaterPubkey.trim()) return "";
   const destination = path.join(
     root,
     "dist",
     `.tauri-release-config-${process.pid}.json`,
   );
   const value = {
-    bundle: { createUpdaterArtifacts: true },
     plugins: {
       updater: {
         pubkey: buildConfig.tauriUpdaterPubkey,
@@ -417,6 +423,9 @@ function createTauriReleaseConfig() {
       },
     },
   };
+  if (options.signed) {
+    value.bundle = { createUpdaterArtifacts: true };
+  }
   fs.writeFileSync(destination, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
     flag: "wx",

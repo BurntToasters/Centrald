@@ -15,7 +15,9 @@ const version = JSON.parse(
 ).version;
 
 console.log(`Repository: ${config.repoUrl}`);
-console.log(`Channel: ${config.releaseChannel}`);
+console.log(
+  `Channel: ${config.releaseChannel}${config.channelSource === "detected" ? " (auto-detected from version)" : ""}`,
+);
 console.log(`Release manifest: ${releaseManifestUrl(config)}`);
 console.log(`Admin updater manifest: ${tauriManifestUrl(config)}`);
 console.log(`Immutable artifacts: ${artifactBaseUrl(config, version)}`);

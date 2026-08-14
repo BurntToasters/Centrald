@@ -2,22 +2,26 @@
 
 ## Release channels
 
-Every build bakes one channel (`alpha`, `beta`, `stable`, or any lowercase name)
-into its binaries; an install only follows its own channel. Promotion is a new
-build: an alpha install never auto-upgrades into beta, and beta into stable.
-Version precedence uses strict SemVer, so `0.2.0-alpha.1`, `0.2.0-beta.1`, and
-`0.2.0` are monotonic within their channels.
+Every build bakes one channel into its binaries; an install only follows its own
+channel and promotion is a new build: an alpha install never auto-upgrades into
+beta, and beta into stable. CentralD serves exactly three channels — `stable`,
+`alpha`, and `beta` — enforced in the build tooling, the server update feed,
+manifest validation, and the operator CLI. The channel is auto-detected from the
+package version: no prerelease suffix means `stable`, `-alpha.*` means `alpha`,
+`-beta.*` means `beta`, and any other prerelease identifier is rejected. Version
+precedence uses strict SemVer, so `0.2.0-alpha.1`, `0.2.0-beta.1`, and `0.2.0`
+are monotonic within their channels.
 
-Build a specific channel from one tree without touching the tracked
-configuration:
+Override the detected channel for a specific build from one tree without
+touching the tracked configuration:
 
 ```text
 npm run release -- --channel beta
 ```
 
-The `--channel` flag (or `CENTRALD_RELEASE_CHANNEL`) overrides `centrald.config`
-in the build tooling and in the Rust build script that bakes the value into the
-binaries.
+The `--channel` flag (or `CENTRALD_RELEASE_CHANNEL`) overrides the tracked
+`centrald.config`, which in turn overrides version auto-detection. The Rust
+build script bakes the same resolved channel into the binaries.
 
 ## Channel hosting
 
@@ -31,6 +35,12 @@ mirrors the signed manifests to the bucket automatically as the last publish
 step (DigitalOcean Spaces or any S3 endpoint; requires the `aws` CLI and the S3
 values in `.env`). The GitHub branch remains the source of truth; the bucket is
 a mirror of the same bytes.
+
+The Admin desktop app follows the same layout: its updater endpoint is baked at
+build time as `<CDN_BASE_URL>/<channel>/centrald-admin-updater.json`, so it
+checks the CDN (or the channel branch) for its channel — not GitHub's `/latest`
+pointer. Only no-CDN stable builds bake the GitHub `/releases/latest/download`
+endpoint.
 
 Without `CDN_BASE_URL`, stable keeps serving from GitHub's immutable
 `/releases/latest/download` pointer and non-stable channels keep serving from
@@ -119,8 +129,8 @@ Every file has `<artifact>.minisig`. Admin updater artifacts also have
 The immutable version release is created as a draft, accepts each asset exactly
 once, is verified, and is then published without `--clobber`. It contains
 artifacts, signatures, and both manifests. For GitHub repositories, non-stable
-channel manifests such as `prerelease` are published together in one Git commit
-on the dedicated `centrald-channels` branch and read through
+channel manifests such as `alpha` or `beta` are published together in one Git
+commit on the dedicated `centrald-channels` branch and read through
 `raw.githubusercontent.com`; immutable version artifacts remain in GitHub
 Releases. The branch ref is updated non-forced, so a racing publisher must
 rebuild from the new head instead of overwriting it. Channel versions are

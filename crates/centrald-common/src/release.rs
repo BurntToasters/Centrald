@@ -189,17 +189,7 @@ fn validate_artifact(artifact: &ReleaseArtifact) -> Result<(), ManifestError> {
 }
 
 fn valid_channel(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    value.len() <= 32
-        && first.is_ascii_lowercase()
-        && characters.all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '.' | '_' | '-')
-        })
+    crate::build_info::is_supported_channel(value)
 }
 
 fn validate_https_base(value: &str) -> Result<Url, ()> {
@@ -248,7 +238,7 @@ mod tests {
         ReleaseManifestV1 {
             schema_version: 1,
             version: Version::parse("0.1.0-alpha.1").expect("test version should parse"),
-            channel: "prerelease".into(),
+            channel: "alpha".into(),
             protocol_major: 1,
             generated_at: Utc
                 .with_ymd_and_hms(2026, 8, 6, 12, 0, 0)

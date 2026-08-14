@@ -112,6 +112,9 @@ async fn main() -> Result<()> {
         }
         ServerCommand::InitialSetup(args) => initial_setup(&cli.config_path, args).await,
         ServerCommand::Config => centrald_server::manage::run(&cli.config_path).await,
+        ServerCommand::Channel(args) => {
+            centrald_server::manage::set_channel(&cli.config_path, args.channel.as_str())
+        }
         ServerCommand::EnrollClient(args) => {
             create_enrollment_key(&cli.config_path, args, "client", cli.json).await
         }

@@ -450,7 +450,7 @@ fn validate_runtime(runtime: &RuntimeSection) -> Result<(), ConfigError> {
 
 fn validate_updates(updates: &UpdateSection) -> Result<(), ConfigError> {
     if !valid_channel(&updates.channel) {
-        return invalid("updates.channel must be a lowercase channel name");
+        return invalid("updates.channel must be stable, alpha, or beta");
     }
     if updates.enabled || !updates.manifest_url.is_empty() {
         validate_https_url(&updates.manifest_url, "updates.manifest_url", true)?;
@@ -461,18 +461,9 @@ fn validate_updates(updates: &UpdateSection) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn valid_channel(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    value.len() <= 32
-        && first.is_ascii_lowercase()
-        && characters.all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '.' | '_' | '-')
-        })
+#[must_use]
+pub fn valid_channel(value: &str) -> bool {
+    crate::build_info::is_supported_channel(value)
 }
 
 fn validate_https_url(value: &str, label: &str, allow_path: bool) -> Result<(), ConfigError> {

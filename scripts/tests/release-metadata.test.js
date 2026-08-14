@@ -64,7 +64,7 @@ test("manifest generation is reproducible for one release timestamp", async () =
     });
     await writeFile(
       path.join(root, "centrald.config"),
-      "REPO_URL=https://github.com/BurntToasters/centrald\nRELEASE_CHANNEL=prerelease\n",
+      "REPO_URL=https://github.com/BurntToasters/centrald\nRELEASE_CHANNEL=beta\n",
     );
     await writeFile(
       path.join(root, "package.json"),

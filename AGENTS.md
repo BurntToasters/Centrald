@@ -142,11 +142,16 @@ execution and credential saving visibly disabled.
 - Release manifests use immutable version URLs. Mutable non-stable channel manifests live outside immutable GitHub Releases;
   the default GitHub layout publishes both manifests in one compare-and-swap commit
   on the `centrald-channels` branch.
-- Every build bakes exactly one release channel (alpha/beta/stable or any
-  lowercase name); an install only follows its own channel and promotion is a
-  new build. `--channel` on the release/build tools and the
-  `CENTRALD_RELEASE_CHANNEL` environment variable override the tracked
-  `centrald.config` in both the JS tooling and `centrald-common/build.rs`.
+- Every build bakes exactly one release channel; CentralD serves only
+  `stable`, `alpha`, and `beta` (enforced in the build tooling, the server
+  update feed, manifest validation, and the operator CLI). An install only
+  follows its own channel and promotion is a
+  new build. The channel is auto-detected from the package version (no
+  prerelease suffix = stable, otherwise the prerelease identifier), and
+  `--channel` on the release/build tools and the `CENTRALD_RELEASE_CHANNEL`
+  environment variable override the tracked `centrald.config` in both the JS
+  tooling and `centrald-common/build.rs` (which mirrors the detection from
+  `CARGO_PKG_VERSION`).
 - With `CDN_BASE_URL` set in `centrald.config`, all channels (including
   stable) resolve `<CDN_BASE_URL>/<channel>` and the release flow mirrors the
   signed channel manifests to an S3-compatible bucket (DO Spaces or any S3

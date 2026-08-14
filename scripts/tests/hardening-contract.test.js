@@ -567,6 +567,12 @@ test("channels are baked per build and CDN manifests are mirrored to S3 after pu
   // JS tooling and the Rust build script that bakes values into binaries.
   assert.match(buildConfig, /overrides\.releaseChannel/);
   assert.match(buildConfig, /CENTRALD_RELEASE_CHANNEL/);
+  // The channel is auto-detected from the package version (no prerelease
+  // suffix = stable, otherwise the prerelease identifier), in both JS and Rust.
+  assert.match(buildConfig, /detectChannelFromVersion/);
+  assert.match(buildConfig, /1\.2\.3` -> `stable`/);
+  assert.match(buildRust, /detect_channel/);
+  assert.match(buildRust, /CARGO_PKG_VERSION/);
   assert.match(build, /--channel/);
   assert.match(build, /CENTRALD_RELEASE_CHANNEL/);
   assert.match(release, /parseChannelArgument/);
@@ -603,6 +609,98 @@ test("channels are baked per build and CDN manifests are mirrored to S3 after pu
   assert.match(envExample, /updated\.centrald\.dev/);
   // Manifests are mirrored, but artifacts stay on immutable GitHub tag URLs.
   assert.doesNotMatch(sync, /release\/artifacts/);
+});
+
+test("centrald-server channel switches the client update feed with derivation parity", async () => {
+  const [cli, manage, buildInfo, buildRust, setup] = await Promise.all([
+    read("crates/centrald-server/src/cli.rs"),
+    read("crates/centrald-server/src/manage.rs"),
+    read("crates/centrald-common/src/build_info.rs"),
+    read("crates/centrald-common/build.rs"),
+    read("crates/centrald-server/src/setup.rs"),
+  ]);
+  // The operator command exists and updates channel, manifest URL, and
+  // prerelease policy together.
+  assert.match(cli, /Channel\(ChannelArgs\)/);
+  assert.match(cli, /Switch the release channel this server follows/);
+  assert.match(cli, /enum ReleaseChannel/);
+  assert.match(cli, /Stable,?\n.*Alpha,?\n.*Beta/);
+  assert.match(manage, /pub fn set_channel/);
+  assert.match(manage, /manifest_url_for_channel/);
+  assert.match(manage, /allow_prerelease = channel != "stable"/);
+  assert.match(manage, /Restart the server for the change to take effect/);
+  // URL derivation mirrors the JS tooling: CDN for every channel, GitHub raw
+  // branch for non-stable, GitHub latest for stable without a CDN.
+  assert.match(buildInfo, /manifest_url_for_channel/);
+  assert.match(buildInfo, /CDN_BASE_URL/);
+  assert.match(buildInfo, /centrald-channels\/channels/);
+  assert.match(buildInfo, /releases\/latest\/download/);
+  assert.match(buildRust, /CENTRALD_CDN_BASE_URL/);
+  // Fresh setups bake the detected channel + derived manifest URL.
+  assert.match(setup, /RELEASE_CHANNEL/);
+  assert.match(setup, /release_manifest_url\(\)/);
+});
+
+test("only stable, alpha, and beta are valid channels everywhere", async () => {
+  const [buildInfo, config, release, buildRust, client, buildConfigJs] =
+    await Promise.all([
+      read("crates/centrald-common/src/build_info.rs"),
+      read("crates/centrald-common/src/config.rs"),
+      read("crates/centrald-common/src/release.rs"),
+      read("crates/centrald-common/build.rs"),
+      read("crates/centrald-client/src/updates.rs"),
+      read("scripts/lib/build-config.js"),
+    ]);
+  // One shared definition in build_info drives the server config validator,
+  // the manifest validator, and the client update-parameter validator.
+  assert.match(buildInfo, /SUPPORTED_CHANNELS: \[&str; 3\]/);
+  assert.match(buildInfo, /"stable", "alpha", "beta"/);
+  assert.match(config, /crate::build_info::is_supported_channel/);
+  assert.match(release, /crate::build_info::is_supported_channel/);
+  assert.match(client, /centrald_common::build_info::is_supported_channel/);
+  // The build-time validator and channel detector accept exactly three.
+  assert.match(buildRust, /matches!\(value, "stable" \| "alpha" \| "beta"\)/);
+  assert.match(buildRust, /serves exactly stable, alpha, and beta/);
+  // The JS tooling mirrors the same three-channel gate.
+  assert.match(
+    buildConfigJs,
+    /SUPPORTED_CHANNELS = \["stable", "alpha", "beta"\]/,
+  );
+  assert.match(buildConfigJs, /\^\(\?:stable\|alpha\|beta\)\$/);
+  assert.match(buildConfigJs, /serves exactly stable, alpha, and beta/);
+});
+
+test("Admin updater pubkey and endpoints are baked into every build", async () => {
+  const [build, linuxDockerfile, windowsDockerfile] = await Promise.all([
+    read("scripts/build.js"),
+    read("docker/linux-builder.Dockerfile"),
+    read("docker/windows-builder.Dockerfile"),
+  ]);
+  // The updater pubkey and manifest endpoints are public build metadata and
+  // must be baked even for unsigned builds so installed Admin apps can locate
+  // and verify updates. Only .sig generation stays gated behind --signed.
+  assert.match(
+    build,
+    /if \(!buildConfig\.tauriUpdaterPubkey\.trim\(\)\) return "";/,
+  );
+  assert.match(build, /pubkey: buildConfig\.tauriUpdaterPubkey/);
+  assert.match(build, /endpoints: \[tauriManifestUrl\(buildConfig\)\]/);
+  assert.match(build, /if \(options\.signed\) \{/);
+  assert.match(build, /createUpdaterArtifacts: true/);
+  // Both container builders delegate to build.js so the injected updater
+  // configuration reaches the AppImage and NSIS installers they produce.
+  assert.match(
+    linuxDockerfile,
+    /node scripts\/build\.js --target linux-x64 --native/,
+  );
+  assert.match(
+    windowsDockerfile,
+    /node scripts\/build\.js --target windows-x64/,
+  );
+  assert.match(
+    windowsDockerfile,
+    /node scripts\/build\.js --target windows-arm64/,
+  );
 });
 
 test("Linux enrollment publishes only the active pointer and enables the service", async () => {

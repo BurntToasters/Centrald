@@ -3,6 +3,16 @@
 .env.*
 **/.env
 **/.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.secret
 node_modules
 target
 dist

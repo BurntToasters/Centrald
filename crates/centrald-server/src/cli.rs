@@ -35,6 +35,8 @@ pub enum ServerCommand {
     InitialSetup(SetupArgs),
     /// Open the guided local configuration and administration console.
     Config,
+    /// Switch the release channel this server follows for client updates.
+    Channel(ChannelArgs),
     Status(TargetArgs),
     #[command(hide = true)]
     Restart,
@@ -160,6 +162,31 @@ pub struct ShellArgs {
 pub enum UpdateScope {
     Centrald,
     Os,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ReleaseChannel {
+    Stable,
+    Alpha,
+    Beta,
+}
+
+impl ReleaseChannel {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Alpha => "alpha",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ChannelArgs {
+    /// Channel to follow: stable, alpha, or beta.
+    #[arg(value_enum)]
+    pub channel: ReleaseChannel,
 }
 
 #[derive(Debug, Args)]

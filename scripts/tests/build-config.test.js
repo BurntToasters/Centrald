@@ -5,13 +5,18 @@ import path from "node:path";
 import test from "node:test";
 import {
   artifactBaseUrl,
+  detectChannelFromVersion,
   loadBuildConfig,
   releaseManifestUrl,
 } from "../lib/build-config.js";
 
-function temporaryConfig(contents) {
+function temporaryConfig(contents, version = "1.2.3") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "centrald-config-"));
   fs.writeFileSync(path.join(root, "centrald.config"), contents);
+  fs.writeFileSync(
+    path.join(root, "package.json"),
+    `${JSON.stringify({ version, name: "fixture" })}\n`,
+  );
   return root;
 }
 
@@ -31,14 +36,14 @@ test("derives GitHub latest and immutable release URLs", () => {
   fs.rmSync(root, { recursive: true });
 });
 
-test("derives mutable GitHub prerelease channel URLs from the channel branch", () => {
+test("derives mutable GitHub beta channel URLs from the channel branch", () => {
   const root = temporaryConfig(
-    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=prerelease\n",
+    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=beta\n",
   );
   const config = loadBuildConfig(root);
   assert.equal(
     releaseManifestUrl(config),
-    "https://raw.githubusercontent.com/example/centrald/centrald-channels/channels/prerelease/latest/centrald-release.yml",
+    "https://raw.githubusercontent.com/example/centrald/centrald-channels/channels/beta/latest/centrald-release.yml",
   );
   fs.rmSync(root, { recursive: true });
 });
@@ -99,13 +104,73 @@ test("supports static object storage layouts", () => {
       "REPO_URL=https://downloads.example.test/centrald",
       "UPDATE_BASE_URL=https://cdn.example.test/centrald/latest",
       "ARTIFACT_BASE_URL_TEMPLATE=https://cdn.example.test/centrald/{version}",
-      "RELEASE_CHANNEL=prerelease",
+      "RELEASE_CHANNEL=beta",
     ].join("\n"),
   );
   const config = loadBuildConfig(root);
   assert.equal(
     artifactBaseUrl(config, "0.2.0-alpha.1"),
     "https://cdn.example.test/centrald/0.2.0-alpha.1",
+  );
+  fs.rmSync(root, { recursive: true });
+});
+
+test("auto-detects the channel from the package version when unset", () => {
+  const stable = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\n",
+    "1.2.3",
+  );
+  assert.equal(loadBuildConfig(stable).releaseChannel, "stable");
+  assert.equal(loadBuildConfig(stable).channelSource, "detected");
+  fs.rmSync(stable, { recursive: true });
+
+  const alpha = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\nCDN_BASE_URL=https://updated.example.test\n",
+    "0.2.0-alpha.1",
+  );
+  const alphaConfig = loadBuildConfig(alpha);
+  assert.equal(alphaConfig.releaseChannel, "alpha");
+  assert.equal(alphaConfig.channelSource, "detected");
+  assert.equal(
+    releaseManifestUrl(alphaConfig),
+    "https://updated.example.test/alpha/centrald-release.yml",
+  );
+  fs.rmSync(alpha, { recursive: true });
+
+  const beta = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\n",
+    "0.2.0-beta.2",
+  );
+  assert.equal(loadBuildConfig(beta).releaseChannel, "beta");
+  fs.rmSync(beta, { recursive: true });
+});
+
+test("detectChannelFromVersion maps prerelease identifiers to channels", () => {
+  assert.equal(detectChannelFromVersion("1.2.3"), "stable");
+  assert.equal(detectChannelFromVersion("1.2.3-alpha.1"), "alpha");
+  assert.equal(detectChannelFromVersion("1.2.3-beta.2"), "beta");
+  assert.equal(detectChannelFromVersion("1.2.3-Alpha.1"), "alpha");
+  assert.equal(detectChannelFromVersion("1.2.3-"), "stable");
+});
+
+test("detectChannelFromVersion rejects channels outside stable/alpha/beta", () => {
+  assert.throws(
+    () => detectChannelFromVersion("1.2.3-rc.1"),
+    /unsupported channel rc/,
+  );
+  assert.throws(
+    () => detectChannelFromVersion("1.2.3-canary.1"),
+    /unsupported channel canary/,
+  );
+});
+
+test("loadBuildConfig rejects non-central channels from any source", () => {
+  const root = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=canary\n",
+  );
+  assert.throws(
+    () => loadBuildConfig(root),
+    /must be one of stable, alpha, beta/,
   );
   fs.rmSync(root, { recursive: true });
 });

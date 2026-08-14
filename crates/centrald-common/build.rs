@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/BurntToasters/centrald";
-const DEFAULT_RELEASE_CHANNEL: &str = "prerelease";
+const DEFAULT_RELEASE_CHANNEL: &str = "stable";
 const DEFAULT_RELEASE_MANIFEST: &str = "centrald-release.yml";
 const DEFAULT_TAURI_MANIFEST: &str = "centrald-admin-updater.json";
 const ALLOWED_KEYS: [&str; 9] = [
@@ -28,13 +28,20 @@ fn main() {
     let values = read_config(&config_path);
     let repo_url = value(&values, "REPO_URL", DEFAULT_REPO_URL);
     validate_https_base(&repo_url, "REPO_URL");
-    // The CENTRALD_RELEASE_CHANNEL environment variable (set by the release
-    // tooling for alpha/beta/stable builds) overrides the tracked file so one
-    // tree can produce every channel without editing centrald.config.
+    // The release channel is resolved in precedence order: the
+    // CENTRALD_RELEASE_CHANNEL environment variable (set by the release
+    // tooling), then the tracked centrald.config value, then auto-detection
+    // from the crate version (no prerelease suffix = stable, otherwise the
+    // prerelease identifier, e.g. alpha or beta).
     let release_channel = std::env::var("CENTRALD_RELEASE_CHANNEL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| value(&values, "RELEASE_CHANNEL", DEFAULT_RELEASE_CHANNEL));
+        .map(|value| value.trim().to_owned())
+        .or_else(|| {
+            let configured = value(&values, "RELEASE_CHANNEL", "");
+            (!configured.trim().is_empty()).then(|| configured.trim().to_owned())
+        })
+        .unwrap_or_else(|| detect_channel(env!("CARGO_PKG_VERSION")));
     assert!(
         is_channel(&release_channel),
         "RELEASE_CHANNEL must be a lowercase channel name"
@@ -77,6 +84,7 @@ fn main() {
         "CENTRALD_UPDATE_BASE_URL",
         update_base.trim_end_matches('/'),
     );
+    emit("CENTRALD_CDN_BASE_URL", cdn_base.trim_end_matches('/'));
     emit(
         "CENTRALD_ARTIFACT_BASE_URL_TEMPLATE",
         artifact_template.trim_end_matches('/'),
@@ -205,17 +213,29 @@ fn validate_artifact_template(value: &str) {
 }
 
 fn is_channel(value: &str) -> bool {
-    let mut characters = value.chars();
-    let Some(first) = characters.next() else {
-        return false;
+    matches!(value, "stable" | "alpha" | "beta")
+}
+
+/// Derives the channel from a `SemVer` version: `1.2.3` -> `stable`,
+/// `1.2.3-alpha.1` -> `alpha`, `1.2.3-beta.2` -> `beta`. Any other prerelease
+/// identifier is rejected because `CentralD` serves exactly three channels.
+fn detect_channel(version: &str) -> String {
+    let Some((_, prerelease)) = version.split_once('-') else {
+        return DEFAULT_RELEASE_CHANNEL.to_owned();
     };
-    value.len() <= 32
-        && first.is_ascii_lowercase()
-        && characters.all(|character| {
-            character.is_ascii_lowercase()
-                || character.is_ascii_digit()
-                || matches!(character, '.' | '_' | '-')
-        })
+    let identifier = prerelease
+        .split('.')
+        .next()
+        .filter(|identifier| !identifier.is_empty())
+        .map_or_else(
+            || DEFAULT_RELEASE_CHANNEL.to_owned(),
+            str::to_ascii_lowercase,
+        );
+    assert!(
+        is_channel(&identifier),
+        "version {version} detects unsupported channel {identifier:?}; CentralD serves exactly stable, alpha, and beta"
+    );
+    identifier
 }
 
 fn validate_filename(value: &str, key: &str) {

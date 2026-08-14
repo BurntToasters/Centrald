@@ -50,16 +50,7 @@ COPY . .
 # even when the floating `rust:bookworm` base image was cached locally.
 RUN rustup update stable \
     && rustup target add x86_64-unknown-linux-gnu \
-    && cargo build --locked --release --target x86_64-unknown-linux-gnu \
-      -p centrald-server -p centrald-client \
-    && cd apps/admin \
-    && npx tauri build \
-      --target x86_64-unknown-linux-gnu \
-      --bundles appimage \
-    && cd ../.. \
-    && node scripts/package-linux.js \
-      --target-dir target/x86_64-unknown-linux-gnu/release \
-      --output dist/linux-x64
+    && node scripts/build.js --target linux-x64 --native
 
 FROM scratch AS export
 COPY --from=builder /src/dist/linux-x64/ /

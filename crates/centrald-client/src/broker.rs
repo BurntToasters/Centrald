@@ -17,6 +17,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 pub use centrald_platform::broker::BrokerRequest;
@@ -188,8 +190,11 @@ async fn unix_round_trip(socket_path: &str, request: &[u8]) -> Result<Vec<u8>> {
         .context("send broker request")?;
     stream.shutdown().await.context("finish broker request")?;
     let mut response = Vec::new();
+    let response_limit = u64::try_from(MAX_WIRE_RESPONSE_BYTES)
+        .context("broker response bound does not fit u64")?
+        .saturating_add(8);
     stream
-        .take(MAX_WIRE_RESPONSE_BYTES + 8)
+        .take(response_limit)
         .read_to_end(&mut response)
         .await
         .context("read broker response")?;
@@ -237,7 +242,7 @@ async fn serve_unix(
     executor: Arc<BrokerExecutor<SystemOperationRunner>>,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
     use tokio::net::UnixListener;
 
@@ -270,8 +275,12 @@ async fn serve_unix(
     // The unprivileged daemon connects as the `centrald` service account, so
     // the socket must be owned by that account (mode 0660 with a root owner
     // would still deny the connect).
-    rustix::fs::chown(socket_path, Some(expected_uid), Some(expected_gid))
-        .context("chown broker socket to the centrald service account")?;
+    rustix::fs::chown(
+        socket_path,
+        Some(rustix::fs::Uid::from_raw(expected_uid)),
+        Some(rustix::fs::Gid::from_raw(expected_gid)),
+    )
+    .context("chown broker socket to the centrald service account")?;
     let sessions = Arc::new(crate::broker_session::SessionManager::new());
     loop {
         tokio::select! {
@@ -323,33 +332,55 @@ fn handle_unix_connection_sync(
     let writer: Box<dyn Write + Send> = Box::new(stream);
     let first = crate::broker_session::read_frame(&mut reader, MAX_FIRST_FRAME_BYTES)
         .context("read first broker frame")?;
-    dispatch_connection(first, reader, writer, executor, sessions)
+    dispatch_connection(&first, reader, writer, executor, sessions)
 }
 
 #[cfg(windows)]
 async fn serve_windows(executor: Arc<BrokerExecutor<SystemOperationRunner>>) -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let sessions = Arc::new(crate::broker_session::SessionManager::new());
+    let inflight = Arc::new(AtomicUsize::new(0));
     tokio::task::spawn_blocking(move || -> Result<()> {
         loop {
             let pipe = crate::windows_ffi::accept_pipe_connection()?;
             let stream = crate::windows_ffi::PipeStream::new(pipe);
-            let (read_half, write_half) = stream.split()?;
-            let mut reader: Box<dyn std::io::Read + Send> = Box::new(read_half);
-            let writer: Box<dyn std::io::Write + Send> = Box::new(write_half);
-            let first = match crate::broker_session::read_frame(&mut reader, MAX_FIRST_FRAME_BYTES)
-            {
+            // Bound the first-frame wait: poll the pipe in non-blocking mode
+            // so a client that connects but never sends cannot hold a pipe
+            // instance (and its connection slot) forever.
+            crate::windows_ffi::set_pipe_polling(&stream, true)
+                .context("switch the broker pipe to polling mode")?;
+            let first = match poll_first_frame(&stream) {
                 Ok(first) => first,
                 Err(error) => {
                     tracing::warn!(%error, "broker request failed before dispatch");
                     continue;
                 }
             };
+            crate::windows_ffi::set_pipe_polling(&stream, false)
+                .context("restore the broker pipe to blocking mode")?;
+            let (read_half, write_half) = stream.split()?;
+            let reader: Box<dyn std::io::Read + Send> = Box::new(read_half);
+            let writer: Box<dyn std::io::Write + Send> = Box::new(write_half);
+            // Cap concurrent in-flight connections so a flood of valid clients
+            // cannot exhaust threads; excess connections are dropped.
+            let current = inflight.fetch_add(1, Ordering::Relaxed);
+            if current >= MAX_INFLIGHT_CONNECTIONS {
+                inflight.fetch_sub(1, Ordering::Relaxed);
+                tracing::warn!(
+                    current,
+                    "broker connection limit reached; dropping connection"
+                );
+                continue;
+            }
             // Each connection runs on its own thread so a long operation or a
             // shell session cannot block the accept loop (which must keep
             // serving new pipe instances).
             let executor = executor.clone();
             let sessions = sessions.clone();
+            let inflight = inflight.clone();
             std::thread::spawn(move || {
+                let _connection_guard = ConnectionGuard::new(&inflight);
                 if let Err(error) =
                     dispatch_connection(&first, reader, writer, &executor, &sessions)
                 {
@@ -362,6 +393,88 @@ async fn serve_windows(executor: Arc<BrokerExecutor<SystemOperationRunner>>) -> 
     .context("broker pipe server worker failed")??;
     Ok(())
 }
+
+/// Polls a non-blocking pipe instance until one complete first frame has
+/// arrived or the wait exceeds [`FIRST_FRAME_TIMEOUT`].
+///
+/// # Errors
+///
+/// Returns an error when the frame is malformed, oversized, or the timeout
+/// expires before the peer sent anything.
+#[cfg(windows)]
+fn poll_first_frame(stream: &crate::windows_ffi::PipeStream) -> Result<Vec<u8>> {
+    let started = Instant::now();
+    let mut frame: Vec<u8> = Vec::new();
+    loop {
+        if frame.len() >= 4 {
+            let size = usize::try_from(u32::from_be_bytes(
+                frame[..4]
+                    .try_into()
+                    .context("first frame length is invalid")?,
+            ))
+            .context("first frame length is invalid")?;
+            if size == 0 || size > MAX_FIRST_FRAME_BYTES {
+                bail!("first frame exceeds the bound or is empty");
+            }
+            if frame.len() == 4 + size {
+                return Ok(frame);
+            }
+            if frame.len() > 4 + size {
+                bail!("first frame has trailing bytes");
+            }
+        }
+        let mut chunk = [0_u8; 4096];
+        match stream.try_read_message(&mut chunk) {
+            Ok(Some(read)) => {
+                frame.extend_from_slice(&chunk[..read]);
+                if frame.len() > 4 + MAX_FIRST_FRAME_BYTES {
+                    bail!("first frame exceeds the bound");
+                }
+            }
+            Ok(None) if started.elapsed() > FIRST_FRAME_TIMEOUT => {
+                bail!("broker first frame timed out");
+            }
+            Ok(None) => std::thread::sleep(PIPE_POLL_INTERVAL),
+            Err(error) => return Err(error).context("read broker pipe"),
+        }
+    }
+}
+
+/// Releases the in-flight connection slot when the dispatch thread exits.
+#[cfg(windows)]
+struct ConnectionGuard {
+    inflight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(windows)]
+impl ConnectionGuard {
+    fn new(inflight: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self {
+            inflight: inflight.clone(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Maximum concurrent broker connections; excess connections are dropped.
+#[cfg(windows)]
+const MAX_INFLIGHT_CONNECTIONS: usize = 64;
+
+/// Bounds the wait for a client's first frame before the connection is
+/// dropped.
+#[cfg(windows)]
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll interval while waiting for the first frame.
+#[cfg(windows)]
+const PIPE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// First-frame bound: the larger of the one-shot request and the session
 /// open frame.
@@ -447,7 +560,7 @@ fn validate_socket_path(path: &Path) -> Result<()> {
 fn resolve_daemon_account() -> Result<(u32, u32)> {
     use std::io::Read;
 
-    let mut file = std::fs::File::open("/etc/passwd").context("open /etc/passwd")?;
+    let file = std::fs::File::open("/etc/passwd").context("open /etc/passwd")?;
     let metadata = file.metadata().context("inspect /etc/passwd")?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         bail!("/etc/passwd is not a regular file");
@@ -476,11 +589,6 @@ fn resolve_daemon_account() -> Result<(u32, u32)> {
         }
     }
     bail!("the centrald service account is missing from /etc/passwd")
-}
-
-#[cfg(unix)]
-fn resolve_daemon_uid() -> Result<u32> {
-    resolve_daemon_account().map(|(uid, _)| uid)
 }
 
 /// Executes one verified request with exactly-once ledger semantics.

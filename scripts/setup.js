@@ -42,4 +42,5 @@ if (windows) {
   ]);
 }
 run("npm", ["install"]);
+run("npm", ["--prefix", "site", "ci"]);
 console.log("CentralD workspace setup complete.");

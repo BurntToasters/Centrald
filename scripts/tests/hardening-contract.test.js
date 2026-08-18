@@ -14,6 +14,8 @@ test("database setup and reset are instance-owned", async () => {
   assert.match(db, /DatabaseAdminError::AlreadyExists/);
   assert.match(db, /COMMENT ON DATABASE/);
   assert.match(db, /centrald_installation/);
+  assert.match(db, /include_str!\("\.\.\/migrations\/0001_initial\.sql"\)/);
+  assert.doesNotMatch(db, /sqlx::migrate!/);
   assert.match(nuke, /acquire_server_lock/);
   assert.match(nuke, /drop_owned_database/);
   assert.match(migration, /CREATE TABLE centrald_installation/);
@@ -103,18 +105,23 @@ test("certificate serials are generated per issuance", async () => {
 });
 
 test("Admin updater is registered and remains operator initiated", async () => {
-  const [cargo, runtime, capability, app, pkg] = await Promise.all([
-    read("apps/admin/src-tauri/Cargo.toml"),
-    read("apps/admin/src-tauri/src/lib.rs"),
-    read("apps/admin/src-tauri/capabilities/default.json"),
-    read("apps/admin/src/App.tsx"),
-    read("package.json").then(JSON.parse),
-  ]);
+  const [cargo, runtime, capability, app, pkg, tauriConfig] = await Promise.all(
+    [
+      read("apps/admin/src-tauri/Cargo.toml"),
+      read("apps/admin/src-tauri/src/lib.rs"),
+      read("apps/admin/src-tauri/capabilities/default.json"),
+      read("apps/admin/src/App.tsx"),
+      read("package.json").then(JSON.parse),
+      read("apps/admin/src-tauri/tauri.conf.json").then(JSON.parse),
+    ],
+  );
   assert.match(cargo, /tauri-plugin-updater/);
   assert.match(runtime, /tauri_plugin_updater::Builder/);
   assert.match(capability, /updater:default/);
   assert.match(app, /downloadAndInstall/);
   assert.equal(pkg.dependencies["@tauri-apps/plugin-updater"], "2.10.1");
+  assert.ok(tauriConfig.bundle.icon.includes("icons/128x128.png"));
+  assert.ok(tauriConfig.bundle.icon.includes("icons/icon.ico"));
 });
 
 test("terminal transport never falls back to an arbitrary command runner", async () => {
@@ -131,6 +138,11 @@ test("terminal transport never falls back to an arbitrary command runner", async
   assert.match(broker, /session output bound reached/);
   assert.match(broker, /session idle timeout reached/);
   assert.doesNotMatch(services, /Command::new\([^)]*sh/);
+  const app = await read("apps/admin/src/App.tsx");
+  assert.match(app, /const TERMINAL_FEATURE_AVAILABLE = false/);
+  assert.match(app, /const PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE = false/);
+  assert.match(broker, /saved terminal credentials are unavailable/);
+  assert.doesNotMatch(broker, /load_account_credential\(&user\)/);
 });
 
 test("client key material is zeroized and vault reads are bounded", async () => {
@@ -418,6 +430,8 @@ test("channel publication commits both mutable manifests atomically and is separ
   assert.match(release, /git\/commits/);
   assert.match(release, /git\/refs\/heads/);
   assert.match(release, /force: false/);
+  assert.match(release, /verifyDownloadedManifestSignatures\(entries\)/);
+  assert.match(release, /cleanGeneratedDirectory\(root, temporaryRelative\)/);
   assert.doesNotMatch(release, /repos\/\$\{repository\}\/contents\//);
 });
 
@@ -428,12 +442,15 @@ test("one-command release builds every host platform, tags, and publishes only w
     read("package.json").then(JSON.parse),
   ]);
   // A Windows host must produce Windows and Linux artifacts in one build step,
-  // with every updater artifact Tauri-signed on the host (never inside Docker).
+  // using host MSVC for Windows by default and Docker for Linux. The explicit
+  // --all-docker option retains the Windows-container path.
   assert.match(release, /buildAllPlatforms/);
+  assert.match(release, /"--target",\n\s+"all"/);
   assert.match(
     release,
-    /--target"[\s\S]*"all"[\s\S]*--container"[\s\S]*--target"[\s\S]*"linux-x64"/,
+    /releaseOptions\.allDocker \? \["--container"\] : \[\]/,
   );
+  assert.match(release, /argument === "--all-docker"/);
   assert.equal(
     pkg.scripts["release"],
     "node --env-file-if-exists=.env scripts/release.js all",
@@ -455,6 +472,8 @@ test("one-command release builds every host platform, tags, and publishes only w
     release,
     /signReleaseArtifacts\(\);\n[ ]{2}generateManifests\(\);\n[ ]{2}signReleaseArtifacts\(\)/,
   );
+  assert.match(release, /verifyLocalReleaseSignatures\(\)/);
+  assert.match(release, /"minisign",\n\s+\["-V", "-P"/);
   // The Docker-built Linux AppImage and Windows NSIS installers are signed on
   // the host with tauri signer, which reads the key from the environment,
   // never a Docker build argument.
@@ -473,13 +492,19 @@ test("containerized builds isolate the host and refresh Rust stable everywhere",
       read("docker/windows-builder.Dockerfile"),
       read("scripts/lib/docker-engine.js"),
     ]);
-  // Windows artifacts are built in a Windows container and extracted with
-  // docker create + docker cp; the engine is switched between the Linux and
-  // Windows builder images.
+  // Optional all-Docker builds create and extract Windows-container artifacts;
+  // default release builds do not require a Windows engine switch.
   assert.match(build, /buildWindowsContainer/);
+  assert.match(build, /cleanGeneratedDirectory\(root, stagingRelative\)/);
+  assert.match(build, /const staging = path\.join\(stagingDirectory, "root"\)/);
   assert.match(build, /ensureDockerEngine/);
+  assert.match(dockerEngine, /-SwitchWindowsEngine/);
+  assert.match(dockerEngine, /-SwitchLinuxEngine/);
   assert.match(dockerEngine, /-SwitchWindowsContainers/);
   assert.match(dockerEngine, /-SwitchLinuxContainers/);
+  assert.match(dockerEngine, /spawnSync\(desktopCli, \["-help"\]/);
+  assert.match(dockerEngine, /process\.env\.LOCALAPPDATA/);
+  assert.match(dockerEngine, /"Programs", "DockerDesktop"/);
   assert.match(build, /"create",\n\s+"--name"/);
   assert.match(build, /\$\{containerName\}:C:/);
   assert.match(build, /"rm", "-f", containerName/);
@@ -522,9 +547,21 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   assert.equal(sitePackage.engines.npm, ">=12.0.1");
   const linuxDockerfile = await read("docker/linux-builder.Dockerfile");
   const windowsDockerfile = await read("docker/windows-builder.Dockerfile");
-  // The builder images upgrade npm and copy the policy file before npm ci.
-  assert.match(linuxDockerfile, /npm install -g npm@12\.0\.2/);
-  assert.match(windowsDockerfile, /npm install -g npm@12\.0\.2/);
+  // The builder images upgrade npm to the latest release and copy the policy
+  // file before npm ci.
+  assert.match(
+    linuxDockerfile,
+    /npm install -g --prefix \/usr\/local\/npm-latest npm@latest/,
+  );
+  assert.match(
+    windowsDockerfile,
+    /npm install -g --prefix C:\\\\npm-latest npm@latest/,
+  );
+  assert.match(linuxDockerfile, /node:22\.22\.2-bookworm-slim/);
+  assert.match(linuxDockerfile, /libclang-dev/);
+  assert.match(linuxDockerfile, /type=cache,target=\/src\/target/);
+  assert.match(linuxDockerfile, /CI=true/);
+  assert.match(windowsDockerfile, /node-v22\.22\.2-win-x64/);
   assert.match(
     linuxDockerfile,
     /COPY package\.json package-lock\.json \.npmrc \.\//,
@@ -543,6 +580,10 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   assert.match(setupDocker, /Docker\.DockerDesktop/);
   assert.match(setupDocker, /Enable-WindowsOptionalFeature.*Containers/);
   assert.match(setupDocker, /verifyEngineSwitching/);
+  assert.match(setupDocker, /if \(!allDocker\) return;/);
+  assert.match(setupDocker, /--all-docker/);
+  assert.match(setupDocker, /platformInvocation\("npm", \["--version"\]\)/);
+  assert.doesNotMatch(setupDocker, /shell:\s*true/);
   assert.match(
     setupDocker,
     /mcr\.microsoft\.com\/windows\/servercore:ltsc2022/,
@@ -575,7 +616,7 @@ test("channels are baked per build and CDN manifests are mirrored to S3 after pu
   assert.match(buildRust, /CARGO_PKG_VERSION/);
   assert.match(build, /--channel/);
   assert.match(build, /CENTRALD_RELEASE_CHANNEL/);
-  assert.match(release, /parseChannelArgument/);
+  assert.match(release, /parseReleaseArguments/);
   assert.match(release, /--channel/);
   assert.match(buildRust, /CENTRALD_RELEASE_CHANNEL/);
   assert.match(buildRust, /rerun-if-env-changed=CENTRALD_RELEASE_CHANNEL/);
@@ -1264,6 +1305,9 @@ test("database relocation is ownership-verified and managed-local relocation is 
 
 test("package upgrades restart only already-active CentralD services", async () => {
   const packaging = await read("scripts/package-linux.js");
+  assert.match(packaging, /path\.join\(stagingDirectory, "root"\)/);
+  assert.match(packaging, /path\.join\(staging, "DEBIAN"\)[\s\S]*mode: 0o755/);
+  assert.match(packaging, /cleanGeneratedDirectory\(root, stagingRelative\)/);
   assert.match(
     packaging,
     /systemctl is-active --quiet centrald-server\.service/,

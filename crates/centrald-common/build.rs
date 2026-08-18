@@ -53,6 +53,7 @@ fn main() {
         }
         _ => String::new(),
     };
+    let update_base_explicit = matches!(values.get("UPDATE_BASE_URL").map(String::as_str), Some(value) if !value.trim().is_empty());
     let update_base = match values.get("UPDATE_BASE_URL").map(String::as_str) {
         Some(value) if !value.trim().is_empty() => value.to_owned(),
         _ if !cdn_base.is_empty() => format!("{cdn_base}/{release_channel}"),
@@ -83,6 +84,10 @@ fn main() {
     emit(
         "CENTRALD_UPDATE_BASE_URL",
         update_base.trim_end_matches('/'),
+    );
+    emit(
+        "CENTRALD_UPDATE_BASE_URL_EXPLICIT",
+        if update_base_explicit { "1" } else { "0" },
     );
     emit("CENTRALD_CDN_BASE_URL", cdn_base.trim_end_matches('/'));
     emit(

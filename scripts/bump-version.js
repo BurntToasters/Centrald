@@ -79,7 +79,32 @@ fs.writeFileSync(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`, {
   mode: 0o644,
 });
 
+// Cargo.lock pins every workspace member's version; a stale lock breaks all
+// --locked builds (CI and the release flow) until the next lock update. Skip
+// trees without a lockfile (e.g. temp-dir tests); the real repo always has one.
+const lockPath = path.join(root, "Cargo.lock");
+if (fs.existsSync(lockPath)) {
+  try {
+    execFileSync("cargo", ["generate-lockfile"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch (error) {
+    fs.unlinkSync(cargoPath);
+    fs.unlinkSync(packageJsonPath);
+    fs.unlinkSync(tauriPath);
+    throw new Error(
+      "Cargo.lock could not be regenerated; version files were restored.",
+      { cause: error },
+    );
+  }
+} else {
+  console.warn(
+    "No Cargo.lock found; skipped lockfile regeneration. Run `cargo generate-lockfile` before any --locked build.",
+  );
+}
+
 console.log(
-  `Bumped version ${currentVersion} -> ${nextVersion} in package.json, Cargo.toml, and tauri.conf.json.`,
+  `Bumped version ${currentVersion} -> ${nextVersion} in package.json, Cargo.toml, tauri.conf.json, and Cargo.lock.`,
 );
 console.log(`Release tag will be ${expectedTag}.`);

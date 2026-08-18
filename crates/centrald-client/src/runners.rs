@@ -16,6 +16,7 @@ use centrald_platform::broker::{BrokerResponse, OperationRunner};
 /// Maximum operation output forwarded into one job event.
 pub const MAX_OPERATION_OUTPUT_BYTES: usize = 64 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(900);
+const GRACEFUL_TERMINATION_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Debug)]
 pub struct SystemOperationRunner;
@@ -256,8 +257,29 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
         {
             Some(status) => break status,
             None if started.elapsed() > COMMAND_TIMEOUT => {
-                kill_command_tree(&mut child);
-                let _ = child.wait();
+                // Graceful first: dpkg/apt-get must not be SIGKILLed while
+                // holding its package database. SIGTERM the whole tree, wait
+                // briefly, then hard-kill anything still alive.
+                let deadline = Instant::now() + GRACEFUL_TERMINATION_GRACE;
+                terminate_command_tree(&mut child);
+                loop {
+                    match child
+                        .try_wait()
+                        .context("poll graceful privileged operation termination")?
+                    {
+                        Some(_) => break,
+                        None if Instant::now() >= deadline => break,
+                        None => std::thread::sleep(Duration::from_millis(100)),
+                    }
+                }
+                if child
+                    .try_wait()
+                    .context("poll privileged operation command")?
+                    .is_none()
+                {
+                    kill_command_tree(&mut child);
+                    let _ = child.wait();
+                }
                 bail!(
                     "privileged operation command exceeded the {}s timeout",
                     COMMAND_TIMEOUT.as_secs()
@@ -276,14 +298,37 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
     })
 }
 
-/// Terminates the whole child process tree on the timeout path.
+/// Requests graceful termination of the whole child process tree (SIGTERM on
+/// Unix; Windows first asks `taskkill` without `/F` so console apps get a
+/// chance to close, then the hard killer below finishes the job).
+fn terminate_command_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = rustix::process::kill_process_group(
+            rustix::process::Pid::from_child(child),
+            rustix::process::Signal::TERM,
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        if let Some(taskkill) = centrald_common::config::windows_system_executable("taskkill.exe") {
+            let _ = Command::new(taskkill)
+                .args(["/T", "/PID"])
+                .arg(child.id().to_string())
+                .status();
+        }
+    }
+}
+
+/// Hard-terminates the whole child process tree after the graceful grace
+/// expired.
 fn kill_command_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        use std::os::unix::process::ExitStatusExt as _;
         let _ = rustix::process::kill_process_group(
-            rustix::process::Pid::from_raw(child.id() as i32),
-            rustix::process::Signal::Kill,
+            rustix::process::Pid::from_child(child),
+            rustix::process::Signal::KILL,
         );
     }
     #[cfg(windows)]

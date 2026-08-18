@@ -85,10 +85,12 @@ impl PtyController {
                     // so the child pid is its process-group leader; killing the
                     // group terminates grandchildren that keep the PTY slave
                     // open (e.g. `sleep 999 &`).
-                    let _ = rustix::process::kill_process_group(
-                        rustix::process::Pid::from_raw(pid as i32),
-                        rustix::process::Signal::Kill,
-                    );
+                    if let Some(process_group) = rustix::process::Pid::from_raw(pid as i32) {
+                        let _ = rustix::process::kill_process_group(
+                            process_group,
+                            rustix::process::Signal::KILL,
+                        );
+                    }
                 }
             }
             let _ = child.kill();

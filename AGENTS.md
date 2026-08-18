@@ -1,5 +1,8 @@
 # CentralD agent context
 
+## Important
+Any updates that an agent does to the codebase should be added/updated here if nessecary post-edits for future agents to understand this codebase well.
+
 ## Repository state
 
 CentralD is a pre-public clean rewrite at `0.1.0-alpha.1`. Do not restore legacy
@@ -29,11 +32,17 @@ Server first-run and management commands:
 centrald-server initial-setup
 centrald-server config
 centrald-server run
+centrald-server channel <stable|alpha|beta>
 centrald-server --nuke --yes-i-want-to-do-this
 ```
 
 Advanced flat commands may remain, but every persisted setting and normal
 identity workflow must be reachable through `centrald-server config`.
+`centrald-server channel` is the operator-facing release-channel switch: it
+sets `updates.channel`, derives `updates.manifest_url` (failing closed when no
+per-channel layout exists), sets `allow_prerelease = channel != "stable"`, and
+persists through the same locked/journaled save path as the guided console;
+the server must be restarted for the change to take effect.
 
 Public client commands are limited to:
 
@@ -49,7 +58,6 @@ an invitation only from a protected file or piped standard input; never add a
 public argument that places the bearer token in process arguments. Internal
 daemon and broker modes stay hidden from help. Do not add nested CLI command
 trees.
-
 
 ## Novice and advanced administration contract
 
@@ -104,8 +112,9 @@ the server-local console may create, rotate, or revoke Admin identities.
   and then mutate that pathname as root. Windows ACL repair is installer-owned.
 - Admin profile activation/renewal uses a per-profile cross-process lock.
 - Admin settings updates use optimistic revision checks and atomic file
-  replacement; local backup retention is bounded. Remote settings must not include secret locations, PKI mutation,
-  Admin lifecycle, or destructive reset.
+  replacement; local backup retention is bounded. Remote settings must not
+  include secret locations, PKI mutation, Admin lifecycle, or destructive
+  reset.
 - PostgreSQL is authoritative for identities, inventory, jobs, and audit
   metadata. Shell bytes are transient and never durable.
 - Recommended local PostgreSQL setup must persist non-secret crash-recovery
@@ -139,19 +148,19 @@ execution and credential saving visibly disabled.
 - One release includes server Linux `.deb`, client Linux `.deb`, client Windows
   ZIP/service installer, Admin AppImage, and Admin Windows NSIS for both
   architectures.
-- Release manifests use immutable version URLs. Mutable non-stable channel manifests live outside immutable GitHub Releases;
-  the default GitHub layout publishes both manifests in one compare-and-swap commit
-  on the `centrald-channels` branch.
+- Release manifests use immutable version URLs. Mutable non-stable channel
+  manifests live outside immutable GitHub Releases; the default GitHub layout
+  publishes both manifests in one compare-and-swap commit on the
+  `centrald-channels` branch.
 - Every build bakes exactly one release channel; CentralD serves only
   `stable`, `alpha`, and `beta` (enforced in the build tooling, the server
   update feed, manifest validation, and the operator CLI). An install only
-  follows its own channel and promotion is a
-  new build. The channel is auto-detected from the package version (no
-  prerelease suffix = stable, otherwise the prerelease identifier), and
-  `--channel` on the release/build tools and the `CENTRALD_RELEASE_CHANNEL`
-  environment variable override the tracked `centrald.config` in both the JS
-  tooling and `centrald-common/build.rs` (which mirrors the detection from
-  `CARGO_PKG_VERSION`).
+  follows its own channel and promotion is a new build. The channel is
+  auto-detected from the package version (no prerelease suffix = stable,
+  otherwise the prerelease identifier), and `--channel` on the release/build
+  tools and the `CENTRALD_RELEASE_CHANNEL` environment variable override the
+  tracked `centrald.config` in both the JS tooling and `centrald-common/build.rs`
+  (which mirrors the detection from `CARGO_PKG_VERSION`).
 - With `CDN_BASE_URL` set in `centrald.config`, all channels (including
   stable) resolve `<CDN_BASE_URL>/<channel>` and the release flow mirrors the
   signed channel manifests to an S3-compatible bucket (DO Spaces or any S3
@@ -174,19 +183,135 @@ execution and credential saving visibly disabled.
   builder images copy it before `npm ci`. `npm >= 12.0.1` is required by both
   package.json engines and installed inside the builder images. Install
   scripts are allowed in the builder images with the allowlist in
-  `package.json` (`allowScripts`).
+  `package.json` (`allowScripts`). npm upgrades use `npm@latest` everywhere
+  (CI, both Dockerfiles, setup-docker); never pin a specific npm version.
 - `npm run setup:docker` is the handsfree Docker setup for release hosts:
-  installs/starts Docker Desktop, enables the Windows `Containers` feature,
-  verifies Linux/Windows engine switching, and pre-pulls builder base images.
+  installs/starts Docker Desktop, verifies the Linux/WSL engine, and pre-pulls
+  Linux builder base images. `--all-docker` additionally enables/checks the
+  Windows `Containers` feature, verifies both engine modes, and prepares the
+  Windows builder.
 - `npm run release` builds every platform the host can produce (Windows hosts
-  build Linux artifacts in the Docker Linux engine and Windows artifacts in the
-  Docker Windows engine via `build.js --target all --container`), and with
+  build Windows artifacts on the host and Linux artifacts in the Docker Linux
+  engine; `--all-docker` opts into `build.js --target all --container`), and with
   `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<package-version>`
   tag before publishing. The Docker-built Linux AppImage and Windows NSIS
   installers are Tauri-signed on the host with `tauri signer sign`, never
   inside Docker. The host and both builder images refresh to the latest stable
   Rust before building (`rustup update stable`); `rust-toolchain.toml` pins
-  `stable`.
+  `stable`. Pass release flags after `--`: `npm run release -- --channel beta`
+  or `npm run release -- --all-docker`. `CENTRALD_RELEASE_CHANNEL` also
+  overrides the tracked channel for one build.
+- The S3 mirror is gated on `CENTRALD_S3_ENDPOINT` being set: without it the
+  release flow warns loudly and skips the sync (CI stays green), and
+  `sync-channel.js` rejects an empty/undetermined channel instead of uploading
+  to a bad prefix.
+- `scripts/bump-version.js` keeps `package.json`, workspace `Cargo.toml`,
+  `tauri.conf.json`, and `Cargo.lock` in lockstep (stale locks break every
+  `--locked` build); it refuses invalid SemVer, existing origin tags, and
+  disagreeing version fields.
+- `npm run qa` needs the site dependencies (`npm ci --prefix site`); CI
+  (`ci.yml`, `release.yml`) and `scripts/setup.js` install them. Linux builds
+  require `libpam0g-dev` (the client's `pam` crate) in the linux-builder
+  Dockerfile, `ci.yml`, and `release.yml`. In `windows-builder.Dockerfile` the
+  node-dir `ENV PATH` must be set before the global `npm install -g npm@latest`.
+
+## Update feed and channel switching
+
+- The feed URL derivation lives in two places that must stay in parity:
+  `centrald-common/src/build_info.rs::manifest_url_for_channel` (baked via
+  `build.rs`) and `scripts/lib/build-config.js`; the contract tests
+  (`hardening-contract.test.js`, `build-config.test.js`) pin the mapping:
+  CDN set -> `<CDN_BASE_URL>/<channel>/<manifest>`; GitHub without CDN ->
+  stable at `/releases/latest/download`, other channels at
+  `raw.githubusercontent.com/<repo>/centrald-channels/channels/<channel>/latest`;
+  generic origins -> `<repo>/<channel>/latest`.
+- `centrald-server channel` derives `updates.manifest_url` through that
+  function and **fails closed** when the build has an explicitly configured
+  `UPDATE_BASE_URL` without `CDN_BASE_URL` (such a base has no per-channel
+  layout; the command must never repoint the feed at a guessed origin).
+- Clients refuse to follow any channel other than their own baked
+  `RELEASE_CHANNEL` (`UpdateParameters::validate`). A server channel switch
+  therefore only affects installs whose baked channel matches; an alpha
+  install never follows beta or stable pointers.
+- The server fetches release manifests and Minisign signatures with strict
+  bounds (signature body capped at 4096 bytes, drained chunk-by-chunk so a
+  chunked response cannot grow memory) and verifies with
+  `allow_legacy = false`; `UPDATE_BASE_URL_EXPLICIT` is a baked flag from
+  `centrald.config`.
+
+## Client update extraction safety
+
+- Linux updates install with `dpkg -i`; Windows updates extract a ZIP that
+  must contain `install-client.ps1`, executed via the trusted Windows system
+  directory's PowerShell with `-File` (no shell, fixed arguments).
+- ZIP entry names must be simple: non-empty, <= 255 chars, no absolute or
+  empty path parts, no `.`/`..`, no trailing dot/space, no Windows device
+  names (`CON`, `NUL`, `COM1`, ...), and **no `:` anywhere** (drive
+  qualifiers and NTFS alternate data streams). After joining, the target must
+  still be contained under the extract directory. Bounds: 512 entries max,
+  512 MiB per entry, 600 s extraction wall clock, hard total expansion cap.
+- Every artifact is verified by exact size, SHA-256, and a Minisign
+  signature checked with the baked public key before installation.
+
+## Broker and operation hardening
+
+- Windows broker pipe connections poll for the first frame in non-blocking
+  mode with a 10 s timeout (then restore blocking mode before dispatch), and
+  a 64-connection in-flight cap drops excess connections instead of
+  exhausting threads.
+- Operation timeouts terminate the whole child process group gracefully
+  first: SIGTERM (Unix) or `taskkill /T` (Windows), a 10 s grace, then
+  SIGKILL / `taskkill /T /F` — never SIGKILL apt-get/dpkg while it holds its
+  package database.
+- Fixed executable paths and fixed argument lists only; bounded merged output
+  (64 KiB per job event); no shells spawned by the runner.
+
+## Release tooling map
+
+- `scripts/release.js` — orchestrator and the `release:*` npm actions
+  (prepare/build/assemble/sign/manifests/verify/publish/publish-channel);
+  `verify()` regenerates manifests byte-deterministically from the release
+  commit and runs `npm run qa`.
+- `scripts/build.js` — per-target builds; `--target all` on Windows builds
+  Windows on the host and Linux in Docker, while `--target all --container`
+  opts into both Docker engines (`scripts/lib/docker-engine.js` switches via
+  `DockerCli.exe`, ~180 s polling); host-side Tauri signing of container output;
+  `--channel`/`CENTRALD_RELEASE_CHANNEL` become a Docker build arg.
+- `scripts/sync-channel.js` — S3 mirror of the four signed manifest files
+  (release manifest + `.minisig`, Tauri manifest + `.minisig`), refused on
+  symlinks, requires `aws` CLI and S3 env; `release.js` calls it as the last
+  publish step only when `CENTRALD_S3_ENDPOINT` is set.
+- `scripts/setup-docker.js`, `scripts/setup.js` — handsfree release-host and
+  workspace setup; `scripts/bump-version.js` — lockstep version + Cargo.lock
+  regen; `scripts/sign-release.js`, `scripts/generate-manifests.js`,
+  `scripts/check-config.js`, `scripts/check-onboarding.js`, `scripts/qa.js`.
+- `scripts/lib/build-config.js` and `crates/centrald-common/build.rs` mirror
+  each other for channel detection/URL derivation; `scripts/tests/*.test.js`
+  are the contract tests that pin these invariants.
+
+## Release-host environment
+
+The primary release host is a Windows 11 machine with Docker Desktop's Linux/WSL
+engine, `gh` authenticated, the `aws` CLI, and `minisign` installed. Windows
+artifacts build on the host; the Docker Windows engine is optional behind
+`--all-docker`. The
+Minisign keypair lives at `~/.config/centrald/minisign.key` (+ `.pub`), the
+Tauri keypair at `~/.tauri/centrald.key` (+ `.pub`); public keys are tracked in
+`centrald.config`, private material and publish gates only in `.env`
+(`TAURI_SIGNING_PRIVATE_KEY` is the key CONTENT, `MINISIGN_SECRET_KEY_FILE` a
+path; `MINISIGN_SECRET_KEY_B64` is CI-only). `centrald.config` currently sets
+`CDN_BASE_URL=https://updated.centrald.dev` (DO Spaces bucket, sfo2 endpoint,
+AWS region us-east-1). `npm run release` requires a clean tree, so commit
+before publishing; the first publish creates the `v<package-version>` tag and
+the `centrald-channels` branch.
+
+## Docs map
+
+`docs/QUICKSTART.md` (first-run path, guarded by `npm run check:onboarding`),
+`docs/OPERATIONS.md`, `docs/RELEASES.md` (channel layout, publish flow, CI
+secrets), `docs/ARCHITECTURE.md`, `docs/THREAT_MODEL.md`,
+`docs/IMPLEMENTATION_STATUS.md` (authoritative implemented-vs-gated list).
+Site content is synced from `docs/*.md` + `SECURITY.md`.
 
 ## Security requirements
 
@@ -254,6 +379,8 @@ npm run test:rust
 npm run qa
 ```
 
+`npm test` runs the JS contract tests in `scripts/tests/` (hardening,
+channel/URL parity, manifest reproducibility, cleanup safety, bump helper).
 Security changes need negative tests for malformed input, wrong role, expiry,
 replay, tampering, stale revisions, path escape, partial failure, and reconnect.
 If the local environment cannot run a gate, state that explicitly and leave CI
@@ -264,8 +391,7 @@ to run it; never claim it passed.
 The enrollment, owned-database setup/config/reset flow, mTLS onboarding and
 renewal/activation, invitation lifecycle, basic inventory, leased typed job
 queueing, audited remote settings, client rescue, Admin Tauri updater, packaging,
-and immutable manifest/release pipeline
-are implemented in this alpha tree. PTY/ConPTY shell transport, the privileged
-operation runner, OS-vault credential saving, and server/client package
-installation remain gated.
+and immutable manifest/release pipeline are implemented in this alpha tree.
+PTY/ConPTY shell transport, the privileged operation runner, OS-vault credential
+saving, and server/client package installation remain gated.
 See `docs/IMPLEMENTATION_STATUS.md`.

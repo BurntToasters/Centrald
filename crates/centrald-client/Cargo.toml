@@ -41,7 +41,7 @@ zeroize.workspace = true
 zip.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pam.workspace = true
+pam_unix.workspace = true
 zbus.workspace = true
 
 [target.'cfg(unix)'.dependencies]

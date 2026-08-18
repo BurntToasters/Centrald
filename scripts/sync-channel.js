@@ -21,7 +21,12 @@ const root = process.cwd();
 const args = process.argv.slice(2);
 const channel = parseChannelArgument(args);
 const config = loadBuildConfig(root, { releaseChannel: channel });
-const releaseChannel = channel ?? config.releaseChannel;
+const releaseChannel = channel || config.releaseChannel;
+if (!releaseChannel) {
+  throw new Error(
+    "No release channel determined. Pass --channel <stable|alpha|beta> or configure RELEASE_CHANNEL in centrald.config.",
+  );
+}
 
 if (!config.cdnBaseUrl) {
   throw new Error(

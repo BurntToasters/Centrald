@@ -35,5 +35,8 @@ describe("Admin onboarding", () => {
     expect(
       screen.getByRole("button", { name: "Enroll this Admin" }),
     ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Terminal" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 });

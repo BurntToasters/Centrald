@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import fs from "node:fs";
 import process from "node:process";
-import { commandExists, run } from "./command.js";
+import { commandExists, platformInvocation, run } from "./command.js";
 import {
+  dockerDesktopExecutable,
   dockerExecutable,
   dockerOstype,
   ensureDockerEngine,
@@ -15,18 +15,18 @@ import {
 //
 // Flags:
 //   --yes                        install Docker Desktop / npm upgrades without asking
+//   --all-docker                 also prepare/test the Windows container engine
 //   --skip-images                do not pre-pull base images or warm builder images
-//   --build-images               also build both builder images (slow first run)
+//   --build-images               also build selected builder image(s) (slow first run)
 //   --skip-windows-containers    skip the Windows containers feature check/enable
 
 const args = new Set(process.argv.slice(2));
 const yes = args.has("--yes");
+const allDocker = args.has("--all-docker");
 const skipImages = args.has("--skip-images");
 const buildImages = args.has("--build-images");
 const skipWindowsContainers = args.has("--skip-windows-containers");
 
-const DOCKER_DESKTOP_PATH =
-  "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe";
 const REQUIRED_NPM = "12.0.1";
 
 if (process.platform === "win32") setupWindowsHost();
@@ -38,7 +38,7 @@ function setupWindowsHost() {
   ensureDockerDesktop();
   startDockerEngineIfNeeded();
   waitForDockerEngine(240);
-  if (!skipWindowsContainers) ensureWindowsContainersFeature();
+  if (allDocker && !skipWindowsContainers) ensureWindowsContainersFeature();
   verifyEngineSwitching();
   if (!skipImages) {
     pullBaseImages();
@@ -56,7 +56,7 @@ function setupUnixHost() {
   }
   waitForDockerEngine(120);
   if (!skipImages) {
-    run(dockerExecutable(), ["pull", "node:22.16.0-bookworm-slim"]);
+    run(dockerExecutable(), ["pull", "node:22.22.2-bookworm-slim"]);
     run(dockerExecutable(), ["pull", "rust:bookworm"]);
     run(dockerExecutable(), ["pull", "ubuntu:24.04"]);
     if (buildImages) {
@@ -78,12 +78,7 @@ function setupUnixHost() {
 /// logs out and back in).
 function dockerInstalled() {
   if (commandExists("docker", ["--version"])) return true;
-  if (process.platform === "win32") {
-    return fs.existsSync(
-      "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
-    );
-  }
-  return false;
+  return process.platform === "win32" && dockerExecutable() !== "docker";
 }
 
 function ensureNpmVersion() {
@@ -94,29 +89,27 @@ function ensureNpmVersion() {
   }
   let version;
   try {
-    // Read-only version query resolved through the shell so it reflects the
-    // npm the user actually invokes, not Node's bundled npm CLI.
-    version = execFileSync("npm", ["--version"], {
+    const invocation = platformInvocation("npm", ["--version"]);
+    version = execFileSync(invocation.command, invocation.args, {
       encoding: "utf8",
-      shell: true,
     }).trim();
   } catch {
     throw new Error("Could not read the npm version.");
   }
   if (compareVersions(version, REQUIRED_NPM) < 0) {
-    const upgrade = ["npm", "install", "-g", `npm@12.0.2`];
+    const upgrade = ["npm", "install", "-g", `npm@latest`];
     if (!yes) {
       throw new Error(
         `npm ${version} is older than the required ${REQUIRED_NPM}. Run ${upgrade.join(" ")} (or re-run with --yes).`,
       );
     }
     run(upgrade[0], upgrade.slice(1));
-    console.log("npm upgraded to 12.0.2.");
+    console.log("npm upgraded to the latest release.");
   }
 }
 function ensureDockerDesktop() {
   if (!dockerInstalled()) {
-    if (!fs.existsSync(DOCKER_DESKTOP_PATH)) {
+    if (!dockerDesktopExecutable()) {
       if (!commandExists("winget", ["--version"])) {
         throw new Error(
           "Docker Desktop is not installed and winget is unavailable. Install Docker Desktop manually from https://www.docker.com/products/docker-desktop/.",
@@ -142,9 +135,9 @@ function ensureDockerDesktop() {
         "Docker Desktop installed. If prompted, sign out and back in so the docker-users group applies.",
       );
     }
-    if (!fs.existsSync(DOCKER_DESKTOP_PATH)) {
+    if (!dockerDesktopExecutable()) {
       throw new Error(
-        `Docker Desktop was not found at ${DOCKER_DESKTOP_PATH} after installation. Reboot and retry.`,
+        "Docker Desktop was not found after installation. Reboot and retry.",
       );
     }
   }
@@ -154,7 +147,8 @@ function ensureDockerDesktop() {
 /// responding, then lets waitForDockerEngine poll until it is ready.
 function startDockerEngineIfNeeded() {
   if (dockerOstype()) return;
-  if (!fs.existsSync(DOCKER_DESKTOP_PATH)) {
+  const dockerDesktop = dockerDesktopExecutable();
+  if (!dockerDesktop) {
     throw new Error(
       "Docker Desktop is not installed; install it first (npm run setup:docker from an elevated shell).",
     );
@@ -163,7 +157,7 @@ function startDockerEngineIfNeeded() {
   execFileSync("powershell", [
     "-NoProfile",
     "-Command",
-    `Start-Process '${DOCKER_DESKTOP_PATH}'`,
+    `Start-Process '${dockerDesktop}'`,
   ]);
 }
 
@@ -242,11 +236,11 @@ function ensureWindowsContainersFeature() {
 }
 
 function verifyEngineSwitching() {
-  console.log(
-    "Verifying the Docker engine can run both Linux and Windows containers...",
-  );
+  console.log("Verifying the Docker Linux engine...");
   ensureDockerEngine("linux", "Linux builder");
   console.log("Linux containers mode: OK");
+  if (!allDocker) return;
+  console.log("Verifying the optional Docker Windows engine...");
   ensureDockerEngine("windows", "Windows container builder");
   console.log("Windows containers mode: OK");
   console.log(
@@ -258,9 +252,10 @@ function verifyEngineSwitching() {
 function pullBaseImages() {
   console.log("Pre-pulling builder base images...");
   ensureDockerEngine("linux", "Linux base images");
-  run(dockerExecutable(), ["pull", "node:22.16.0-bookworm-slim"]);
+  run(dockerExecutable(), ["pull", "node:22.22.2-bookworm-slim"]);
   run(dockerExecutable(), ["pull", "rust:bookworm"]);
   run(dockerExecutable(), ["pull", "ubuntu:24.04"]);
+  if (!allDocker) return;
   ensureDockerEngine("windows", "Windows base image");
   run(dockerExecutable(), [
     "pull",
@@ -283,6 +278,7 @@ function warmBuilderImages() {
     "centrald-linux-builder:latest",
     ".",
   ]);
+  if (!allDocker) return;
   ensureDockerEngine("windows", "Windows builder image");
   run(dockerExecutable(), [
     "build",
@@ -299,6 +295,11 @@ function printSummary() {
   console.log("");
   console.log("CentralD Docker setup complete.");
   console.log("Release flow is now usable: npm run release");
+  if (!allDocker) {
+    console.log(
+      "Windows artifacts will build on the host. Re-run with --all-docker only to prepare the optional Docker Windows-engine path.",
+    );
+  }
   console.log(
     "Remaining release prerequisites on this host: minisign, gh CLI (gh auth login), and the keys documented in .env.example.",
   );

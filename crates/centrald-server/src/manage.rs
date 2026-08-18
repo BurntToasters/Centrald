@@ -923,6 +923,11 @@ pub fn set_channel(config_path: &Path, channel: &str) -> Result<()> {
     replacement.updates.channel.clone_from(&channel);
     replacement.updates.manifest_url =
         centrald_common::build_info::manifest_url_for_channel(&channel);
+    if replacement.updates.manifest_url.is_empty() {
+        bail!(
+            "cannot switch channels: centrald.config sets an explicit UPDATE_BASE_URL without CDN_BASE_URL, so there is no per-channel manifest layout. Set CDN_BASE_URL in centrald.config and rebuild, or update updates.manifest_url manually."
+        );
+    }
     replacement.updates.allow_prerelease = channel != "stable";
     replacement.validate()?;
     save_config(config_path, &mut config, replacement)?;

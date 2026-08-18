@@ -54,13 +54,15 @@ One command prepares everything the release flow needs on a Windows host:
 npm run setup:docker
 ```
 
-It installs Docker Desktop through winget when missing (an elevated shell is
-required), starts the engine, enables the Windows `Containers` feature (a reboot
-may be required once), verifies the engine can switch between Linux and Windows
-containers, and pre-pulls every builder base image. Add `--yes` to also upgrade
-npm when it is older than the required 12.0.1, `--build-images` to warm both
-builder images (several GB on the first run), or `--skip-images` to skip the
-pulls. Re-run the command after any missed reboot; it is idempotent.
+It installs Docker Desktop through winget when missing, starts it, verifies the
+Linux/WSL engine, and pre-pulls the Linux builder base images. Windows artifacts
+build with the host MSVC toolchain by default, so normal setup does not require
+the Windows `Containers` feature or an engine switch. Add `--yes` to also
+upgrade npm when it is older than the required 12.0.1, `--build-images` to warm
+the Linux builder image, or `--skip-images` to skip pulls. `--all-docker` opts
+into Windows-container setup: it enables/checks the Windows `Containers`
+feature, verifies both engine modes, and includes the Windows base/builder
+image. A reboot may be required once.
 
 ## npm supply-chain policy
 
@@ -143,39 +145,43 @@ their own mutable `UPDATE_BASE_URL`.
 ## Local commands
 
 Bump the version in lockstep (package.json, workspace `Cargo.toml`,
-`tauri.conf.json`) before releasing:
+`tauri.conf.json`, and `Cargo.lock`) before releasing:
 
 ```text
 npm run release:bump -- 0.1.0-alpha.2
 ```
 
 The helper rejects invalid SemVer, refuses to bump to a version whose tag
-already exists on `origin`, and refuses to touch a tree whose three version
-fields disagree.
+already exists on `origin`, and refuses to touch a tree whose version fields
+disagree. A stale `Cargo.lock` is regenerated so `--locked` builds keep working.
 
 One command builds every platform the current host can produce, assembles the
 artifacts, signs them, generates the manifests, verifies everything, and - when
-`.env` sets `CENTRALD_RELEASE_PUBLISH=YES` - creates and pushes the
+`.env` sets both release gates to exactly `YES` - creates and pushes the
 `v<package-version>` tag, uploads the release, and publishes channel manifests:
 
 ```text
 npm run release
 ```
 
-A Windows host builds every platform inside Docker containers so build issues
-stay isolated from the machine:
+A Windows host builds Windows x64/ARM64 with the host MSVC/Rust toolchain and
+builds Linux x64 in Docker by default:
 
 - The **Linux engine** builds the Linux artifacts
   (`docker/linux-builder.Dockerfile`); the Docker-built Linux AppImage is then
   Tauri-signed on the host, keeping the signing key out of Docker build
   arguments.
-- The **Windows engine** builds both Windows targets
-  (`docker/windows-builder.Dockerfile`); artifacts are extracted with
-  `docker create` + `docker cp` and the NSIS installers are Tauri-signed on the
-  host.
-- Docker Desktop supports one engine mode at a time, so the release flow
-  switches engines between the two images automatically when `DockerCli.exe` is
-  available.
+- The host builds both Windows targets and Tauri-signs their NSIS installers.
+
+To isolate Windows builds in Docker later, opt in explicitly. Docker Desktop
+supports one engine mode at a time, so this path switches between Linux and
+Windows engines and requires its privileged helper plus Windows `Containers`
+feature:
+
+```text
+npm run setup:docker -- --all-docker
+npm run release -- --all-docker
+```
 
 A Linux host builds the Linux x64 artifacts natively; it cannot build the
 Windows artifacts.
@@ -217,10 +223,20 @@ host so the key is never a command-line value or Docker build argument.
 
 Publishing requires GitHub CLI authentication (or `GH_TOKEN` in `.env`), a clean
 source tree, and git push credentials (set up with `gh auth setup-git` or your
-normal git credential helper):
+normal git credential helper). The publish gates
+(`CENTRALD_RELEASE_PUBLISH=YES`, `CENTRALD_GITHUB_IMMUTABLE_RELEASES=YES`) come
+from `.env`, so the plain command works on any host:
 
 ```text
-CENTRALD_RELEASE_PUBLISH=YES npm run release
+npm run release
+```
+
+Without `.env`, export the gates for one command instead (PowerShell):
+
+```text
+$env:CENTRALD_RELEASE_PUBLISH = "YES"
+$env:CENTRALD_GITHUB_IMMUTABLE_RELEASES = "YES"
+npm run release
 ```
 
 `npm run release` creates and pushes the exact `v<package-version>` Git tag at
@@ -229,7 +245,7 @@ elsewhere. To publish a previously built, verified artifact set without
 rebuilding, run:
 
 ```text
-CENTRALD_RELEASE_PUBLISH=YES npm run release:publish
+npm run release:publish
 ```
 
 This requires the exact `v<package-version>` tag to already exist at HEAD.
@@ -240,7 +256,7 @@ two manifests from the immutable version release, verifies their GitHub SHA-256
 digests and described artifact set, and publishes those exact bytes:
 
 ```text
-CENTRALD_RELEASE_PUBLISH=YES npm run release:publish-channel
+npm run release:publish-channel
 ```
 
 Release tooling derives `generated_at`/`pub_date` from the release commit unless
@@ -257,6 +273,9 @@ The release workflow expects:
 - `MINISIGN_SECRET_KEY_B64`, the base64 encoding of the ephemeral unprotected
   Minisign secret-key file used only by the final signing job.
 
-The workflow builds platform artifacts in native jobs, signs general artifacts
-only after they are assembled, verifies every signature, regenerates manifests,
-runs repository QA, and publishes last.
+The workflow is a manual fallback, not a tag-push trigger. Dispatch it explicitly
+at the existing `v<package-version>` tag; this prevents it from racing the local
+`npm run release` flow that creates the tag and GitHub release itself. It builds
+platform artifacts in native jobs, signs general artifacts only after assembly,
+cryptographically verifies every Minisign signature, runs repository QA, and
+publishes last.

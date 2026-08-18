@@ -29,7 +29,8 @@ const supported = new Set([
 if (!supported.has(action)) {
   throw new Error(`Unknown release action: ${action}`);
 }
-const channel = parseChannelArgument(rawArguments.slice(1));
+const releaseOptions = parseReleaseArguments(rawArguments.slice(1));
+const channel = releaseOptions.channel;
 
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
@@ -79,19 +80,28 @@ function git(args) {
   return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
-/// Parses the optional `--channel <name>` release-channel override. The
-/// channel is public build metadata: alpha/beta/stable builds of the same
-/// tree differ only by this value baked into their binaries.
-function parseChannelArgument(args) {
+/// Parses release-wide build options. The channel is public build metadata;
+/// `--all-docker` opts Windows hosts into the slower Docker Windows-engine
+/// path instead of building Windows targets with the host toolchain.
+function parseReleaseArguments(args) {
+  const result = { channel: "", allDocker: false };
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== "--channel") continue;
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("--channel requires a value");
+    const argument = args[index];
+    if (argument === "--channel") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--channel requires a value");
+      }
+      if (result.channel)
+        throw new Error("--channel may be provided only once");
+      result.channel = value;
+    } else if (argument === "--all-docker") {
+      result.allDocker = true;
+    } else {
+      throw new Error(`Unknown release argument ${argument}`);
     }
-    return value;
   }
-  return "";
+  return result;
 }
 
 function prepare() {
@@ -165,17 +175,16 @@ function buildAllPlatforms() {
   const signingArguments = signed ? ["--signed"] : [];
   const channelArguments = channel ? ["--channel", channel] : [];
   if (process.platform === "win32") {
-    // A Windows host builds every platform inside Docker containers (Linux
-    // engine for Linux artifacts, Windows engine for Windows artifacts), so
-    // build issues stay isolated from the machine. The Docker-built Linux
-    // AppImage and Windows NSIS installers are Tauri-signed on the host
-    // afterwards (build.js), keeping signing keys out of Docker build
-    // arguments.
+    // Default Windows release builds use the host MSVC toolchain for Windows
+    // x64/ARM64 and the Docker Linux engine for Linux artifacts. Operators can
+    // opt into the Docker Windows-engine path with --all-docker. Updater
+    // artifacts are always Tauri-signed on the host, keeping signing keys out
+    // of Docker build arguments.
     run("node", [
       "scripts/build.js",
       "--target",
       "all",
-      "--container",
+      ...(releaseOptions.allDocker ? ["--container"] : []),
       ...channelArguments,
       ...signingArguments,
     ]);
@@ -273,7 +282,58 @@ function verify() {
     ],
     { env: releaseManifestEnvironment() },
   );
+  verifyLocalReleaseSignatures();
   console.log("Release verification passed.");
+}
+
+function verifyLocalReleaseSignatures() {
+  requireMinisignVerifier();
+  const artifactsDirectory = path.join(root, "release", "artifacts");
+  if (
+    !fs.existsSync(artifactsDirectory) ||
+    !fs.statSync(artifactsDirectory).isDirectory()
+  ) {
+    throw new Error(`Missing release artifact directory ${artifactsDirectory}`);
+  }
+  const files = fs
+    .readdirSync(artifactsDirectory, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        /^centrald-(server|client|admin)_.+_(linux|windows)_(x86_64|aarch64)\.(deb|msi|exe|AppImage|zip|tar\.gz)$/u.test(
+          entry.name,
+        ),
+    )
+    .map((entry) => path.join(artifactsDirectory, entry.name));
+  if (files.length === 0) {
+    throw new Error("No canonical release artifacts are available to verify.");
+  }
+  files.push(
+    path.join(root, "release", config.releaseManifest),
+    path.join(root, "release", config.tauriUpdateManifest),
+  );
+  for (const file of files) verifyMinisignFile(file, `${file}.minisig`);
+}
+
+function requireMinisignVerifier() {
+  if (!config.minisignPublicKey) {
+    throw new Error(
+      "centrald.config must contain MINISIGN_PUBLIC_KEY before release verification.",
+    );
+  }
+  if (!commandExists("minisign", ["-v"])) {
+    throw new Error("minisign is required to verify release signatures.");
+  }
+}
+
+function verifyMinisignFile(file, signature) {
+  requireRegularFile(file);
+  requireRegularFile(signature);
+  execFileSync(
+    "minisign",
+    ["-V", "-P", config.minisignPublicKey, "-m", file, "-x", signature],
+    { stdio: "inherit" },
+  );
 }
 
 function publish() {
@@ -318,6 +378,14 @@ function publishChannelOnly() {
 /// truth) and is the automatic last publish step when CDN_BASE_URL is set.
 function syncChannelToCdn() {
   verifyVersionSync();
+  if (!process.env.CENTRALD_S3_ENDPOINT?.trim()) {
+    console.warn(
+      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; " +
+        "skipping the S3 mirror. Configure the S3 environment (.env) and run " +
+        "`npm run release:sync-channel` to mirror the signed channel manifests.",
+    );
+    return;
+  }
   run("node", [
     "scripts/sync-channel.js",
     ...(channel ? ["--channel", channel] : []),
@@ -612,8 +680,40 @@ function immutableReleaseChannelEntries(tag, channel) {
       },
     ];
   });
+  verifyDownloadedManifestSignatures(entries);
   validateImmutableReleaseManifests(release, entries, channel);
   return entries;
+}
+
+function verifyDownloadedManifestSignatures(entries) {
+  requireMinisignVerifier();
+  const temporaryRelative = `release/.channel-verify-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+  const temporaryDirectory = ensureGeneratedDirectory(root, temporaryRelative);
+  try {
+    for (const entry of entries.filter(
+      ({ remotePath }) => !remotePath.endsWith(".minisig"),
+    )) {
+      const signature = entries.find(
+        (candidate) => candidate.remotePath === `${entry.remotePath}.minisig`,
+      );
+      if (!signature) {
+        throw new Error(
+          `Downloaded release manifest is missing ${entry.remotePath}.minisig.`,
+        );
+      }
+      const name = path.basename(entry.remotePath);
+      const file = path.join(temporaryDirectory, name);
+      const signatureFile = `${file}.minisig`;
+      fs.writeFileSync(file, entry.content, { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(signatureFile, signature.content, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      verifyMinisignFile(file, signatureFile);
+    }
+  } finally {
+    cleanGeneratedDirectory(root, temporaryRelative);
+  }
 }
 
 function findImmutableSignatureAsset(release, name) {

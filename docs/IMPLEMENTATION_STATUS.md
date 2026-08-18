@@ -50,40 +50,6 @@ production-ready.
   descriptor-relative fixed-root permission repair while the service is stopped,
   and a separately requested bounded service restart. Windows ACL repair remains
   installer-owned and is refused by the runtime command.
-- Privileged broker transport and the concrete operation runner for restart and
-  OS-update jobs. The broker runs as root (systemd `centrald-broker.service` /
-  Windows `CentralDBroker` SCM service), speaks only over an ACL-restricted
-  local channel (`/run/centrald/broker.sock` with peer-credential checks, or a
-  DACL-restricted named pipe for `NT SERVICE\CentralDClient`), verifies typed
-  server-signed grants, and executes fixed-command operations (service/machine
-  restart, check/apply OS updates) with bounded output and a durable
-  exactly-once ledger that replays re-dispatched jobs and fails closed on
-  interrupted executions. Client service restart, machine restart, and OS update
-  check/apply jobs are dispatched end-to-end; terminal jobs and client binary
-  installation remain gated.
-- PTY/ConPTY terminal streaming is implemented end to end: the Admin opens a
-  real terminal (xterm) over a bounded bidi relay; the server validates every
-  frame, enforces frame/byte/idle/absolute bounds, and issues OpenLowShell /
-  OpenElevatedShell grants; the client daemon relays them to the broker, which
-  runs a real PTY/ConPTY session through `portable-pty` with exactly the
-  requested OS account. OS-account credentials are validated by the broker (PAM
-  / `LogonUserW`), hash-bound to the grant, never stored by the server, and
-  optionally saved in the operating-system vault (Windows DPAPI file or the
-  freedesktop Secret Service), where Windows vault reads are bounded and
-  key/credential buffers are zeroized. Elevated shells require a consumed
-  elevation challenge signed by the Admin's locally generated elevation key. Low
-  shells run as the managed service account on Linux; low shells on Windows are
-  explicitly unsupported in this build. Server housekeeping closes abandoned
-  sessions and purges expired elevation challenges; the Admin GUI releases
-  session registry entries on every stream exit and never blocks an IPC call on
-  a stalled stream.
-- Operator-approved client binary installation (`UpdateClient`): the server pins
-  the operator-approved version to its latest verified release snapshot and
-  applies the configured feed policy; the broker downloads the manifest and
-  artifact with strict bounds, verifies channel, pinned version, protocol,
-  strict semver monotonicity, SHA-256, and the Minisign signature (build-time
-  public key), then installs with dpkg on Linux or the signed installer script
-  on Windows. Same-version byte replacement is forbidden.
 - Offline-root replacement ceremony through `centrald-server config`, authorized
   only by the current offline root recovery key, journaled with the same
   crash-recoverable rollback and post-restart TLS-probe retirement used by
@@ -104,22 +70,25 @@ production-ready.
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.
 - One-command release orchestration: `npm run release` builds every platform a
-  Windows or Linux host can produce (Windows hosts build inside both the Docker
-  Linux and Docker Windows engines and extract the artifacts), signs the Linux
-  AppImage and Windows NSIS installers on the host with the Tauri signer, and
-  with `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<version>` tag
-  and publishes. The host and both builder images refresh to the latest stable
-  Rust (`rustup update stable`). A `release:bump` helper keeps `package.json`,
-  the workspace `Cargo.toml`, and `tauri.conf.json` in lockstep; `.env.example`
+  Windows or Linux host can produce (Windows hosts build Windows targets with
+  the host toolchain and Linux targets in Docker; `--all-docker` opts into the
+  Docker Windows-engine path), signs the Linux AppImage and Windows NSIS
+  installers on the host with the Tauri signer, and with
+  `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<version>` tag and
+  publishes. The host and both builder images refresh to the latest stable Rust
+  (`rustup update stable`). A `release:bump` helper keeps `package.json`, the
+  workspace `Cargo.toml`, and `tauri.conf.json` in lockstep; `.env.example`
   documents all release secrets.
 
 ## Deliberately gated
 
-- OS package update check/apply execution on Windows hosts (Debian/Ubuntu is
-  implemented); low-privilege shell sessions on Windows (elevated SYSTEM shells
-  are implemented).
-- Nothing else in the alpha scope remains unimplemented; CI coverage of Windows
-  installer and service packaging continues to harden.
+- Privileged operation execution, including remote service/machine restart, OS
+  updates, and client package installation. Protocol, broker, and runner code is
+  security scaffolding and is not exposed as an active Admin action.
+- PTY/ConPTY shell transport and credential saving. The Admin Terminal page is
+  visibly unavailable; no password is loaded from or saved to a vault.
+- Server/client package installation. Build artifacts exist for manual alpha
+  testing, but CentralD does not remotely install itself in this release.
 
 ## Validation expectation
 

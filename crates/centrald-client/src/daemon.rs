@@ -1132,8 +1132,8 @@ fn windows_uptime_seconds() -> u64 {
 fn memory_bytes() -> (u64, u64) {
     #[cfg(target_os = "linux")]
     if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
-        let mut total_kib = None;
-        let mut available_kib = None;
+        let mut total_kib: Option<u64> = None;
+        let mut available_kib: Option<u64> = None;
         for line in contents.lines() {
             let mut fields = line.split_whitespace();
             match fields.next() {

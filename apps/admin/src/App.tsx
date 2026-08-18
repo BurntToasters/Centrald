@@ -145,6 +145,12 @@ function base64ToBytes(value: string): Uint8Array {
 
 type Section = "overview" | "devices" | "terminal" | "settings";
 
+// These paths are compiled only as hardening scaffolds in this alpha. Keep the
+// operator surface fail-closed until the complete privileged execution and
+// terminal acceptance suites are release gates.
+const PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE = false;
+const TERMINAL_FEATURE_AVAILABLE = false;
+
 const emptyEnrollment: EnrollmentForm = {
   accessKey: "",
   connectionOverride: "",
@@ -553,9 +559,17 @@ export function App() {
           {sectionLabels.map(([value, label]) => (
             <button
               className={section === value ? "active" : ""}
-              disabled={!selected}
+              disabled={
+                !selected ||
+                (value === "terminal" && !TERMINAL_FEATURE_AVAILABLE)
+              }
               key={value}
               onClick={() => setSection(value)}
+              title={
+                value === "terminal" && !TERMINAL_FEATURE_AVAILABLE
+                  ? "Terminal is unavailable in this alpha release."
+                  : undefined
+              }
               type="button"
             >
               <span className="nav-glyph" aria-hidden="true">
@@ -1120,65 +1134,89 @@ function Devices({
                 </span>
                 <span className="row-actions">
                   <button
-                    disabled={busy}
-                    title="Restarts the installed agent service through the privileged client broker."
-                    onClick={() =>
-                      void onJob(
-                        target,
-                        "restart-client-service",
-                        "Client service restart",
-                      )
+                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
+                    title="Unavailable in this alpha release."
+                    onClick={
+                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
+                        ? () =>
+                            void onJob(
+                              target,
+                              "restart-client-service",
+                              "Client service restart",
+                            )
+                        : undefined
                     }
                     type="button"
                   >
                     Restart agent
                   </button>
                   <button
-                    disabled={busy}
-                    title="Checks for OS package updates through the privileged client broker."
-                    onClick={() =>
-                      void onJob(target, "check-os-updates", "OS update check")
+                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
+                    title="Unavailable in this alpha release."
+                    onClick={
+                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
+                        ? () =>
+                            void onJob(
+                              target,
+                              "check-os-updates",
+                              "OS update check",
+                            )
+                        : undefined
                     }
                     type="button"
                   >
                     Check updates
                   </button>
                   <button
-                    disabled={busy}
-                    title="Applies available OS package updates through the privileged client broker."
-                    onClick={() =>
-                      void onJob(
-                        target,
-                        "apply-os-updates",
-                        "Apply OS updates",
-                        `Apply all available OS package updates on ${target.name}?`,
-                      )
+                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
+                    title="Unavailable in this alpha release."
+                    onClick={
+                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
+                        ? () =>
+                            void onJob(
+                              target,
+                              "apply-os-updates",
+                              "Apply OS updates",
+                              `Apply all available OS package updates on ${target.name}?`,
+                            )
+                        : undefined
                     }
                     type="button"
                   >
                     Apply updates
                   </button>
                   <button
-                    disabled={busy || !updatesEnabled || !latestVersion}
-                    title={
-                      updatesEnabled
-                        ? "Installs the server-verified CentralD release on this device."
-                        : "Release updates are disabled on this server."
+                    disabled={
+                      busy ||
+                      !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE ||
+                      !updatesEnabled ||
+                      !latestVersion
                     }
-                    onClick={() => {
-                      const version = window.prompt(
-                        `Approved CentralD version to install on ${target.name}:`,
-                        latestVersion,
-                      );
-                      if (!version?.trim()) return;
-                      void onJob(
-                        target,
-                        "update-client",
-                        "CentralD client update",
-                        `Install CentralD ${version.trim()} on ${target.name}?`,
-                        { expectedVersion: version.trim() },
-                      );
-                    }}
+                    title={
+                      !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
+                        ? "Unavailable in this alpha release."
+                        : updatesEnabled
+                          ? "Installs the server-verified CentralD release on this device."
+                          : "Release updates are disabled on this server."
+                    }
+                    onClick={
+                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
+                        ? () => {
+                            const version = window.prompt(
+                              `Approved CentralD version to install on ${target.name}:`,
+                              latestVersion,
+                            );
+                            if (!version?.trim()) return;
+                            void onJob(
+                              target,
+                              "update-client",
+                              "CentralD client update",
+                              `Install CentralD ${version.trim()} on ${target.name}?`,
+                              { expectedVersion: version.trim() },
+                            );
+                          }
+                        : undefined
+                    }
                     type="button"
                   >
                     Update CentralD
@@ -1275,7 +1313,9 @@ function TerminalPanel({
   );
   const fitAddonRef = useRef<FitAddon | null>(null);
 
-  const terminalReady = Boolean(profileId && selectedTarget);
+  const terminalReady = Boolean(
+    TERMINAL_FEATURE_AVAILABLE && profileId && selectedTarget,
+  );
 
   async function openTerminal() {
     if (!profileId || !selectedTarget) return;
@@ -1397,9 +1437,9 @@ function TerminalPanel({
           <p className="eyebrow">Interactive access</p>
           <h3>Terminal</h3>
           <p>
-            Real PTY/ConPTY sessions run through the privileged broker with
-            bounded frames, idle and absolute timeouts, and per-session OS
-            account authentication.
+            Unavailable in this alpha release. PTY/ConPTY and credential-vault
+            code remains security scaffolding until the complete privileged
+            execution path passes release acceptance testing.
           </p>
         </div>
       </div>
@@ -1414,6 +1454,7 @@ function TerminalPanel({
           <label>
             Target
             <select
+              disabled={!TERMINAL_FEATURE_AVAILABLE}
               onChange={(event) => onTargetChange(event.target.value)}
               value={selectedTarget}
             >
@@ -1428,6 +1469,7 @@ function TerminalPanel({
           <label>
             Privilege
             <select
+              disabled={!TERMINAL_FEATURE_AVAILABLE}
               onChange={(event) =>
                 setPrivilege(
                   event.target.value === "elevated" ? "elevated" : "low",
@@ -1443,6 +1485,7 @@ function TerminalPanel({
             OS account
             <input
               autoComplete="off"
+              disabled={!TERMINAL_FEATURE_AVAILABLE}
               onChange={(event) => setAccountUser(event.target.value)}
               placeholder={privilege === "elevated" ? "root" : "centrald"}
               value={accountUser}
@@ -1452,6 +1495,7 @@ function TerminalPanel({
             OS account password
             <input
               autoComplete="off"
+              disabled={!TERMINAL_FEATURE_AVAILABLE}
               onChange={(event) => setAccountPassword(event.target.value)}
               type="password"
               value={accountPassword}
@@ -1460,6 +1504,7 @@ function TerminalPanel({
           <label className="checkbox-row">
             <input
               checked={saveCredentials}
+              disabled={!TERMINAL_FEATURE_AVAILABLE}
               onChange={(event) => setSaveCredentials(event.target.checked)}
               type="checkbox"
             />
@@ -1469,7 +1514,11 @@ function TerminalPanel({
             <button
               className="button primary"
               disabled={!terminalReady || opening}
-              onClick={() => void openTerminal()}
+              onClick={
+                TERMINAL_FEATURE_AVAILABLE
+                  ? () => void openTerminal()
+                  : undefined
+              }
               type="button"
             >
               {opening ? "Opening..." : "Open terminal"}
@@ -1483,11 +1532,8 @@ function TerminalPanel({
             </button>
           </div>
           <p className="form-help">
-            Credentials are validated by the broker against the OS account and
-            are never stored by the server.
-            {
-              " Credential saving stores the password in the operating-system vault (Windows DPAPI or the Linux Secret Service) only."
-            }
+            Terminal execution and credential saving are intentionally disabled
+            in this alpha.
           </p>
           {terminalStatus ? (
             <p className="terminal-status">{terminalStatus}</p>

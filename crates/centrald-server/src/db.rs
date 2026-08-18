@@ -1,7 +1,12 @@
+use std::borrow::Cow;
+
 use centrald_common::config::ServerConfig;
 use secrecy::SecretString;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Connection, PgConnection, PgPool, migrate::MigrateError};
+use sqlx::{
+    Connection, PgConnection, PgPool,
+    migrate::{MigrateError, Migration, MigrationType, Migrator},
+};
 use thiserror::Error;
 use tracing::warn;
 use url::Url;
@@ -11,6 +16,19 @@ use crate::file_security::read_root_private_text;
 
 const DATABASE_COMMENT_PREFIX: &str = "centrald-instance:";
 const DATABASE_ENV_MARKER_PREFIX: &str = "# centrald-instance:";
+
+fn embedded_migrations() -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(vec![Migration::new(
+            1,
+            Cow::Borrowed("initial"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0001_initial.sql")),
+            false,
+        )]),
+        ..Migrator::DEFAULT
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -171,7 +189,7 @@ pub async fn connect_and_migrate(
     verify_installation_row(&pool, instance_id)
         .await
         .map_err(DatabaseError::Ownership)?;
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    embedded_migrations().run(&pool).await?;
     Ok(pool)
 }
 
@@ -241,7 +259,7 @@ pub async fn ensure_database_and_migrate(
             return Err(DatabaseAdminError::Connect(error));
         }
     };
-    if let Err(error) = sqlx::migrate!("./migrations").run(&pool).await {
+    if let Err(error) = embedded_migrations().run(&pool).await {
         pool.close().await;
         cleanup_new_database(url, instance_id).await;
         return Err(DatabaseAdminError::Migrate(error));
@@ -314,7 +332,7 @@ pub async fn migrate_precreated_database(
         .connect(url)
         .await
         .map_err(DatabaseAdminError::Connect)?;
-    if let Err(error) = sqlx::migrate!("./migrations").run(&pool).await {
+    if let Err(error) = embedded_migrations().run(&pool).await {
         pool.close().await;
         return Err(DatabaseAdminError::Migrate(error));
     }

@@ -506,7 +506,7 @@ async fn verify_manifest_signature(
         );
     }
     let signature_url = format!("{manifest_url}.minisig");
-    let response = client
+    let mut response = client
         .get(&signature_url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .send()
@@ -518,13 +518,18 @@ async fn verify_manifest_signature(
     {
         anyhow::bail!("release manifest signature exceeds the size limit");
     }
-    let signature_bytes = response.bytes().await?;
-    if signature_bytes.len() > 4096 {
-        anyhow::bail!("release manifest signature exceeds the size limit");
+    // Drain chunk-by-chunk with a hard cap so a chunked response without a
+    // Content-Length cannot grow memory without bound.
+    let mut signature_bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        signature_bytes.extend_from_slice(&chunk);
+        if signature_bytes.len() > 4096 {
+            anyhow::bail!("release manifest signature exceeds the size limit");
+        }
     }
     let public_key =
         minisign::PublicKey::from_base64(key).context("parse the Minisign public key")?;
-    let signature_text = String::from_utf8(signature_bytes.to_vec())
+    let signature_text = String::from_utf8(signature_bytes.clone())
         .context("release manifest signature is not valid text")?;
     let signature_box = minisign::SignatureBox::from_string(&signature_text)
         .context("decode the release manifest signature")?;

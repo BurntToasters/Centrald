@@ -72,9 +72,9 @@ in tracked `centrald.config`.
 
 ## Known alpha limitations
 
-The PTY/ConPTY remote terminal, privileged broker operation runner, OS
-credential vault, and server/client package installers are not enabled. Admin
-self-update is explicit and Tauri-signature verified; client rescue and
-certificate renewal are implemented but still require platform integration
-testing. Their UI or protocol scaffolding must not be treated as a security
-boundary. See `docs/IMPLEMENTATION_STATUS.md`.
+OS update check/apply execution on Windows hosts and low-privilege shell
+sessions on Windows are not enabled; everything else in the alpha scope is
+implemented. Admin self-update is explicit and Tauri-signature verified; client
+rescue and certificate renewal are implemented but still require platform
+integration testing. Their UI or protocol scaffolding must not be treated as a
+security boundary. See `docs/IMPLEMENTATION_STATUS.md`.

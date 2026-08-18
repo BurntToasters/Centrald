@@ -254,9 +254,10 @@ Copy `.env.example` to `.env` and set the signing keys and publish gates, then:
 npm run release
 ```
 
-On a Windows host this builds Windows x64/ARM64 and the Linux x64 artifacts
-through Docker, signs everything, creates and pushes the `v<version>` tag,
-uploads the GitHub release, and publishes the channel manifests. See
+On a Windows host this builds Windows x64/ARM64 with the host toolchain and
+Linux x64 through Docker, signs everything, creates and pushes the `v<version>`
+tag, uploads the GitHub release, and publishes channel manifests. Use
+`npm run release -- --all-docker` only to opt into Windows-container builds. See
 [Releases](docs/RELEASES.md) for key generation and the step-by-step flow.
 
 ## Documentation site
@@ -273,7 +274,7 @@ npm run site:build  # sync docs and produce site/dist
 
 Cloudflare Pages is configured with root directory `site`, build command
 `npm ci && npm run build`, and output directory `dist`. Set the Pages
-`NODE_VERSION` environment variable to `22.16.0` (Astro 7 requires Node 22.12+).
+`NODE_VERSION` environment variable to `22.22.2` (Astro 7 requires Node 22.12+).
 The build always re-syncs `docs/*.md` into `site/src/content/docs` first, so
 `docs/` remains the single source of truth; the sync output is gitignored.
 

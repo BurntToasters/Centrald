@@ -190,10 +190,17 @@ function buildWindows(architecture) {
 }
 
 function buildWindowsClientZip(clientBinary, destination, output) {
-  const staging = path.join(output, `.client-staging-${process.pid}`);
-  if (fs.existsSync(staging)) {
-    throw new Error(`Refusing existing client staging directory: ${staging}`);
+  const stagingDirectory = path.join(output, `.client-staging-${process.pid}`);
+  if (fs.existsSync(stagingDirectory)) {
+    throw new Error(
+      `Refusing existing client staging directory: ${stagingDirectory}`,
+    );
   }
+  const stagingRelative = path
+    .relative(root, stagingDirectory)
+    .replaceAll("\\", "/");
+  ensureGeneratedDirectory(root, stagingRelative);
+  const staging = path.join(stagingDirectory, "root");
   try {
     fs.mkdirSync(staging, { recursive: false, mode: 0o700 });
     copyArtifact(
@@ -219,7 +226,7 @@ function buildWindowsClientZip(clientBinary, destination, output) {
     );
     run("tar.exe", ["-a", "-c", "-f", destination, "-C", staging, "."]);
   } finally {
-    fs.rmSync(staging, { recursive: true, force: true });
+    cleanGeneratedDirectory(root, stagingRelative);
   }
 }
 
@@ -268,7 +275,10 @@ function buildWindowsContainer(architectures) {
     ".",
   ]);
   const containerName = `centrald-windows-extract-${process.pid}`;
-  const staging = path.join(root, "dist", `.windows-container-${process.pid}`);
+  const stagingRelative = `dist/.windows-container-${process.pid}`;
+  cleanGeneratedDirectory(root, stagingRelative);
+  const staging = ensureGeneratedDirectory(root, stagingRelative);
+  let containerCreated = false;
   try {
     run(dockerExecutable(), [
       "create",
@@ -276,8 +286,7 @@ function buildWindowsContainer(architectures) {
       containerName,
       "centrald-windows-builder:latest",
     ]);
-    fs.rmSync(staging, { recursive: true, force: true });
-    fs.mkdirSync(staging, { recursive: true });
+    containerCreated = true;
     for (const architecture of architectures) {
       const destination = `dist/${architecture}`;
       cleanGeneratedDirectory(root, destination);
@@ -309,8 +318,13 @@ function buildWindowsContainer(architectures) {
       );
     }
   } finally {
-    run(dockerExecutable(), ["rm", "-f", containerName]);
-    fs.rmSync(staging, { recursive: true, force: true });
+    try {
+      if (containerCreated) {
+        run(dockerExecutable(), ["rm", "-f", containerName]);
+      }
+    } finally {
+      cleanGeneratedDirectory(root, stagingRelative);
+    }
   }
   if (options.signed) {
     for (const architecture of architectures) {

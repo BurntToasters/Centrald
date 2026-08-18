@@ -1,18 +1,67 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import { run } from "../command.js";
 
-const DOCKER_DESKTOP_CLI = "C:\\Program Files\\Docker\\Docker\\DockerCli.exe";
-const DOCKER_BINARY =
-  "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe";
+const SYSTEM_DOCKER_DESKTOP_ROOT = "C:\\Program Files\\Docker\\Docker";
+
+function dockerDesktopRoots() {
+  const roots = [SYSTEM_DOCKER_DESKTOP_ROOT];
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (localAppData) {
+    roots.push(path.join(localAppData, "Programs", "DockerDesktop"));
+  }
+  return roots;
+}
+
+function firstExisting(relativePath) {
+  return (
+    dockerDesktopRoots()
+      .map((root) => path.join(root, relativePath))
+      .find((candidate) => fs.existsSync(candidate)) ?? ""
+  );
+}
+
+/// Resolves Docker Desktop's engine-switch CLI for both machine-wide and
+/// current per-user installs.
+export function dockerDesktopCli() {
+  return firstExisting("DockerCli.exe");
+}
+
+/// Resolves Docker Desktop's GUI executable for both supported install modes.
+export function dockerDesktopExecutable() {
+  return firstExisting("Docker Desktop.exe");
+}
+
+function dockerEngineSwitchArgument(desktopCli, expected) {
+  const help = spawnSync(desktopCli, ["-help"], {
+    encoding: "utf8",
+    shell: false,
+  });
+  const output = `${help.stdout ?? ""}\n${help.stderr ?? ""}`;
+  const modern =
+    expected === "windows" ? "-SwitchWindowsEngine" : "-SwitchLinuxEngine";
+  if (output.includes(modern)) return modern;
+  const legacy =
+    expected === "windows"
+      ? "-SwitchWindowsContainers"
+      : "-SwitchLinuxContainers";
+  if (output.includes(legacy)) return legacy;
+  throw new Error(
+    `Docker Desktop CLI does not advertise a supported ${expected} engine switch. Switch Docker Desktop manually and retry.`,
+  );
+}
 
 /// The docker executable. A freshly installed Docker Desktop is not on the
 /// current process PATH until the user logs out and back in, so the known
 /// install location is preferred on Windows when it exists.
 export function dockerExecutable() {
-  if (process.platform === "win32" && fs.existsSync(DOCKER_BINARY)) {
-    return DOCKER_BINARY;
+  if (process.platform === "win32") {
+    const installed = firstExisting(
+      path.join("resources", "bin", "docker.exe"),
+    );
+    if (installed) return installed;
   }
   return "docker";
 }
@@ -59,7 +108,8 @@ export function ensureDockerEngine(expected, operation) {
       `${operation} requires Docker; install Docker Desktop and start the engine before running release builds (npm run setup:docker).`,
     );
   }
-  if (!fs.existsSync(DOCKER_DESKTOP_CLI)) {
+  const desktopCli = dockerDesktopCli();
+  if (!desktopCli) {
     throw new Error(
       `${operation} requires the ${expected} Docker engine mode, but the engine is in ${current} mode. Switch Docker Desktop to ${expected} containers and retry.`,
     );
@@ -67,11 +117,7 @@ export function ensureDockerEngine(expected, operation) {
   console.log(
     `Switching the Docker engine to ${expected} containers (this restarts the engine)...`,
   );
-  run(DOCKER_DESKTOP_CLI, [
-    expected === "windows"
-      ? "-SwitchWindowsContainers"
-      : "-SwitchLinuxContainers",
-  ]);
+  run(desktopCli, [dockerEngineSwitchArgument(desktopCli, expected)]);
   const deadline = Date.now() + 180 * 1000;
   while (Date.now() < deadline) {
     if (dockerOstype() === expected) return;

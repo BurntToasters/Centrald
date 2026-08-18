@@ -326,6 +326,9 @@ fn resolve_credentials(
     account_password_base64: &str,
     save_credentials: bool,
 ) -> Result<Option<SecretString>> {
+    if save_credentials {
+        bail!("saved terminal credentials are unavailable in this alpha release");
+    }
     let user = if account_user.is_empty() {
         params.user.clone()
     } else {
@@ -335,7 +338,7 @@ fn resolve_credentials(
         return Ok(None);
     }
     let Some(password) = decode_password(account_password_base64)? else {
-        return crate::vault::load_account_credential(&user);
+        return Ok(None);
     };
     if !params.credentials_sha256.is_empty() {
         let actual = hex::encode(Sha256::digest(password.expose_secret().as_bytes()));
@@ -344,10 +347,6 @@ fn resolve_credentials(
         }
     }
     crate::auth::validate_account_credentials(&user, &password).map_err(anyhow::Error::msg)?;
-    if save_credentials && let Err(error) = crate::vault::store_account_credential(&user, &password)
-    {
-        tracing::warn!(user = %user, %error, "credential save to the OS vault failed; the session continues without saving");
-    }
     Ok(Some(password))
 }
 
@@ -675,5 +674,25 @@ mod tests {
         let mut oversized = Vec::new();
         oversized.extend_from_slice(&(u32::MAX).to_be_bytes());
         assert!(read_frame(&mut std::io::Cursor::new(oversized), 1024).is_err());
+    }
+
+    #[test]
+    fn saved_credentials_are_release_gated() {
+        let params = SessionParameters {
+            privilege: "low".into(),
+            user: "centrald".into(),
+            shell: "/bin/bash".into(),
+            max_frame_bytes: 65_536,
+            idle_timeout_seconds: 900,
+            absolute_timeout_seconds: 28_800,
+            credentials_sha256: String::new(),
+        };
+        let error = resolve_credentials(&params, "centrald", "", true).unwrap_err();
+        assert!(error.to_string().contains("unavailable"));
+        assert!(
+            resolve_credentials(&params, "centrald", "", false)
+                .unwrap()
+                .is_none()
+        );
     }
 }

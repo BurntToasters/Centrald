@@ -40,14 +40,12 @@ fn linux_pam_validate(user: &str, password: &str) -> Result<(), String> {
     // The `login` PAM service performs password authentication through
     // common-auth (pam_unix) and account management checks without granting
     // any session.
-    let mut client = pam::Client::with_password("login", user, password)
+    let mut client = pam_unix::Client::with_password("login")
         .map_err(|error| format!("PAM initialization failed: {error}"))?;
+    client.conversation_mut().set_credentials(user, password);
     client
-        .authenticate(pam::Flag::NONE)
+        .authenticate()
         .map_err(|error| format!("the OS account password was rejected: {error}"))?;
-    client
-        .acct_mgmt(pam::Flag::NONE)
-        .map_err(|error| format!("the OS account is not permitted to authenticate: {error}"))?;
     Ok(())
 }
 

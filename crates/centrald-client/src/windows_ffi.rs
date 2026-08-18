@@ -32,8 +32,8 @@ use std::ptr;
 
 use anyhow::{Context, Result, bail};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_MORE_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -46,11 +46,12 @@ use windows_sys::Win32::Security::{
     SECURITY_ATTRIBUTES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    CreateFileW, FlushFileBuffers, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_NOWAIT, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE,
+    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, SetNamedPipeHandleState, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Shutdown::InitiateSystemShutdownExW;
 
@@ -193,6 +194,69 @@ impl crate::broker_session::DuplexStream for PipeStream {
         Self: Sized,
     {
         Ok(Self::new(self.handle.try_clone()?))
+    }
+}
+
+/// Switches a connected pipe instance between blocking (`PIPE_WAIT`) and
+/// polling (`PIPE_NOWAIT`) message mode. The broker polls in non-blocking
+/// mode to bound the first-frame wait, then restores blocking mode before
+/// dispatch so the session exchange keeps message semantics.
+///
+/// # Errors
+///
+/// Returns an error when the handle mode cannot be changed.
+pub fn set_pipe_polling(stream: &PipeStream, polling: bool) -> Result<()> {
+    let mode: u32 = PIPE_READMODE_MESSAGE | if polling { PIPE_NOWAIT } else { PIPE_WAIT };
+    let result = unsafe {
+        SetNamedPipeHandleState(
+            stream.handle.as_raw_handle() as HANDLE,
+            &raw const mode,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error()).context("set broker pipe handle mode");
+    }
+    Ok(())
+}
+
+impl PipeStream {
+    /// Reads one complete pipe message without blocking.
+    ///
+    /// Returns `Ok(None)` when no message is available yet (polling mode
+    /// only), `Ok(Some(bytes))` for a partial or complete message piece.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pipe read fails for a reason other than
+    /// "no data available".
+    pub fn try_read_message(&self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        let mut read_bytes = 0_u32;
+        let result = unsafe {
+            ReadFile(
+                self.handle.as_raw_handle() as HANDLE,
+                buffer.as_mut_ptr(),
+                u32::try_from(buffer.len()).unwrap_or(u32::MAX),
+                &raw mut read_bytes,
+                ptr::null_mut(),
+            )
+        };
+        if result == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_NO_DATA as i32) {
+                return Ok(None);
+            }
+            // A message larger than the buffer is read in pieces.
+            if error.raw_os_error() == Some(ERROR_MORE_DATA as i32) && read_bytes > 0 {
+                return Ok(Some(read_bytes as usize));
+            }
+            return Err(error);
+        }
+        if read_bytes == 0 {
+            return Ok(None);
+        }
+        Ok(Some(read_bytes as usize))
     }
 }
 
@@ -451,10 +515,41 @@ pub fn dpapi_unprotect(ciphertext: &[u8]) -> Result<Vec<u8>> {
 
 /// Durably writes the vault file with owner-only access.
 ///
+/// A first store creates the file with `write_new_file`; every later store or
+/// delete atomically replaces it via a private sibling temporary and
+/// `MoveFileExW` with write-through, so a crash or partial write can never
+/// corrupt the DPAPI blobs and a pre-existing vault is never clobbered
+/// non-atomically.
+///
 /// # Errors
 ///
 /// Returns an error when the file cannot be written safely.
 pub fn write_vault_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
-    centrald_common::secure_fs::write_new_file(path, contents, true)
-        .with_context(|| format!("write credential vault {}", path.display()))
+    if !path.exists() {
+        return centrald_common::secure_fs::write_new_file(path, contents, true)
+            .with_context(|| format!("write credential vault {}", path.display()));
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .with_context(|| format!("credential vault has no parent: {}", path.display()))?;
+    let temporary = parent.join(format!(
+        ".vault.json.centrald-replacement-{}",
+        uuid::Uuid::now_v7()
+    ));
+    centrald_common::secure_fs::write_new_file(&temporary, contents, true)
+        .with_context(|| format!("write credential vault replacement {}", temporary.display()))?;
+    let replaced = unsafe {
+        MoveFileExW(
+            encode_wide(&temporary.to_string_lossy()).as_ptr(),
+            encode_wide(&path.to_string_lossy()).as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("replace credential vault {}", path.display()));
+    }
+    Ok(())
 }

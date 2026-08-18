@@ -164,17 +164,24 @@ function buildDebianPackage({
   service,
   services,
 }) {
-  const staging = path.join(
+  const stagingDirectory = path.join(
     path.dirname(artifact),
     `.staging-${binaryName}-${process.pid}`,
   );
-  if (fs.existsSync(staging)) {
-    throw new Error(`Refusing existing package staging directory: ${staging}`);
+  if (fs.existsSync(stagingDirectory)) {
+    throw new Error(
+      `Refusing existing package staging directory: ${stagingDirectory}`,
+    );
   }
+  const stagingRelative = path
+    .relative(root, stagingDirectory)
+    .replaceAll("\\", "/");
+  ensureGeneratedDirectory(root, stagingRelative);
+  const staging = path.join(stagingDirectory, "root");
   try {
     fs.mkdirSync(path.join(staging, "DEBIAN"), {
       recursive: true,
-      mode: 0o700,
+      mode: 0o755,
     });
     fs.mkdirSync(path.join(staging, "usr/bin"), {
       recursive: true,
@@ -216,7 +223,7 @@ function buildDebianPackage({
     );
     run("dpkg-deb", ["--root-owner-group", "--build", staging, artifact]);
   } finally {
-    fs.rmSync(staging, { recursive: true, force: true });
+    cleanGeneratedDirectory(root, stagingRelative);
   }
 }
 

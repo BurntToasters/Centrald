@@ -96,13 +96,9 @@ An Admin access key is used once. The desktop app creates:
 - a profile containing the resulting certificate, server CA, endpoint, and TLS
   name.
 
-Privileged terminal authorization is registered at Admin enrollment: the Admin
-generates a local elevation key pair, stores the private half with the profile,
-and the server stores only the public half. Elevated shell sessions require a
-consumed, Admin-signed elevation challenge; OS-account passwords are validated
-by the broker against the machine and may be saved only through an
-operating-system credential vault (Windows DPAPI or the freedesktop Secret
-Service).
+Terminal authorization fields are reserved scaffolding. PTY/ConPTY sessions,
+OS-account authentication, and saved credentials remain disabled until the
+complete privileged broker and operating-system vault path is release-gated.
 
 Remote configuration reads expose all operational settings, including fields
 that are local-only, so the GUI can explain parity boundaries. Writes include an

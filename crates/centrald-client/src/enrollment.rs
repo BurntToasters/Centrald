@@ -744,7 +744,7 @@ fn read_access_key_file(path: &Path, label: &str) -> Result<SecretString> {
                 path.display()
             )
         })?;
-        let mut file = File::from(descriptor);
+        let file = File::from(descriptor);
         let opened = file
             .metadata()
             .with_context(|| format!("inspect opened access-key file {}", path.display()))?;

@@ -1,8 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -16,9 +14,6 @@ jobs:
   linux:
     name: Linux x64 artifacts
     runs-on: ubuntu-24.04
-    # The workflow needs the Tauri signing key; without it (local-host
-    # releases, unconfigured secrets) the tag was published by another path.
-    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -27,7 +22,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.16.0
+          node-version: 22.22.2
           cache: npm
       - name: Install native dependencies
         run: |
@@ -36,6 +31,8 @@ jobs:
             desktop-file-utils \
             dpkg-dev \
             libayatana-appindicator3-dev \
+            libclang-dev \
+            libpam0g-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
@@ -43,7 +40,9 @@ jobs:
             protobuf-compiler \
             xz-utils
       - name: Install npm 12 (project requires >= 12.0.1)
-        run: npm install -g npm@12.0.2
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run config:check
       - name: Build signed Linux artifacts
@@ -57,7 +56,6 @@ jobs:
   windows:
     name: Windows x64 and ARM64 artifacts
     runs-on: windows-2022
-    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
@@ -66,10 +64,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.16.0
+          node-version: 22.22.2
           cache: npm
       - name: Install npm 12 (project requires >= 12.0.1)
-        run: npm install -g npm@12.0.2
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'npm-latest'
+          npm install -g --prefix $prefix npm@latest
+          $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - run: npm ci
       - run: npm run config:check
       - name: Build signed Windows x64 artifacts
@@ -91,7 +93,6 @@ jobs:
     name: Verify, sign, and publish
     needs: [linux, windows]
     runs-on: ubuntu-24.04
-    if: secrets.TAURI_SIGNING_PRIVATE_KEY != ''
     env:
       GH_TOKEN: ${{ github.token }}
       CENTRALD_RELEASE_PUBLISH: YES
@@ -104,21 +105,27 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.16.0
+          node-version: 22.22.2
           cache: npm
       - name: Install verification dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libayatana-appindicator3-dev \
+            libclang-dev \
+            libpam0g-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
             minisign \
             protobuf-compiler
       - name: Install npm 12 (project requires >= 12.0.1)
-        run: npm install -g npm@12.0.2
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
       - run: npm ci
+      - name: Install documentation site dependencies
+        run: npm ci --prefix site
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: centrald-linux-x64

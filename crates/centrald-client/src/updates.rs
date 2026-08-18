@@ -9,6 +9,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -28,8 +29,11 @@ const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MANIFEST_TIMEOUT_SECONDS: u64 = 30;
 const ARTIFACT_TIMEOUT_SECONDS: u64 = 600;
 /// Bounds for ZIP extraction: entry count, per-entry size, and total wall time.
+#[cfg(windows)]
 const MAX_ZIP_ENTRIES: usize = 512;
+#[cfg(windows)]
 const MAX_ZIP_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(windows)]
 const EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Job parameters for an `UpdateClient` operation.
@@ -61,6 +65,13 @@ impl UpdateParameters {
         }
         if !valid_channel(&self.channel) {
             bail!("update channel is invalid");
+        }
+        if self.channel != centrald_common::build_info::RELEASE_CHANNEL {
+            bail!(
+                "this build follows the {} channel, not {}",
+                centrald_common::build_info::RELEASE_CHANNEL,
+                self.channel
+            );
         }
         let _: semver::Version = self
             .expected_version
@@ -480,6 +491,9 @@ fn install_windows_zip(artifact: &Path) -> Result<()> {
             bail!("ZIP entry {name} exceeds the per-entry limit");
         }
         let target = extract_dir.join(&name);
+        if !target.starts_with(&extract_dir) {
+            bail!("ZIP entry {name} escapes the extract directory");
+        }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create directory for {name}"))?;
@@ -532,6 +546,7 @@ fn install_windows_zip(artifact: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 fn is_simple_entry_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -540,6 +555,7 @@ fn is_simple_entry_name(name: &str) -> bool {
         && !name.starts_with('/')
         && !name.starts_with('\\')
         && !name.contains('\0')
+        && !name.contains(':')
         && !name.ends_with('.')
         && !name.ends_with(' ')
         && !name
@@ -550,6 +566,7 @@ fn is_simple_entry_name(name: &str) -> bool {
 
 /// Windows reserves these device names even with an extension; a file named
 /// `CON` or `CON.txt` cannot be created normally and would resolve to a device.
+#[cfg(any(windows, test))]
 fn is_windows_device_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("");
     let stem = stem.to_ascii_uppercase();
@@ -636,7 +653,7 @@ mod tests {
     fn parameters() -> UpdateParameters {
         UpdateParameters {
             manifest_url: "https://example.test/centrald/centrald-release.yml".into(),
-            channel: "beta".into(),
+            channel: centrald_common::build_info::RELEASE_CHANNEL.into(),
             allow_prerelease: true,
             expected_version: "0.2.0".into(),
         }
@@ -651,6 +668,20 @@ mod tests {
         let mut bad_channel = parameters();
         bad_channel.channel = "Not A Channel".into();
         assert!(bad_channel.validate().is_err());
+        let wrong_channel = {
+            let mut params = parameters();
+            let other = centrald_common::build_info::SUPPORTED_CHANNELS
+                .iter()
+                .copied()
+                .find(|candidate| *candidate != centrald_common::build_info::RELEASE_CHANNEL)
+                .unwrap_or("stable");
+            params.channel = other.into();
+            params
+        };
+        assert!(
+            wrong_channel.validate().is_err(),
+            "a build must refuse a channel other than its own"
+        );
         let mut bad_version = parameters();
         bad_version.expected_version = "banana".into();
         assert!(bad_version.validate().is_err());
@@ -671,6 +702,11 @@ mod tests {
             "a/../../b.exe",
             "\\evil.exe",
             "a\\..\\b",
+            "C:/evil.exe",
+            "C:\\evil.exe",
+            "C:evil.exe",
+            "file.txt:$DATA",
+            "",
         ] {
             assert!(
                 !is_simple_entry_name(unsafe_name),

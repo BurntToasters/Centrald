@@ -103,13 +103,11 @@ Use the Admin GUI for inventory, enrollment invitations, revocation, and safe
 remote settings. Use `centrald-server config` for local-only trust and advanced
 server controls.
 
-Privileged typed jobs (agent restart, machine restart, OS update check/apply)
-run through the root/SYSTEM broker on enrolled clients. The Terminal page opens
-real PTY/ConPTY sessions: low shells run as the managed service account, and
-elevated shells require the Admin's elevation key and the OS account password,
-which the broker validates and may save in the machine's OS vault. The Devices
-page can install the server-verified CentralD release on a client; the broker
-verifies the artifact digest and Minisign signature before installing.
+Privileged client operations, remote CentralD installation, PTY/ConPTY terminal
+sessions, and credential saving remain visibly disabled in this alpha. Their
+protocol and broker code is security scaffolding, not an operator-ready path.
+Use the Admin GUI for the implemented inventory, invitation, revocation, typed
+queue, and safe settings flows only.
 
 PKI maintenance: `centrald-server config` offers online-issuer rotation (uses
 the offline root recovery PEM) and, for disaster recovery, an offline-root

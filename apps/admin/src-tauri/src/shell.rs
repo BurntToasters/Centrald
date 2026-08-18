@@ -225,6 +225,10 @@ async fn open_shell_inner(
             },
         );
 
+    // Keep the only writable copy of the password in zeroizing storage; the
+    // frame's byte copy is the ephemeral wire value and the wrapper's clone
+    // semantics clear this source before it drops.
+    let account_password = secrecy::zeroize::Zeroizing::new(account_password.into_bytes());
     let open = AdminShellFrame {
         shell: Some(ShellFrame {
             payload: Some(centrald_protocol::v1::shell_frame::Payload::Open(
@@ -238,7 +242,7 @@ async fn open_shell_inner(
                     columns,
                     rows,
                     account_user,
-                    account_password: account_password.into_bytes(),
+                    account_password: account_password.to_vec(),
                     save_credentials,
                     parameters_json: Vec::new(),
                 },

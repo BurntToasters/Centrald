@@ -60,7 +60,7 @@ pub async fn run(args: RescueArgs) -> Result<()> {
 
     let loaded = crate::enrollment::load_latest_config();
     #[allow(unused_mut)]
-    let (config_path, config) = match loaded {
+    let (mut config_path, mut config) = match loaded {
         Ok(value) => {
             report
                 .checks

@@ -9,7 +9,7 @@ database, enrollment, and update model. **There is no legacy-key or schema
 migration path.** Development installs created before this redesign should be
 reset with the destructive command documented below.
 
-Current version: `0.1.0-alpha.1`.
+Current version: `0.1.0`.
 
 Documentation lives at <https://centrald.dev>; the rendered pages are generated
 from the `docs/` directory by the Astro site in [`site/`](site/).

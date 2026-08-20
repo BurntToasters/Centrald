@@ -227,7 +227,7 @@ async fn run(config_path: &Path) -> Result<()> {
                 .max_encoding_message_size(ADMIN_MAX_MESSAGE_BYTES),
         )
         .serve_with_shutdown(admin_address, shutdown_signal());
-        
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let local_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {

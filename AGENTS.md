@@ -5,7 +5,7 @@ Any updates that an agent does to the codebase should be added/updated here if n
 
 ## Repository state
 
-CentralD is a pre-public clean rewrite at `0.1.0-alpha.1`. Do not restore legacy
+CentralD is a pre-public clean rewrite at `0.1.0`. Do not restore legacy
 architecture, enrollment keys, trust flags, database schemas, or migration
 logic. A development install that predates this tree must use the destructive
 reset and run `initial-setup` again.

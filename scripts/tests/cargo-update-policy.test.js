@@ -20,7 +20,7 @@ test("package.json contains deps:rust:update, test:cargo-safe-update, and check:
   );
   assert.equal(
     pkg.scripts["test:cargo-safe-update"],
-    "node --test scripts/cargo-safe-update.test.mjs",
+    "node --test scripts/cargo-safe-update.test.mjs scripts/check-cargo-update-policy.test.mjs",
   );
   assert.equal(
     pkg.scripts["check:cargo-update-policy"],

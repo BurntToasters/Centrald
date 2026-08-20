@@ -33,7 +33,7 @@
     "test:rust": "cargo test --workspace --locked",
     "qa": "node scripts/qa.js",
     "release:deps": "npm ci && npm ci --prefix site",
-    "release:prepare": "npm run release:deps && node --env-file-if-exists=.env scripts/release.js prepare",
+    "release:prepare": "node --env-file-if-exists=.env scripts/release.js prepare",
     "release:bump": "node scripts/bump-version.js",
     "release:build": "node --env-file-if-exists=.env scripts/release.js build",
     "release:verify": "node --env-file-if-exists=.env scripts/release.js verify",

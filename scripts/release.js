@@ -105,6 +105,8 @@ function parseReleaseArguments(args) {
 }
 
 function prepare() {
+  run("npm", ["ci"]);
+  run("npm", ["ci", "--prefix", "site"]);
   requireCleanTree();
   verifyVersionSync();
   verifyOrigin();

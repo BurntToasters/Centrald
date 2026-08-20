@@ -84,7 +84,20 @@ fn service_main_inner() -> Result<()> {
             let _ = handler_shutdown.send(true);
             ServiceControlHandlerResult::NoError
         }
-        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        ServiceControl::Interrogate => {
+            if let Ok(guard) = handler_status.lock()
+                && let Some(handle) = guard.as_ref()
+            {
+                let _ = handle.set_service_status(service_status(
+                    ServiceState::Running,
+                    ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                    0,
+                    Duration::ZERO,
+                    ServiceExitCode::Win32(0),
+                ));
+            }
+            ServiceControlHandlerResult::NoError
+        }
         _ => ServiceControlHandlerResult::NotImplemented,
     };
 
@@ -228,7 +241,18 @@ fn broker_service_main_inner() -> Result<()> {
             let _ = handler_shutdown.send(true);
             ServiceControlHandlerResult::NoError
         }
-        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        ServiceControl::Interrogate => {
+            if let Some(handle) = handler_status.lock().ok().and_then(|guard| *guard) {
+                let _ = handle.set_service_status(service_status(
+                    ServiceState::Running,
+                    ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+                    0,
+                    Duration::ZERO,
+                    ServiceExitCode::Win32(0),
+                ));
+            }
+            ServiceControlHandlerResult::NoError
+        }
         _ => ServiceControlHandlerResult::NotImplemented,
     };
 
@@ -297,7 +321,7 @@ fn broker_service_main_inner() -> Result<()> {
     let watcher_shutdown = shutdown_receiver.clone();
     std::thread::spawn(move || {
         loop {
-            if watcher_shutdown.has_changed().unwrap_or(false) && *watcher_shutdown.borrow() {
+            if *watcher_shutdown.borrow() {
                 std::thread::sleep(Duration::from_millis(200));
                 std::process::exit(0);
             }

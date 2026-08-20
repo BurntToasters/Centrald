@@ -212,46 +212,14 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
     let stdout = child.stdout.take().context("capture command stdout")?;
     let stderr = child.stderr.take().context("capture command stderr")?;
 
-    let reader = std::thread::spawn(move || {
-        let mut merged = Vec::new();
-        let mut stdout_remaining = MAX_OPERATION_OUTPUT_BYTES;
-        let mut stderr_remaining = MAX_OPERATION_OUTPUT_BYTES;
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        let mut capped = false;
-        loop {
-            let mut buffer = [0_u8; 4096];
-            let stdout_read = stdout.read(&mut buffer).unwrap_or(0);
-            if stdout_read > 0 {
-                let take = if capped {
-                    0
-                } else {
-                    stdout_read.min(stdout_remaining)
-                };
-                merged.extend_from_slice(&buffer[..take]);
-                stdout_remaining -= take;
-            }
-            let stderr_read = stderr.read(&mut buffer).unwrap_or(0);
-            if stderr_read > 0 {
-                let take = if capped {
-                    0
-                } else {
-                    stderr_read.min(stderr_remaining)
-                };
-                merged.extend_from_slice(&buffer[..take]);
-                stderr_remaining -= take;
-            }
-            if stdout_read == 0 && stderr_read == 0 {
-                break;
-            }
-            // Keep draining (discarding) after the cap so the child can exit
-            // instead of blocking on a full pipe.
-            if merged.len() >= MAX_OPERATION_OUTPUT_BYTES {
-                capped = true;
-            }
-        }
-        merged
-    });
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let tx_out = tx.clone();
+    let tx_err = tx.clone();
+
+    let _stdout_reader =
+        std::thread::spawn(move || drain_pipe(stdout, MAX_OPERATION_OUTPUT_BYTES, &tx_out, true));
+    let _stderr_reader =
+        std::thread::spawn(move || drain_pipe(stderr, MAX_OPERATION_OUTPUT_BYTES, &tx_err, false));
 
     let started = Instant::now();
     let status = loop {
@@ -261,9 +229,6 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
         {
             Some(status) => break status,
             None if started.elapsed() > COMMAND_TIMEOUT => {
-                // Graceful first: dpkg/apt-get must not be SIGKILLed while
-                // holding its package database. SIGTERM the whole tree, wait
-                // briefly, then hard-kill anything still alive.
                 let deadline = Instant::now() + GRACEFUL_TERMINATION_GRACE;
                 terminate_command_tree(&mut child);
                 loop {
@@ -310,14 +275,60 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
             None => std::thread::sleep(Duration::from_millis(100)),
         }
     };
-    let output = reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("privileged operation output reader failed"))?;
+
+    let flush_deadline = Instant::now() + Duration::from_millis(200);
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+
+    while let Ok(chunk) = rx.recv_timeout(Duration::from_millis(10)) {
+        if chunk.0 {
+            stdout_bytes.extend(chunk.1);
+        } else {
+            stderr_bytes.extend(chunk.1);
+        }
+        if Instant::now() >= flush_deadline {
+            break;
+        }
+    }
+
+    let mut output = stdout_bytes;
+    if output.len() < MAX_OPERATION_OUTPUT_BYTES {
+        let remaining = MAX_OPERATION_OUTPUT_BYTES - output.len();
+        let take = stderr_bytes.len().min(remaining);
+        output.extend_from_slice(&stderr_bytes[..take]);
+    }
     Ok(BoundedOutput {
         success: status.success(),
         exit_code: status.code().unwrap_or(1),
         output,
     })
+}
+
+fn drain_pipe<R: Read>(
+    mut reader: R,
+    max_bytes: usize,
+    tx: &std::sync::mpsc::Sender<(bool, Vec<u8>)>,
+    is_stdout: bool,
+) {
+    let mut total = 0;
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(bytes_read) => {
+                let take = bytes_read.min(max_bytes.saturating_sub(total));
+                if take > 0 {
+                    if tx.send((is_stdout, buffer[..take].to_vec())).is_err() {
+                        break;
+                    }
+                    total += take;
+                }
+                if total >= max_bytes {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Requests graceful termination of the whole child process tree (SIGTERM on

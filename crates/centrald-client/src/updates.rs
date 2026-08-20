@@ -423,6 +423,7 @@ fn install_artifact(artifact: &Path, package_kind: PackageKind) -> Result<()> {
                 let mut command = std::process::Command::new("/usr/bin/dpkg");
                 command.args(["-i"]);
                 command.arg(artifact);
+                command.env("DEBIAN_FRONTEND", "noninteractive");
                 let output = crate::runners::run_bounded(&mut command)?;
                 if !output.success {
                     bail!(

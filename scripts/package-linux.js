@@ -37,13 +37,16 @@ const clientBinary = requireRegularFile(
   "centrald-client binary",
 );
 
+const debianArch = targetDir.includes("aarch64") ? "arm64" : "amd64";
+const manifestArchitecture = debianArch === "arm64" ? "aarch64" : "x86_64";
+
 const serverArtifact = path.join(
   output,
-  `centrald-server_${version}_linux_x86_64.deb`,
+  `centrald-server_${version}_linux_${manifestArchitecture}.deb`,
 );
 const clientArtifact = path.join(
   output,
-  `centrald-client_${version}_linux_x86_64.deb`,
+  `centrald-client_${version}_linux_${manifestArchitecture}.deb`,
 );
 
 buildDebianPackage({
@@ -55,6 +58,7 @@ buildDebianPackage({
     version: debianVersion,
     description:
       "CentralD homelab management server for Ubuntu Server 24.04 and newer",
+    architecture: debianArch,
     dependencies: [
       "ca-certificates",
       "coreutils",
@@ -64,6 +68,8 @@ buildDebianPackage({
     ],
   }),
   postinst: `#!/bin/sh\nset -eu\ninstall -d -m 0700 -o root -g root /etc/centrald /var/lib/centrald\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-server.service; then\n    systemctl try-restart centrald-server.service || echo "warning: centrald-server.service did not restart cleanly; inspect with systemctl status centrald-server" >&2\n  fi\nfi\n`,
+  prerm: `#!/bin/sh\nset -eu\nif [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then\n  if command -v systemctl >/dev/null 2>&1; then\n    if systemctl is-active --quiet centrald-server.service; then\n      systemctl stop centrald-server.service || true\n    fi\n    systemctl disable centrald-server.service || true\n  fi\nfi\n`,
+  postrm: `#!/bin/sh\nset -eu\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\nfi\n`,
   service: path.join(root, "deploy/systemd/centrald-server.service"),
 });
 
@@ -75,9 +81,12 @@ buildDebianPackage({
     packageName: "centrald-client",
     version: debianVersion,
     description: "Outbound-only CentralD managed client for Debian and Ubuntu",
+    architecture: debianArch,
     dependencies: ["adduser", "ca-certificates", "systemd", "util-linux"],
   }),
   postinst: `#!/bin/sh\nset -eu\nif ! getent group centrald >/dev/null 2>&1; then addgroup --system centrald >/dev/null; fi\nif ! getent passwd centrald >/dev/null 2>&1; then adduser --system --ingroup centrald --home /var/lib/centrald-client --no-create-home --shell /usr/sbin/nologin centrald >/dev/null; fi\nfor path in /var/lib/centrald-client /var/lib/centrald-client/identities /var/lib/centrald-client/configurations /var/lib/centrald-client.lock; do\n  if [ -L "$path" ]; then echo "refusing symbolic-link CentralD client state: $path" >&2; exit 1; fi\ndone\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client/identities\ninstall -d -m 0700 -o centrald -g centrald /var/lib/centrald-client/configurations\nif [ -e /var/lib/centrald-client.lock ]; then\n  if [ ! -f /var/lib/centrald-client.lock ]; then echo "CentralD client state lock is not a regular file" >&2; exit 1; fi\n  chown centrald:centrald /var/lib/centrald-client.lock\n  chmod 0600 /var/lib/centrald-client.lock\nelse\n  install -m 0600 -o centrald -g centrald /dev/null /var/lib/centrald-client.lock\nfi\nif [ -e /var/lib/centrald-broker ]; then\n  if [ ! -d /var/lib/centrald-broker ]; then echo "CentralD broker state is not a directory" >&2; exit 1; fi\n  chown root:root /var/lib/centrald-broker\n  chmod 0700 /var/lib/centrald-broker\nelse\n  install -d -m 0700 -o root -g root /var/lib/centrald-broker\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-client.service; then\n    systemctl try-restart centrald-client.service || echo "warning: centrald-client.service did not restart cleanly; inspect with systemctl status centrald-client" >&2\n  fi\nfi\n`,
+  prerm: `#!/bin/sh\nset -eu\nif [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then\n  if command -v systemctl >/dev/null 2>&1; then\n    for unit in centrald-client.service centrald-broker.service; do\n      if systemctl is-active --quiet "$unit"; then\n        systemctl stop "$unit" || true\n      fi\n      systemctl disable "$unit" || true\n    done\n  fi\nfi\n`,
+  postrm: `#!/bin/sh\nset -eu\nif [ "$1" = "purge" ]; then\n  rm -rf /var/lib/centrald-client /var/lib/centrald-broker /var/lib/centrald-client.lock\n  if getent passwd centrald >/dev/null 2>&1; then\n    deluser --system --quiet centrald >/dev/null 2>&1 || true\n  fi\n  if getent group centrald >/dev/null 2>&1; then\n    delgroup --system --quiet centrald >/dev/null 2>&1 || true\n  fi\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\nfi\n`,
   services: [
     {
       source: path.join(root, "deploy/systemd/centrald-client.service"),
@@ -98,7 +107,7 @@ if (!options.debsOnly) {
   );
   const adminArtifact = path.join(
     output,
-    `centrald-admin_${version}_linux_x86_64.AppImage`,
+    `centrald-admin_${version}_linux_${manifestArchitecture}.AppImage`,
   );
   copyArtifact(appImage, adminArtifact, 0o755);
   copySignatureIfPresent(appImage, adminArtifact);
@@ -145,13 +154,14 @@ function controlFile({
   version: packageVersion,
   description,
   dependencies,
+  architecture = "amd64",
 }) {
   return [
     `Package: ${packageName}`,
     `Version: ${packageVersion}`,
     "Section: admin",
     "Priority: optional",
-    "Architecture: amd64",
+    `Architecture: ${architecture}`,
     "Maintainer: CentralD maintainers",
     `Depends: ${dependencies.join(", ")}`,
     `Description: ${description}`,
@@ -166,6 +176,8 @@ function buildDebianPackage({
   binaryName,
   control,
   postinst,
+  prerm,
+  postrm,
   service,
   services,
 }) {
@@ -218,9 +230,21 @@ function buildDebianPackage({
     fs.writeFileSync(path.join(staging, "DEBIAN/control"), control, {
       mode: 0o644,
     });
-    fs.writeFileSync(path.join(staging, "DEBIAN/postinst"), postinst, {
-      mode: 0o755,
-    });
+    if (postinst) {
+      fs.writeFileSync(path.join(staging, "DEBIAN/postinst"), postinst, {
+        mode: 0o755,
+      });
+    }
+    if (prerm) {
+      fs.writeFileSync(path.join(staging, "DEBIAN/prerm"), prerm, {
+        mode: 0o755,
+      });
+    }
+    if (postrm) {
+      fs.writeFileSync(path.join(staging, "DEBIAN/postrm"), postrm, {
+        mode: 0o755,
+      });
+    }
     fs.writeFileSync(
       path.join(staging, `usr/share/doc/${binaryName}/copyright`),
       "CentralD is distributed under GPL-3.0-or-later.\n",

@@ -71,12 +71,11 @@ until their gates flip with acceptance tests.
   (Minisign-verified updater JSON once for availability; install requires the
   plugin feed JSON to match that verified body, then Tauri `.sig`). The WebView
   has no `updater:default` capability. Typed job and shell RPCs exist but fail
-  closed on the wire until
-  `PRIVILEGED_OPERATIONS_ENABLED` / `TERMINAL_SESSIONS_ENABLED` are release
-  gates. Client Hello advertises only `heartbeat`. The broker verifies grants
-  with a root/SYSTEM-owned copy of the grant verifying key, not the
-  daemon-writable identity PEM. Packaged brokers stay installed but are not
-  enabled or auto-started.
+  closed on the wire until `PRIVILEGED_OPERATIONS_ENABLED` /
+  `TERMINAL_SESSIONS_ENABLED` are release gates. Client Hello advertises only
+  `heartbeat`. The broker verifies grants with a root/SYSTEM-owned copy of the
+  grant verifying key, not the daemon-writable identity PEM. Packaged brokers
+  stay installed but are not enabled or auto-started.
 - Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.

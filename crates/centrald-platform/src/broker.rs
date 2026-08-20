@@ -1,4 +1,5 @@
-use std::collections::{HashSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 
 use centrald_common::grant::{GrantError, GrantOperation, SignedGrant};
 use chrono::{DateTime, Utc};
@@ -55,7 +56,7 @@ pub struct GrantVerifier {
     device_id: Uuid,
     signing_key: VerifyingKey,
     consumed: HashSet<Uuid>,
-    order: VecDeque<(Uuid, DateTime<Utc>)>,
+    order: BinaryHeap<Reverse<(DateTime<Utc>, Uuid)>>,
 }
 
 #[derive(Debug, Error)]
@@ -85,7 +86,7 @@ impl GrantVerifier {
             device_id,
             signing_key,
             consumed: HashSet::new(),
-            order: VecDeque::new(),
+            order: BinaryHeap::new(),
         }
     }
 
@@ -95,16 +96,16 @@ impl GrantVerifier {
             return;
         }
         if self.consumed.insert(grant_id) {
-            self.order.push_back((grant_id, expires_at));
+            self.order.push(Reverse((expires_at, grant_id)));
         }
     }
 
-    /// Verifies a broker grant and records its identifier against replay.
-    ///
+    /// Verifies a grant's signature and expiration, bounds the replay set, and
+    /// marks it consumed.
     /// # Errors
     ///
-    /// Returns an error when grant verification fails or the grant identifier
-    /// has already been consumed.
+    /// Returns an error if the grant is expired, belongs to a different device,
+    /// has an invalid signature, or is a replayed grant.
     pub fn verify_and_consume(
         &mut self,
         grant: &SignedGrant,
@@ -112,25 +113,24 @@ impl GrantVerifier {
     ) -> Result<(), BrokerError> {
         grant.verify(&self.signing_key, self.device_id, now)?;
         self.prune_expired(now);
-        if !self.consumed.insert(grant.grant.id) {
+        if self.consumed.contains(&grant.grant.id) {
             return Err(BrokerError::Replay);
         }
-        self.order
-            .push_back((grant.grant.id, grant.grant.expires_at));
-        if self.order.len() > MAX_REPLAY_ENTRIES {
-            self.consumed.remove(&grant.grant.id);
-            self.order.pop_back();
+        if self.order.len() >= MAX_REPLAY_ENTRIES {
             return Err(BrokerError::ReplaySetFull);
         }
+        self.consumed.insert(grant.grant.id);
+        self.order
+            .push(Reverse((grant.grant.expires_at, grant.grant.id)));
         Ok(())
     }
 
     fn prune_expired(&mut self, now: DateTime<Utc>) {
-        while let Some((id, expires_at)) = self.order.front().copied() {
+        while let Some(&Reverse((expires_at, id))) = self.order.peek() {
             if expires_at > now {
                 break;
             }
-            self.order.pop_front();
+            self.order.pop();
             self.consumed.remove(&id);
         }
     }

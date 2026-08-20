@@ -142,7 +142,7 @@ jobs:
         shell: bash
         run: |
           test -n "$MINISIGN_SECRET_KEY_B64"
-          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 --decode > "$RUNNER_TEMP/centrald-minisign.key"
+          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$RUNNER_TEMP/centrald-minisign.key"
           chmod 0600 "$RUNNER_TEMP/centrald-minisign.key"
           echo "MINISIGN_SECRET_KEY_FILE=$RUNNER_TEMP/centrald-minisign.key" >> "$GITHUB_ENV"
       - name: Assemble release artifacts

@@ -539,23 +539,7 @@ async fn serve_windows(executor: Arc<BrokerExecutor<SystemOperationRunner>>) -> 
         loop {
             let pipe = crate::windows_ffi::accept_pipe_connection()?;
             let stream = crate::windows_ffi::PipeStream::new(pipe);
-            // Bound the first-frame wait: poll the pipe in non-blocking mode
-            // so a client that connects but never sends cannot hold a pipe
-            // instance (and its connection slot) forever.
-            crate::windows_ffi::set_pipe_polling(&stream, true)
-                .context("switch the broker pipe to polling mode")?;
-            let first = match poll_first_frame(&stream) {
-                Ok(first) => first,
-                Err(error) => {
-                    tracing::warn!(%error, "broker request failed before dispatch");
-                    continue;
-                }
-            };
-            crate::windows_ffi::set_pipe_polling(&stream, false)
-                .context("restore the broker pipe to blocking mode")?;
-            let (read_half, write_half) = stream.split()?;
-            let reader: Box<dyn std::io::Read + Send> = Box::new(read_half);
-            let writer: Box<dyn std::io::Write + Send> = Box::new(write_half);
+
             // Cap concurrent in-flight connections so a flood of valid clients
             // cannot exhaust threads; excess connections are dropped.
             let current = inflight.fetch_add(1, Ordering::Relaxed);
@@ -567,6 +551,7 @@ async fn serve_windows(executor: Arc<BrokerExecutor<SystemOperationRunner>>) -> 
                 );
                 continue;
             }
+
             // Each connection runs on its own thread so a long operation or a
             // shell session cannot block the accept loop (which must keep
             // serving new pipe instances).
@@ -575,10 +560,37 @@ async fn serve_windows(executor: Arc<BrokerExecutor<SystemOperationRunner>>) -> 
             let inflight = inflight.clone();
             std::thread::spawn(move || {
                 let _connection_guard = ConnectionGuard::new(&inflight);
-                if let Err(error) =
-                    dispatch_connection(&first, reader, writer, &executor, &sessions)
-                {
-                    tracing::warn!(%error, "broker request failed");
+
+                // Bound the first-frame wait: poll the pipe in non-blocking mode
+                // so a client that connects but never sends cannot hold a pipe
+                // instance (and its connection slot) forever.
+                if let Err(error) = crate::windows_ffi::set_pipe_polling(&stream, true) {
+                    tracing::warn!(%error, "failed to switch broker pipe to polling mode");
+                    return;
+                }
+                let first = match poll_first_frame(&stream) {
+                    Ok(first) => first,
+                    Err(error) => {
+                        tracing::warn!(%error, "broker request failed before dispatch");
+                        return;
+                    }
+                };
+                if let Err(error) = crate::windows_ffi::set_pipe_polling(&stream, false) {
+                    tracing::warn!(%error, "failed to restore broker pipe to blocking mode");
+                    return;
+                }
+
+                match stream.split() {
+                    Ok((read_half, write_half)) => {
+                        let reader: Box<dyn std::io::Read + Send> = Box::new(read_half);
+                        let writer: Box<dyn std::io::Write + Send> = Box::new(write_half);
+                        if let Err(error) =
+                            dispatch_connection(&first, reader, writer, &executor, &sessions)
+                        {
+                            tracing::warn!(%error, "broker request failed");
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "failed to split stream"),
                 }
             });
         }

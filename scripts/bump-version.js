@@ -54,9 +54,12 @@ try {
   // release flow re-verifies tag existence before publishing.
 }
 
-if (!cargo.includes(`version = "${currentVersion}"`)) {
+const workspacePackageRegex =
+  /(\[workspace\.package\][\s\S]*?\bversion\s*=\s*)"([^"]+)"/;
+const workspaceMatch = cargo.match(workspacePackageRegex);
+if (!workspaceMatch || workspaceMatch[2] !== currentVersion) {
   throw new Error(
-    `Cargo.toml does not contain version = "${currentVersion}" as expected.`,
+    `Cargo.toml [workspace.package] version is "${workspaceMatch?.[2]}", expected "${currentVersion}".`,
   );
 }
 if (tauri.version !== currentVersion) {
@@ -67,10 +70,7 @@ if (tauri.version !== currentVersion) {
 
 packageJson.version = nextVersion;
 tauri.version = nextVersion;
-const nextCargo = cargo.replace(
-  `version = "${currentVersion}"`,
-  `version = "${nextVersion}"`,
-);
+const nextCargo = cargo.replace(workspacePackageRegex, `$1"${nextVersion}"`);
 
 fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, {
   encoding: "utf8",

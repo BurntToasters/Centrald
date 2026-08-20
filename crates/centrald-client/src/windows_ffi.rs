@@ -28,6 +28,7 @@
 
 use std::ffi::c_void;
 use std::io::{self, Read, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr;
 
@@ -40,7 +41,8 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
 };
 use windows_sys::Win32::Security::Cryptography::{
-    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
+    CryptUnprotectData,
 };
 use windows_sys::Win32::Security::{
     LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, LogonUserW, LookupAccountNameW,
@@ -310,10 +312,6 @@ impl Write for PipeStream {
         if result == 0 {
             return Err(io::Error::last_os_error());
         }
-        let flushed = unsafe { FlushFileBuffers(self.handle.as_raw_handle() as HANDLE) };
-        if flushed == 0 {
-            return Err(io::Error::last_os_error());
-        }
         Ok(written_bytes as usize)
     }
 
@@ -554,10 +552,12 @@ pub fn write_vault_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
     ));
     centrald_common::secure_fs::write_new_file(&temporary, contents, true)
         .with_context(|| format!("write credential vault replacement {}", temporary.display()))?;
+    let temp_wide: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let replaced = unsafe {
         MoveFileExW(
-            encode_wide(&temporary.to_string_lossy()).as_ptr(),
-            encode_wide(&path.to_string_lossy()).as_ptr(),
+            temp_wide.as_ptr(),
+            path_wide.as_ptr(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
     };

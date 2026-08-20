@@ -337,6 +337,7 @@ pub async fn serve(
     config: ServerConfig,
     enrollment_crypto_limit: Arc<Semaphore>,
     _server_lock: ServerLock,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
@@ -364,7 +365,17 @@ pub async fn serve(
         .with_context(|| format!("bind local control socket {}", path.display()))?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = tokio::select! {
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                stream
+            }
+            _ = shutdown_rx.changed() => {
+                tracing::info!("shutting down local control listener");
+                break;
+            }
+        };
+
         let credentials = stream.peer_cred()?;
         if credentials.uid() != 0 {
             warn!(uid = credentials.uid(), "rejected local management peer");
@@ -396,6 +407,7 @@ pub async fn serve(
     _config: ServerConfig,
     _enrollment_crypto_limit: Arc<Semaphore>,
     _server_lock: ServerLock,
+    mut _shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     bail!("centrald-server local management is supported on Debian/Ubuntu hosts")
 }

@@ -971,7 +971,6 @@ pub(crate) async fn client_channel(config: &ClientConfig) -> Result<Channel> {
     Endpoint::from_shared(config.endpoint.clone())
         .context("invalid client endpoint")?
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
         .tls_config(
             ClientTlsConfig::new()
                 .domain_name(config.server_name.clone())

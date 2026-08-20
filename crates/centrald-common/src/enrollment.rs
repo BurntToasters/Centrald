@@ -164,7 +164,8 @@ pub fn generate_enrollment_invitation(
     rand::rng().fill_bytes(&mut secret);
     let encoded_secret = URL_SAFE_NO_PAD.encode(secret);
     let signed = format!("{INVITATION_PREFIX}.{payload}.{encoded_secret}");
-    let mac = hmac_sha256(&secret, signed.as_bytes());
+    let hmac_key = claims.server_instance_id.into_bytes();
+    let mac = hmac_sha256(&hmac_key, signed.as_bytes());
     Ok(SecretString::from(format!(
         "{signed}.{}",
         URL_SAFE_NO_PAD.encode(mac)
@@ -206,16 +207,20 @@ pub fn parse_enrollment_invitation(
     if mac.len() != 32 {
         return Err(EnrollmentSecretError::InvalidFormat);
     }
-    let signed = format!("{INVITATION_PREFIX}.{payload}.{encoded_secret}");
-    let expected = hmac_sha256(&random, signed.as_bytes());
-    if !constant_time_equal(&expected, &mac) {
-        return Err(EnrollmentSecretError::Integrity);
-    }
-    let payload = URL_SAFE_NO_PAD
+
+    let payload_bytes = URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|_| EnrollmentSecretError::InvalidFormat)?;
     let claims: EnrollmentInvitationClaims =
-        serde_json::from_slice(&payload).map_err(|_| EnrollmentSecretError::InvalidFormat)?;
+        serde_json::from_slice(&payload_bytes).map_err(|_| EnrollmentSecretError::InvalidFormat)?;
+
+    let signed = format!("{INVITATION_PREFIX}.{payload}.{encoded_secret}");
+    let hmac_key = claims.server_instance_id.into_bytes();
+    let expected = hmac_sha256(&hmac_key, signed.as_bytes());
+    if !constant_time_equal(&expected, &mac) {
+        return Err(EnrollmentSecretError::Integrity);
+    }
+
     claims.validate()?;
     Ok(claims)
 }

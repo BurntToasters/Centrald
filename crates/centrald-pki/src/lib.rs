@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+use x509_parser::prelude::FromDer;
 use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
 
 const ROOT_VALIDITY_DAYS: i64 = 15 * 365;
@@ -85,6 +86,8 @@ pub enum PkiError {
         kind: &'static str,
         available_until: OffsetDateTime,
     },
+    #[error("certificate request has an invalid proof-of-possession signature")]
+    InvalidCsrSignature,
 }
 
 impl CertificateAuthority {
@@ -446,6 +449,14 @@ pub fn issue_identity_csr(
     if expected_name.trim().is_empty() {
         return Err(PkiError::EmptyIdentityName);
     }
+
+    let (_, pem) = x509_parser::pem::parse_x509_pem(csr_pem.as_bytes())
+        .map_err(|_| PkiError::CertificateParse("invalid CSR PEM format".to_string()))?;
+    let (_, req) =
+        x509_parser::certification_request::X509CertificationRequest::from_der(&pem.contents)
+            .map_err(|_| PkiError::CertificateParse("invalid CSR DER format".to_string()))?;
+    req.verify_signature()
+        .map_err(|_| PkiError::InvalidCsrSignature)?;
 
     let mut request = CertificateSigningRequestParams::from_pem(csr_pem)?;
     let requested_name = request

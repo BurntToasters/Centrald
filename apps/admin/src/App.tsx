@@ -167,8 +167,10 @@ export function App() {
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
     void invoke<ProfileList>("list_profiles")
       .then((loaded) => {
+        if (!active) return;
         setProfiles(loaded.profiles);
         if (loaded.profiles.length > 0) setSelectedId(loaded.profiles[0].id);
         if (loaded.warnings.length > 0) {
@@ -181,7 +183,12 @@ export function App() {
           );
         }
       })
-      .catch((reason: unknown) => setError(String(reason)));
+      .catch((reason: unknown) => {
+        if (active) setError(String(reason));
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const refreshClientInvitations = useCallback(async (profileId: string) => {
@@ -199,22 +206,70 @@ export function App() {
 
   useEffect(() => {
     if (!selectedId) return;
-    void loadTargets(selectedId);
+    let active = true;
+    void Promise.resolve().then(async () => {
+      if (!active) return;
+      setLoadingTargets(true);
+      setError(null);
+      try {
+        const loaded = await invoke<Target[]>("list_targets", {
+          profileId: selectedId,
+        });
+        if (!active) return;
+        setTargets(loaded);
+        setTerminalTarget((current) => current || loaded[0]?.id || "");
+      } catch (reason) {
+        if (active) setError(String(reason));
+      } finally {
+        if (active) setLoadingTargets(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
-    void invoke<EnrollmentKey[]>("list_client_invitations", {
-      profileId: selectedId,
-      includeInactive: false,
-    })
-      .then(setClientInvitations)
-      .catch((reason: unknown) => setError(String(reason)));
+    let active = true;
+    void Promise.resolve().then(async () => {
+      if (!active) return;
+      try {
+        const loaded = await invoke<EnrollmentKey[]>(
+          "list_client_invitations",
+          {
+            profileId: selectedId,
+            includeInactive: false,
+          },
+        );
+        if (active) setClientInvitations(loaded);
+      } catch (reason) {
+        if (active) setError(String(reason));
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
-    void loadSettings(selectedId);
+    let active = true;
+    void Promise.resolve().then(async () => {
+      if (!active) return;
+      setError(null);
+      try {
+        const loaded = await invoke<ServerSettings>("get_server_settings", {
+          profileId: selectedId,
+        });
+        if (active) setSettings(loaded);
+      } catch (reason) {
+        if (active) setError(String(reason));
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [section, selectedId]);
 
   async function loadTargets(profileId: string) {
@@ -228,17 +283,6 @@ export function App() {
       setError(String(reason));
     } finally {
       setLoadingTargets(false);
-    }
-  }
-
-  async function loadSettings(profileId: string) {
-    setError(null);
-    try {
-      setSettings(
-        await invoke<ServerSettings>("get_server_settings", { profileId }),
-      );
-    } catch (reason) {
-      setError(String(reason));
     }
   }
 
@@ -259,9 +303,7 @@ export function App() {
         },
       });
       setProfiles((current) => [...current, profile]);
-      setSelectedId(profile.id);
-      setEnrollment(emptyEnrollment);
-      setShowEnrollment(false);
+      selectProfile(profile.id);
       setNotice(`Connected to ${profile.name} with a local mTLS identity.`);
     } catch (reason) {
       setError(String(reason));

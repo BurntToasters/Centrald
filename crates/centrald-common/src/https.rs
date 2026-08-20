@@ -36,7 +36,34 @@ fn host_is_non_public_literal(url: &Url) -> bool {
                 || ip.is_unicast_link_local()
                 || ip.is_unspecified()
         }
-        Some(Host::Domain(_)) => false,
+        Some(Host::Domain(domain)) => {
+            let port = url.port_or_known_default().unwrap_or(443);
+            if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(domain, port)) {
+                #[allow(clippy::collapsible_if)]
+                if let Some(ip) = addrs.next().map(|addr| addr.ip()) {
+                    if ip.is_loopback() || ip.is_unspecified() {
+                        return true;
+                    }
+                    match ip {
+                        std::net::IpAddr::V4(ipv4) => {
+                            if ipv4.is_private()
+                                || ipv4.is_link_local()
+                                || ipv4.is_broadcast()
+                                || ipv4.is_documentation()
+                            {
+                                return true;
+                            }
+                        }
+                        std::net::IpAddr::V6(ipv6) => {
+                            if ipv6.is_unique_local() || ipv6.is_unicast_link_local() {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
         None => true,
     }
 }

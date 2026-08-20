@@ -196,10 +196,8 @@ async fn run(config_path: &Path) -> Result<()> {
                 .max_decoding_message_size(ENROLLMENT_MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(ENROLLMENT_MAX_MESSAGE_BYTES),
         )
-        .serve_with_shutdown(enrollment_address, shutdown_signal());
+        .serve(enrollment_address);
     let clients = Server::builder()
-        .tcp_keepalive(Some(Duration::from_secs(60)))
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
         .tls_config(
             ServerTlsConfig::new()
                 .identity(identity.clone())
@@ -211,10 +209,8 @@ async fn run(config_path: &Path) -> Result<()> {
                 .max_decoding_message_size(CLIENT_MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(CLIENT_MAX_MESSAGE_BYTES),
         )
-        .serve_with_shutdown(client_address, shutdown_signal());
+        .serve(client_address);
     let admins = Server::builder()
-        .tcp_keepalive(Some(Duration::from_secs(60)))
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
         .tls_config(
             ServerTlsConfig::new()
                 .identity(identity)
@@ -226,22 +222,13 @@ async fn run(config_path: &Path) -> Result<()> {
                 .max_decoding_message_size(ADMIN_MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(ADMIN_MAX_MESSAGE_BYTES),
         )
-        .serve_with_shutdown(admin_address, shutdown_signal());
-        
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let local_shutdown = shutdown_rx.clone();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        let _ = shutdown_tx.send(true);
-    });
-
+        .serve(admin_address);
     let local_control = centrald_server::local_control::serve(
         local_socket,
         local_pool,
         config.clone(),
         enrollment_crypto_limit,
         server_lock,
-        local_shutdown,
     );
 
     if centrald_server::manage::tls_retirement_pending(config_path)? {
@@ -271,60 +258,24 @@ async fn run(config_path: &Path) -> Result<()> {
     let enrollment = async { enrollment.await.context("enrollment listener stopped") };
     let clients = async { clients.await.context("client listener stopped") };
     let admins = async { admins.await.context("Admin listener stopped") };
-    let tls_renewal = monitor_server_tls_renewal(config_path.to_path_buf(), shutdown_rx.clone());
+    let tls_renewal = monitor_server_tls_renewal(config_path.to_path_buf());
     tokio::try_join!(enrollment, clients, admins, local_control, tls_renewal)?;
     Ok(())
 }
 
-async fn monitor_server_tls_renewal(
-    config_path: PathBuf,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
+async fn monitor_server_tls_renewal(config_path: PathBuf) -> Result<()> {
     let mut interval = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Startup already performed the first renewal check. Consume the immediate
     // tick so the long-lived daemon checks again on the bounded schedule.
     interval.tick().await;
     loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                if centrald_server::manage::renew_server_identity_if_needed(&config_path)? {
-                    bail!(
-                        "server TLS leaf renewed; exiting so the service manager can activate the replacement identity"
-                    );
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                return Ok(());
-            }
+        interval.tick().await;
+        if centrald_server::manage::renew_server_identity_if_needed(&config_path)? {
+            bail!(
+                "server TLS leaf renewed; exiting so the service manager can activate the replacement identity"
+            );
         }
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .unwrap_or_else(|_| tracing::warn!("failed to install Ctrl+C handler"));
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        } else {
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
     }
 }
 

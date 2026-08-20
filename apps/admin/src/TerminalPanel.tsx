@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
 export type TerminalTarget = Readonly<{
@@ -72,6 +72,31 @@ export function TerminalPanel({
     null,
   );
   const fitAddonRef = useRef<FitAddon | null>(null);
+
+  useEffect(() => {
+    return () => {
+      const session = sessionRef.current;
+      if (session) {
+        void invoke("shell_close", { handle: session.handle }).catch(
+          () => undefined,
+        );
+        session.terminal.dispose();
+        sessionRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleResize() {
+      if (fitAddonRef.current && sessionRef.current) {
+        fitAddonRef.current.fit();
+      }
+    }
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
 
   const terminalReady = Boolean(profileId && selectedTarget);
 
@@ -265,7 +290,7 @@ export function TerminalPanel({
           <div className="row-actions">
             <button
               className="button primary"
-              disabled={!terminalReady || opening}
+              disabled={!terminalReady || opening || sessionOpen}
               onClick={() => void openTerminal()}
               type="button"
             >

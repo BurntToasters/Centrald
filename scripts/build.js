@@ -150,7 +150,8 @@ function buildWindows(architecture) {
       "nsis",
     ];
     if (releaseConfig) tauriArgs.push("--config", releaseConfig);
-    run("npx", tauriArgs, { cwd: path.join(root, "apps/admin") });
+    tauriArgs.push("--", "--locked");
+    run("npx", ["--no-install", ...tauriArgs], { cwd: path.join(root, "apps/admin") });
   } finally {
     removeTemporaryConfig(releaseConfig);
   }
@@ -361,7 +362,7 @@ function signHostUpdaterArtifact(artifact) {
     delete childEnvironment.TAURI_SIGNING_PRIVATE_KEY;
   }
   args.push(artifact);
-  run("npx", args, { env: childEnvironment });
+  run("npx", ["--no-install", ...args], { env: childEnvironment });
   requireRegularFile(
     `${artifact}.sig`,
     "Tauri updater signature for the host-signed artifact",
@@ -401,7 +402,8 @@ function buildLinuxNative() {
       "appimage",
     ];
     if (releaseConfig) tauriArgs.push("--config", releaseConfig);
-    run("npx", tauriArgs, { cwd: path.join(root, "apps/admin") });
+    tauriArgs.push("--", "--locked");
+    run("npx", ["--no-install", ...tauriArgs], { cwd: path.join(root, "apps/admin") });
   } finally {
     removeTemporaryConfig(releaseConfig);
   }

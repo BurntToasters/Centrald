@@ -118,9 +118,13 @@ test("Admin updater is registered and remains operator initiated", async () => {
   );
   assert.match(cargo, /tauri-plugin-updater/);
   assert.match(runtime, /tauri_plugin_updater::Builder/);
-  assert.match(capability, /updater:default/);
-  assert.match(app, /downloadAndInstall/);
-  assert.match(runtime, /verify_admin_update_feed/);
+  assert.doesNotMatch(capability, /updater:default/);
+  assert.match(runtime, /updates::check_admin_update/);
+  assert.match(runtime, /updates::install_admin_update/);
+  assert.match(app, /check_admin_update/);
+  assert.match(app, /install_admin_update/);
+  assert.doesNotMatch(app, /downloadAndInstall/);
+  assert.doesNotMatch(app, /@tauri-apps\/plugin-updater/);
   assert.match(cargo, /minisign/);
   const updater = await read("apps/admin/src-tauri/src/updates.rs");
   assert.match(updater, /minisign::verify/);
@@ -129,6 +133,7 @@ test("Admin updater is registered and remains operator initiated", async () => {
     /minisign::verify\(&public_key, &signature_box, &mut cursor, true, false, false\)/,
   );
   assert.match(updater, /RELEASE_CHANNEL/);
+  assert.match(updater, /update\.version == signed_version/);
   const manifests = await read("scripts/generate-manifests.js");
   assert.match(manifests, /channel,/);
   assert.match(manifests, /centrald-channel:/);
@@ -1467,4 +1472,78 @@ test("capability-free packaged server rejects privileged listener ports", async 
   const unit = await readFile("deploy/systemd/centrald-server.service", "utf8");
   assert.match(unit, /^CapabilityBoundingSet=\s*$/m);
   assert.match(config, /port\| \*port < 1024/);
+});
+
+test("audit findings stay closed: grant key, broker first frame, Hello, redirects, bump restore", async () => {
+  const [
+    broker,
+    brokerSession,
+    enrollment,
+    localControl,
+    services,
+    installer,
+    windowsFfi,
+    bump,
+    auditExport,
+    localAudit,
+    profiles,
+    shell,
+    unit,
+  ] = await Promise.all([
+    read("crates/centrald-client/src/broker.rs"),
+    read("crates/centrald-client/src/broker_session.rs"),
+    read("crates/centrald-client/src/enrollment.rs"),
+    read("crates/centrald-server/src/local_control.rs"),
+    read("crates/centrald-server/src/services.rs"),
+    read("deploy/windows/install-client.ps1"),
+    read("crates/centrald-client/src/windows_ffi.rs"),
+    read("scripts/bump-version.js"),
+    read("crates/centrald-server/src/audit_export.rs"),
+    read("crates/centrald-server/src/local_audit.rs"),
+    read("apps/admin/src-tauri/src/profiles.rs"),
+    read("apps/admin/src-tauri/src/shell.rs"),
+    read("deploy/systemd/centrald-server.service"),
+  ]);
+  assert.match(broker, /publish_grant_verifying_key/);
+  assert.match(broker, /GRANT_VERIFYING_KEY_FILE/);
+  assert.match(broker, /read_grant_verifying_key/);
+  assert.match(enrollment, /publish_grant_verifying_key/);
+  assert.match(
+    broker,
+    /unframe_message\(&frame, MAX_FIRST_FRAME_BYTES\)\?\.to_vec\(\)/,
+  );
+  assert.match(brokerSession, /pub fn unframe_message/);
+  assert.match(broker, /MAX_INFLIGHT_CONNECTIONS: usize = 64/);
+  assert.match(broker, /FIRST_FRAME_TIMEOUT/);
+  assert.match(windowsFfi, /FRFW/);
+  assert.doesNotMatch(windowsFfi, /A;;GA;;;/);
+  assert.match(
+    installer,
+    /Set-CentralDTreeAcl -Path \$brokerDirectory -ServiceRights None/,
+  );
+  assert.match(services, /fn allowed_hello_capability/);
+  assert.match(services, /https_redirect_is_allowed/);
+  assert.match(services, /requested\.data_dir\.is_empty\(\)/);
+  assert.doesNotMatch(
+    services,
+    /requested\.data_dir == config\.server\.data_dir/,
+  );
+  assert.match(auditExport, /parse_export_range/);
+  assert.match(auditExport, /first_sequence/);
+  assert.match(localAudit, /O_NOFOLLOW/);
+  assert.match(localControl, /from_mode\(0o755\)/);
+  assert.doesNotMatch(
+    localControl,
+    /set_permissions\(parent, std::fs::Permissions::from_mode\(0o700\)\)/,
+  );
+  assert.match(bump, /originalPackageJsonText/);
+  assert.doesNotMatch(bump, /unlinkSync/);
+  assert.match(profiles, /struct AdminProfileView/);
+  assert.match(profiles, /AdminProfileLock::acquire\(&profile_dir\)/);
+  assert.match(shell, /TERMINAL_SESSIONS_ENABLED/);
+  assert.match(unit, /Wants=network-online.target postgresql.service/);
+  assert.match(
+    await read("crates/centrald-server/src/db.rs"),
+    /PGCHANNELBINDING/,
+  );
 });

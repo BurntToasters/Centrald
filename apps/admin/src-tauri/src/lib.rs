@@ -54,7 +54,8 @@ pub fn run() -> tauri::Result<()> {
             shell::shell_input,
             shell::shell_resize,
             shell::shell_close,
-            updates::verify_admin_update_feed
+            updates::check_admin_update,
+            updates::install_admin_update
         ])
         .run(tauri::generate_context!())
 }

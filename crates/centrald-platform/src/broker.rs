@@ -74,6 +74,8 @@ pub enum BrokerError {
     OutputTooLarge,
     #[error("grant replay set is full of still-valid grants")]
     ReplaySetFull,
+    #[error("privileged operations are unavailable in this alpha release")]
+    PrivilegedDisabled,
 }
 
 impl GrantVerifier {
@@ -146,6 +148,9 @@ impl GrantVerifier {
         now: DateTime<Utc>,
         runner: &mut R,
     ) -> Result<BrokerResponse, BrokerError> {
+        if !centrald_common::PRIVILEGED_OPERATIONS_ENABLED && !cfg!(test) {
+            return Err(BrokerError::PrivilegedDisabled);
+        }
         self.verify_and_consume(&request.signed_grant, now)?;
         if request.parameters_json.len() > MAX_PARAMETERS_BYTES {
             return Err(BrokerError::ParametersTooLarge);
@@ -221,7 +226,7 @@ mod tests {
             operation: GrantOperation::RestartMachine,
             parameters_sha256: hex::encode(Sha256::digest(parameters)),
             issued_at: now - Duration::seconds(1),
-            expires_at: now + Duration::hours(1),
+            expires_at: now + Duration::seconds(900),
             nonce: Uuid::now_v7().to_string(),
         };
         BrokerRequest {

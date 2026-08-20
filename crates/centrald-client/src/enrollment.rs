@@ -287,7 +287,8 @@ fn persist_identity_generation(
             grant_key,
             config_toml,
             service_ids,
-        )
+        )?;
+        crate::broker::publish_grant_verifying_key(grant_key)
     }
 
     #[cfg(not(unix))]
@@ -303,7 +304,7 @@ fn persist_identity_generation(
         // this generation until every referenced file is durable and protected.
         write_new_file(config_path, config_toml, true)?;
         secure_configuration_file(&config.data_dir, config_path)?;
-        Ok(())
+        crate::broker::publish_grant_verifying_key(grant_key)
     }
 }
 
@@ -998,7 +999,16 @@ fn secure_unix_repair_state(layout: &RepairLayout, lock_path: &Path) -> Result<(
     // descriptor walk rather than re-resolving their paths.
     crate::unix_state::secure_configuration(&data_dir, "current.pointer", service_ids)?;
     crate::unix_state::secure_configuration(&data_dir, ".current.pointer.lock", service_ids)?;
-    crate::unix_state::secure_lock(lock_path, service_ids)
+    crate::unix_state::secure_lock(lock_path, service_ids)?;
+    let grant_path = data_dir
+        .join("identities")
+        .join(layout.identity_id.to_string())
+        .join("generations")
+        .join(layout.generation_id.to_string())
+        .join("grant-signing-public.pem");
+    let grant_key = std::fs::read(&grant_path)
+        .with_context(|| format!("read grant verifying key {}", grant_path.display()))?;
+    crate::broker::publish_grant_verifying_key(&grant_key)
 }
 
 #[cfg(unix)]

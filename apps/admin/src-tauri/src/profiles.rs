@@ -138,11 +138,35 @@ pub struct AdminProfile {
     elevation_private_key: Option<PathBuf>,
 }
 
+/// IPC view of an Admin profile. Private-key and certificate paths stay
+/// process-local and are never sent to the `WebView`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminProfileView {
+    id: Uuid,
+    identity_id: Uuid,
+    name: String,
+    endpoint: String,
+    server_name: String,
+    certificate_expires_at: DateTime<Utc>,
+}
+
 impl AdminProfile {
     /// The stored elevation private key path, if this profile has one.
     #[must_use]
     pub fn elevation_private_key(&self) -> Option<&Path> {
         self.elevation_private_key.as_deref()
+    }
+
+    fn view(&self) -> AdminProfileView {
+        AdminProfileView {
+            id: self.id,
+            identity_id: self.identity_id,
+            name: self.name.clone(),
+            endpoint: self.endpoint.clone(),
+            server_name: self.server_name.clone(),
+            certificate_expires_at: self.certificate_expires_at,
+        }
     }
 }
 
@@ -261,7 +285,7 @@ pub struct ProfileWarning {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileListView {
-    profiles: Vec<AdminProfile>,
+    profiles: Vec<AdminProfileView>,
     warnings: Vec<ProfileWarning>,
 }
 
@@ -273,7 +297,10 @@ pub fn list_profiles(app: AppHandle) -> Result<ProfileListView, String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub async fn enroll_admin(app: AppHandle, input: EnrollAdminInput) -> Result<AdminProfile, String> {
+pub async fn enroll_admin(
+    app: AppHandle,
+    input: EnrollAdminInput,
+) -> Result<AdminProfileView, String> {
     enroll_admin_inner(&app, input).await.map_err(display_error)
 }
 
@@ -378,7 +405,7 @@ pub async fn update_server_settings(
 async fn enroll_admin_inner(
     app: &AppHandle,
     input: EnrollAdminInput,
-) -> anyhow::Result<AdminProfile> {
+) -> anyhow::Result<AdminProfileView> {
     validate_enrollment_input(&input)?;
     let access_key = SecretString::from(input.access_key);
     let claims = parse_enrollment_invitation(&access_key)?;
@@ -411,14 +438,63 @@ async fn enroll_admin_inner(
     let elevation_signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core_06::OsRng);
     let elevation_public_key = elevation_signing_key.verifying_key().to_bytes().to_vec();
 
-    let channel = tls_channel(
+    let profile_id = Uuid::now_v7();
+    let generation_id = Uuid::now_v7();
+    let profile_dir = profiles_dir(app)?.join(profile_id.to_string());
+    let credential_dir = profile_dir
+        .join("credentials")
+        .join(generation_id.to_string());
+    let identity_private_key = credential_dir.join("identity-key.pem");
+    let elevation_private_key = profile_dir.join("elevation-key.pem");
+    std::fs::create_dir_all(&profile_dir)
+        .with_context(|| format!("create Admin profile directory {}", profile_dir.display()))?;
+    let cleanup = |profile_dir: &Path| {
+        if profile_dir.is_dir() {
+            let _ = std::fs::remove_dir_all(profile_dir);
+        }
+    };
+    let _profile_lock = match AdminProfileLock::acquire(&profile_dir).await {
+        Ok(lock) => lock,
+        Err(error) => {
+            cleanup(&profile_dir);
+            return Err(error.context("lock the new Admin profile directory"));
+        }
+    };
+    if let Err(error) = prepare_profile_directories(&profile_dir, &credential_dir) {
+        cleanup(&profile_dir);
+        return Err(error.context("prepare Admin profile directories"));
+    }
+    if let Err(error) = write_new_file(
+        &identity_private_key,
+        identity_key.serialize_pem().as_bytes(),
+        true,
+    ) {
+        cleanup(&profile_dir);
+        return Err(anyhow::Error::from(error)
+            .context("persist the Admin identity private key before enrollment"));
+    }
+    if let Err(error) =
+        persist_elevation_key(&profile_dir, &elevation_private_key, &elevation_signing_key)
+    {
+        cleanup(&profile_dir);
+        return Err(error.context("persist the Admin elevation key before enrollment"));
+    }
+
+    let channel = match tls_channel(
         &enrollment_endpoint,
         &claims.server_name,
         &claims.root_ca_pem,
         None,
     )
-    .await?;
-    let response = EnrollmentServiceClient::new(channel)
+    .await
+    {
+        Ok(channel) => channel,
+        Err(error) => {
+            cleanup(&profile_dir);
+            return Err(error);
+        }
+    };
+    let response = match EnrollmentServiceClient::new(channel)
         .enroll_admin(EnrollAdminRequest {
             enrollment_key: access_key.expose_secret().to_owned(),
             csr_pem: csr.into_bytes(),
@@ -429,37 +505,41 @@ async fn enroll_admin_inner(
                 minor: centrald_protocol::PROTOCOL_MINOR,
             }),
         })
-        .await?
-        .into_inner();
-    let identity_id: Uuid = response.identity_id.parse()?;
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(error) => {
+            cleanup(&profile_dir);
+            return Err(error.into());
+        }
+    };
+    let identity_id: Uuid = match response.identity_id.parse() {
+        Ok(identity_id) => identity_id,
+        Err(error) => {
+            cleanup(&profile_dir);
+            return Err(error.into());
+        }
+    };
     if response.role != IdentityRole::Admin as i32 || response.certificate_chain_pem.is_empty() {
+        cleanup(&profile_dir);
         anyhow::bail!("server returned incomplete Admin enrollment material");
     }
 
-    let certificate_expires_at = timestamp_datetime(response.expires_at).ok_or_else(|| {
-        anyhow::anyhow!("server returned an invalid Admin certificate expiration")
-    })?;
-    let profile_id = Uuid::now_v7();
-    let generation_id = Uuid::now_v7();
-    let profile_dir = profiles_dir(app)?.join(profile_id.to_string());
-    let credential_dir = profile_dir
-        .join("credentials")
-        .join(generation_id.to_string());
-    let root_ca = credential_dir.join("root-ca.pem");
-    let identity_certificate = credential_dir.join("identity-chain.pem");
-    let identity_private_key = credential_dir.join("identity-key.pem");
-    let elevation_private_key = profile_dir.join("elevation-key.pem");
+    let Some(certificate_expires_at) = timestamp_datetime(response.expires_at) else {
+        cleanup(&profile_dir);
+        anyhow::bail!("server returned an invalid Admin certificate expiration");
+    };
     let profile = AdminProfile {
         id: profile_id,
         identity_id,
         name: claims.name,
         endpoint: admin_endpoint,
         server_name: claims.server_name,
-        root_ca,
-        identity_certificate,
+        root_ca: credential_dir.join("root-ca.pem"),
+        identity_certificate: credential_dir.join("identity-chain.pem"),
         identity_private_key,
         certificate_expires_at,
-        elevation_private_key: Some(elevation_private_key.clone()),
+        elevation_private_key: Some(elevation_private_key),
     };
     if let Err(error) = persist_profile_generation(
         &profile_dir,
@@ -467,31 +547,17 @@ async fn enroll_admin_inner(
         &profile,
         claims.root_ca_pem.as_bytes(),
         &response.certificate_chain_pem,
-        identity_key.serialize_pem().as_bytes(),
+        None,
     ) {
-        if profile_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&profile_dir);
-        }
+        cleanup(&profile_dir);
         return Err(error.context(
             "server accepted a pending Admin enrollment, but local profile persistence failed; the pending identity will expire automatically",
         ));
     }
-    // The elevation key is written with the profile but is not part of the
-    // per-generation identity material.
-    if let Err(error) =
-        persist_elevation_key(&profile_dir, &elevation_private_key, &elevation_signing_key)
-    {
-        if profile_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&profile_dir);
-        }
-        return Err(error.context("persist the Admin elevation key"));
-    }
     let publication = match publish_active_profile(&profile_dir, generation_id) {
         Ok(publication) => publication,
         Err(error) => {
-            if profile_dir.is_dir() {
-                let _ = std::fs::remove_dir_all(&profile_dir);
-            }
+            cleanup(&profile_dir);
             return Err(error.context("publish the enrolled Admin credential generation"));
         }
     };
@@ -501,9 +567,7 @@ async fn enroll_admin_inner(
                 "Admin identity activation failed and pointer rollback also failed; the published generation was retained for recovery: {rollback_error}"
             )));
         }
-        if profile_dir.is_dir() {
-            let _ = std::fs::remove_dir_all(&profile_dir);
-        }
+        cleanup(&profile_dir);
         return Err(error.context(
             "durable Admin identity was not activated; local publication was rolled back and the pending server identity will expire",
         ));
@@ -512,7 +576,7 @@ async fn enroll_admin_inner(
         .commit()
         .context("finalize the active Admin credential pointer")?;
     secure_profile_tree(&profile_dir)?;
-    Ok(profile)
+    Ok(profile.view())
 }
 
 fn persist_profile_generation(
@@ -521,7 +585,7 @@ fn persist_profile_generation(
     profile: &AdminProfile,
     root_ca: &[u8],
     identity_certificate: &[u8],
-    identity_private_key: &[u8],
+    identity_private_key: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let metadata_path = profile_dir.join(format!("profile-{generation_id}.json"));
     let credential_dir = profile
@@ -532,7 +596,9 @@ fn persist_profile_generation(
         prepare_profile_directories(profile_dir, credential_dir)?;
         write_new_file(&profile.root_ca, root_ca, false)?;
         write_new_file(&profile.identity_certificate, identity_certificate, false)?;
-        write_new_file(&profile.identity_private_key, identity_private_key, true)?;
+        if let Some(identity_private_key) = identity_private_key {
+            write_new_file(&profile.identity_private_key, identity_private_key, true)?;
+        }
         secure_profile_tree(profile_dir)?;
         let metadata = serde_json::to_vec_pretty(profile)?;
         // The uniquely named profile document is the publication point. A
@@ -919,7 +985,7 @@ async fn renew_admin_profile(
         &replacement,
         &root_ca,
         &response.certificate_chain_pem,
-        identity_key.serialize_pem().as_bytes(),
+        Some(identity_key.serialize_pem().as_bytes()),
     )?;
     let publication = match publish_active_profile(profile_dir, generation_id) {
         Ok(publication) => publication,
@@ -1103,14 +1169,14 @@ fn list_profiles_inner(app: &AppHandle) -> anyhow::Result<ProfileListView> {
             Ok(serde_json::from_slice::<AdminProfile>(&raw)?)
         });
         match profile_result {
-            Ok(profile) => profiles.push(profile),
+            Ok(profile) => profiles.push(profile.view()),
             Err(error) => warnings.push(ProfileWarning {
                 directory: entry.file_name().to_string_lossy().into_owned(),
                 message: error.to_string(),
             }),
         }
     }
-    profiles.sort_by(|left: &AdminProfile, right| left.name.cmp(&right.name));
+    profiles.sort_by(|left: &AdminProfileView, right| left.name.cmp(&right.name));
     warnings.sort_by(|left, right| left.directory.cmp(&right.directory));
     Ok(ProfileListView { profiles, warnings })
 }

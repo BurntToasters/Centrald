@@ -221,7 +221,8 @@ execution and credential saving visibly disabled.
   `centrald-common/src/build_info.rs::manifest_url_for_channel` (baked via
   `build.rs`) and `scripts/lib/build-config.js`; the contract tests
   (`hardening-contract.test.js`, `build-config.test.js`) pin the mapping:
-  CDN set -> `<CDN_BASE_URL>/<channel>/<manifest>`; GitHub without CDN ->
+  CDN set -> `<CDN_BASE_URL>/<channel>/<manifest>` (CDN wins even when
+  `UPDATE_BASE_URL` is also set); GitHub without CDN ->
   stable at `/releases/latest/download`, other channels at
   `raw.githubusercontent.com/<repo>/centrald-channels/channels/<channel>/latest`;
   generic origins -> `<repo>/<channel>/latest`.
@@ -237,7 +238,12 @@ execution and credential saving visibly disabled.
   bounds (signature body capped at 4096 bytes, drained chunk-by-chunk so a
   chunked response cannot grow memory) and verifies with
   `allow_legacy = false`; `UPDATE_BASE_URL_EXPLICIT` is a baked flag from
-  `centrald.config`.
+  `centrald.config`. HTTPS redirects are capped at 3 hops, HTTPS-only, and
+  refuse loopback/RFC1918/link-local/ULA IP literals (cross-host public HTTPS
+  stays allowed for GitHub Releases). Admin self-update uses the same fetch
+  policy: `check_admin_update` / `install_admin_update` Minisign-verify the
+  updater JSON, then call the Tauri plugin only if versions match. Do not
+  restore `updater:default` in the Admin capability ACL.
 
 ## Client update extraction safety
 
@@ -255,6 +261,17 @@ execution and credential saving visibly disabled.
 
 ## Broker and operation hardening
 
+- The broker verifies grants with a root/SYSTEM-owned copy of the grant
+  verifying key (`/var/lib/centrald-broker/grant-signing-public.pem` on Unix,
+  `%ProgramData%\CentralD\Broker\grant-signing-public.pem` on Windows). Never
+  read the daemon-writable identity PEM for authorization. Enrollment and
+  Unix repair publish that copy as root; the unprivileged daemon must not.
+- Unix broker sockets are `root:centrald` mode `0660`. `/run/centrald` stays
+  `0755` so the unprivileged client can traverse to `broker.sock`; do not
+  chmod the runtime directory to `0700` after create. Windows broker pipes
+  use `FRFW` (not `GA`). Unix and Windows both cap 64 in-flight connections
+  and a 10 s first-frame timeout; Windows first frames must be unframed to
+  the JSON body before dispatch.
 - Windows broker pipe connections poll for the first frame in non-blocking
   mode with a 10 s timeout (then restore blocking mode before dispatch), and
   a 64-connection in-flight cap drops excess connections instead of
@@ -391,7 +408,8 @@ to run it; never claim it passed.
 The enrollment, owned-database setup/config/reset flow, mTLS onboarding and
 renewal/activation, invitation lifecycle, basic inventory, leased typed job
 protocol (fail-closed on the wire in this alpha), audited remote settings,
-client rescue, Admin Tauri updater with Minisign feed verification, packaging,
+client rescue, Admin Tauri updater with Minisign-then-plugin installation
+(no WebView updater ACL), packaging,
 and immutable manifest/release pipeline are implemented in this alpha tree.
 PTY/ConPTY shell transport, the privileged operation runner, OS-vault credential
 saving, and server/client package installation remain gated on the wire, broker,

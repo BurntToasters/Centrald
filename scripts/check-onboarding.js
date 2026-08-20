@@ -22,6 +22,8 @@ for (const [source, text, label] of [
   [readme, "centrald-server initial-setup", "README"],
   [quickstart, "centrald-server config", "quick start"],
   [quickstart, "centrald-client enroll", "quick start"],
+  [quickstart, "centrald-server channel", "quick start channel switch"],
+  [quickstart, "centrald-client reenroll", "quick start reenroll"],
   [serverMain, "enable", "server setup service activation"],
   [serverMain, "CENTRALD_SKIP_SERVICE_START", "advanced service-start opt-out"],
   [manage, "Add a client (guided)", "guided server TUI"],

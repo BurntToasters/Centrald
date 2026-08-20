@@ -663,7 +663,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, ConfigError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -701,7 +701,7 @@ mod tests {
             runtime: RuntimeSection {
                 heartbeat_interval_seconds: 30,
                 offline_after_seconds: 90,
-                job_ttl_seconds: 900,
+                job_ttl_seconds: 1_800,
                 shell_idle_timeout_seconds: 900,
                 max_shell_frame_bytes: 65_536,
             },
@@ -715,18 +715,31 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn valid_config_is_accepted() {
+        assert!(valid_config().validate().is_ok());
+    }
+
+    #[test]
+    fn job_ttl_meets_the_broker_reporting_floor() {
+        assert!((1800..=604_800).contains(&valid_config().runtime.job_ttl_seconds));
+    }
+
     #[test]
     fn rejects_shared_listener_port() {
         let mut config = valid_config();
         config.server.admin_listen = config.server.client_listen;
-        assert!(config.validate().is_err());
+        let error = config.validate().expect_err("shared ports must fail");
+        assert!(error.to_string().contains("distinct ports"));
     }
 
     #[test]
     fn rejects_privileged_listener_port_without_bind_capability() {
         let mut config = valid_config();
         config.server.enrollment_listen.set_port(443);
-        assert!(config.validate().is_err());
+        let error = config.validate().expect_err("port 443 must fail");
+        assert!(error.to_string().contains("1024 and 65535"));
     }
 
     #[test]

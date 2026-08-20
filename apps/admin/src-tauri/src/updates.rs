@@ -1,10 +1,11 @@
-//! Admin updater feed verification.
+//! Admin updater feed verification and installation.
 //!
 //! The Tauri updater plugin verifies its own `.sig` with `TAURI_UPDATER_PUBKEY`.
 //! That is not a `CentralD` release signature. This module fetches the updater
 //! JSON plus its Minisign `.minisig`, verifies with the baked Minisign public
-//! key, and refuses a channel other than this build's `RELEASE_CHANNEL` before
-//! the plugin is allowed to `check()` / `downloadAndInstall()`.
+//! key, and refuses a channel other than this build's `RELEASE_CHANNEL`.
+//! Install runs only through these Rust commands; the `WebView` has no updater
+//! plugin ACL.
 
 use std::io::Cursor;
 use std::time::Duration;
@@ -13,25 +14,86 @@ use anyhow::{Context, Result, bail};
 use centrald_common::build_info::{
     MINISIGN_PUBLIC_KEY, RELEASE_CHANNEL, tauri_update_manifest_url,
 };
+use serde::Serialize;
+use tauri::AppHandle;
+use tauri_plugin_updater::UpdaterExt;
 
 const MAX_TAURI_MANIFEST_BYTES: usize = 256 * 1024;
 const MAX_SIGNATURE_BYTES: usize = 4096;
 
-/// Fetches and Minisign-verifies the Admin updater JSON, then checks that the
-/// signed channel matches this build.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUpdateStatus {
+    available: bool,
+    version: Option<String>,
+}
+
+/// Minisign-verifies the Admin updater feed, then asks the plugin whether an
+/// update matching that signed version is available.
 ///
 /// # Errors
 ///
-/// Returns an error when the feed cannot be fetched, the Minisign signature
-/// fails, or the signed channel does not match this Admin build.
+/// Returns an error when the feed cannot be fetched, Minisign fails, the
+/// signed channel does not match this build, or the plugin version disagrees
+/// with the signed feed.
 #[tauri::command]
-pub async fn verify_admin_update_feed() -> Result<(), String> {
-    verify_admin_update_feed_inner()
+pub async fn check_admin_update(app: AppHandle) -> Result<AdminUpdateStatus, String> {
+    check_admin_update_inner(app)
         .await
         .map_err(|error| error.to_string())
 }
 
-async fn verify_admin_update_feed_inner() -> Result<()> {
+/// Minisign-verifies the feed again, then installs only if the plugin update
+/// version matches the signed feed.
+///
+/// # Errors
+///
+/// Returns an error when verification fails, no update is available, versions
+/// disagree, or installation fails.
+#[tauri::command]
+pub async fn install_admin_update(app: AppHandle) -> Result<(), String> {
+    install_admin_update_inner(app)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn check_admin_update_inner(app: AppHandle) -> Result<AdminUpdateStatus> {
+    let signed_version = verify_admin_update_feed_inner().await?;
+    match app.updater()?.check().await? {
+        Some(update) if update.version == signed_version => Ok(AdminUpdateStatus {
+            available: true,
+            version: Some(update.version),
+        }),
+        Some(update) => bail!(
+            "updater plugin version {} does not match the Minisign-verified feed {signed_version}",
+            update.version
+        ),
+        None => Ok(AdminUpdateStatus {
+            available: false,
+            version: None,
+        }),
+    }
+}
+
+async fn install_admin_update_inner(app: AppHandle) -> Result<()> {
+    let signed_version = verify_admin_update_feed_inner().await?;
+    let Some(update) = app.updater()?.check().await? else {
+        bail!("no Admin update is available");
+    };
+    if update.version != signed_version {
+        bail!(
+            "updater plugin version {} does not match the Minisign-verified feed {signed_version}",
+            update.version
+        );
+    }
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .context("download and install the signed Admin update")?;
+    Ok(())
+}
+
+async fn verify_admin_update_feed_inner() -> Result<String> {
     let manifest_url = tauri_update_manifest_url();
     if manifest_url.is_empty() {
         bail!("this Admin build has no updater manifest URL");
@@ -42,10 +104,10 @@ async fn verify_admin_update_feed_inner() -> Result<()> {
             if attempt.previous().len() >= 3 {
                 return attempt.stop();
             }
-            if attempt.url().scheme() != "https" {
-                return attempt.stop();
+            match centrald_common::https::https_redirect_is_allowed(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
             }
-            attempt.follow()
         }))
         .build()?;
     let manifest_bytes = fetch_bounded(&client, &manifest_url, MAX_TAURI_MANIFEST_BYTES).await?;
@@ -67,7 +129,13 @@ async fn verify_admin_update_feed_inner() -> Result<()> {
             "Admin updater channel {channel:?} does not match this build's {RELEASE_CHANNEL} channel"
         );
     }
-    Ok(())
+    let version = parsed
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .context("Admin updater JSON is missing version")?
+        .to_owned();
+    Ok(version)
 }
 
 async fn fetch_bounded(client: &reqwest::Client, url: &str, max_bytes: usize) -> Result<Vec<u8>> {

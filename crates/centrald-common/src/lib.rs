@@ -6,6 +6,7 @@ pub mod config;
 pub mod enrollment;
 pub mod grant;
 pub mod host;
+pub mod https;
 pub mod release;
 pub mod secure_fs;
 #[cfg(windows)]

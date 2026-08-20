@@ -1,5 +1,4 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { check } from "@tauri-apps/plugin-updater";
 import {
   FormEvent,
   useCallback,
@@ -12,7 +11,10 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-type AvailableUpdate = NonNullable<Awaited<ReturnType<typeof check>>>;
+type AdminUpdateStatus = Readonly<{
+  available: boolean;
+  version: string | null;
+}>;
 
 type ServerProfile = Readonly<{
   id: string;
@@ -184,7 +186,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [availableUpdate, setAvailableUpdate] =
-    useState<AvailableUpdate | null>(null);
+    useState<AdminUpdateStatus | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   const selected =
@@ -426,12 +428,11 @@ export function App() {
     setCheckingUpdate(true);
     setError(null);
     try {
-      await invoke("verify_admin_update_feed");
-      const update = await check();
-      setAvailableUpdate(update);
+      const status = await invoke<AdminUpdateStatus>("check_admin_update");
+      setAvailableUpdate(status.available ? status : null);
       setNotice(
-        update
-          ? `CentralD Admin ${update.version} is available.`
+        status.available && status.version
+          ? `CentralD Admin ${status.version} is available.`
           : "CentralD Admin is up to date.",
       );
     } catch (reason) {
@@ -447,7 +448,7 @@ export function App() {
     if (!availableUpdate) return;
     if (
       !window.confirm(
-        `Download and install CentralD Admin ${availableUpdate.version}? The application may close during installation.`,
+        `Download and install CentralD Admin ${availableUpdate.version ?? ""}? The application may close during installation.`,
       )
     ) {
       return;
@@ -455,8 +456,7 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      await invoke("verify_admin_update_feed");
-      await availableUpdate.downloadAndInstall();
+      await invoke("install_admin_update");
       setNotice(
         "The signed update was installed. Reopen CentralD Admin to run the new version.",
       );
@@ -1136,94 +1136,78 @@ function Devices({
                   </span>
                 </span>
                 <span className="row-actions">
-                  <button
-                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
-                    title="Unavailable in this alpha release."
-                    onClick={
-                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
-                        ? () =>
-                            void onJob(
-                              target,
-                              "restart-client-service",
-                              "Client service restart",
-                            )
-                        : undefined
-                    }
-                    type="button"
-                  >
-                    Restart agent
-                  </button>
-                  <button
-                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
-                    title="Unavailable in this alpha release."
-                    onClick={
-                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
-                        ? () =>
-                            void onJob(
-                              target,
-                              "check-os-updates",
-                              "OS update check",
-                            )
-                        : undefined
-                    }
-                    type="button"
-                  >
-                    Check updates
-                  </button>
-                  <button
-                    disabled={busy || !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE}
-                    title="Unavailable in this alpha release."
-                    onClick={
-                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
-                        ? () =>
-                            void onJob(
-                              target,
-                              "apply-os-updates",
-                              "Apply OS updates",
-                              `Apply all available OS package updates on ${target.name}?`,
-                            )
-                        : undefined
-                    }
-                    type="button"
-                  >
-                    Apply updates
-                  </button>
-                  <button
-                    disabled={
-                      busy ||
-                      !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE ||
-                      !updatesEnabled ||
-                      !latestVersion
-                    }
-                    title={
-                      !PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
-                        ? "Unavailable in this alpha release."
-                        : updatesEnabled
-                          ? "Installs the server-verified CentralD release on this device."
-                          : "Release updates are disabled on this server."
-                    }
-                    onClick={
-                      PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE
-                        ? () => {
-                            const version = window.prompt(
-                              `Approved CentralD version to install on ${target.name}:`,
-                              latestVersion,
-                            );
-                            if (!version?.trim()) return;
-                            void onJob(
-                              target,
-                              "update-client",
-                              "CentralD client update",
-                              `Install CentralD ${version.trim()} on ${target.name}?`,
-                              { expectedVersion: version.trim() },
-                            );
-                          }
-                        : undefined
-                    }
-                    type="button"
-                  >
-                    Update CentralD
-                  </button>
+                  {PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE ? (
+                    <>
+                      <button
+                        disabled={busy}
+                        title="Unavailable in this alpha release."
+                        onClick={() =>
+                          void onJob(
+                            target,
+                            "restart-client-service",
+                            "Client service restart",
+                          )
+                        }
+                        type="button"
+                      >
+                        Restart agent
+                      </button>
+                      <button
+                        disabled={busy}
+                        title="Unavailable in this alpha release."
+                        onClick={() =>
+                          void onJob(
+                            target,
+                            "check-os-updates",
+                            "OS update check",
+                          )
+                        }
+                        type="button"
+                      >
+                        Check updates
+                      </button>
+                      <button
+                        disabled={busy}
+                        title="Unavailable in this alpha release."
+                        onClick={() =>
+                          void onJob(
+                            target,
+                            "apply-os-updates",
+                            "Apply OS updates",
+                            `Apply all available OS package updates on ${target.name}?`,
+                          )
+                        }
+                        type="button"
+                      >
+                        Apply updates
+                      </button>
+                      <button
+                        disabled={busy || !updatesEnabled || !latestVersion}
+                        title={
+                          updatesEnabled
+                            ? "Installs the server-verified CentralD release on this device."
+                            : "Release updates are disabled on this server."
+                        }
+                        onClick={() => {
+                          const version = window.prompt(
+                            `Approved CentralD version to install on ${target.name}:`,
+                            latestVersion,
+                          );
+                          if (!version?.trim()) return;
+                          void onJob(
+                            target,
+                            "update-client",
+                            "CentralD client update",
+                            `Install CentralD ${version.trim()} on ${target.name}?`,
+                            { expectedVersion: version.trim() },
+                          );
+                        }}
+                        type="button"
+                      >
+                        Update CentralD
+                      </button>
+                    </>
+                  ) : null}
                   <button
                     className="danger-text"
                     disabled={busy}

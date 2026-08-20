@@ -53,7 +53,7 @@ time = { version = "0.3", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 toml = "0.9"
-tauri = "2.8.5"
+tauri = "2.11.5"
 tauri-build = "2.4.1"
 tauri-plugin-updater = "=2.10.1"
 tonic = { version = "0.14", features = ["tls-ring"] }

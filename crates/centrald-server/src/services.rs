@@ -389,10 +389,10 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
             if attempt.previous().len() >= 3 {
                 return attempt.stop();
             }
-            if attempt.url().scheme() != "https" {
-                return attempt.stop();
+            match centrald_common::https::https_redirect_is_allowed(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
             }
-            attempt.follow()
         }))
         .build()?;
     let mut response = client
@@ -1730,17 +1730,11 @@ fn validate_read_only_settings(
 ) -> Result<(), Status> {
     let unchanged = requested.instance_id == config.server.instance_id.to_string()
         && requested.public_host == config.server.public_host
-        && (requested.data_dir.is_empty()
-            || requested.data_dir == config.server.data_dir.display().to_string())
-        && (requested.local_socket.is_empty()
-            || requested.local_socket == config.server.local_socket.display().to_string())
-        && (requested.database_url_env.is_empty()
-            || requested.database_url_env == config.database.url_env)
-        && (requested.database_environment_file.is_empty()
-            || requested.database_environment_file
-                == config.database.environment_file.display().to_string())
-        && (requested.root_cert_path.is_empty()
-            || requested.root_cert_path == config.pki.root_cert.display().to_string())
+        && requested.data_dir.is_empty()
+        && requested.local_socket.is_empty()
+        && requested.database_url_env.is_empty()
+        && requested.database_environment_file.is_empty()
+        && requested.root_cert_path.is_empty()
         && requested.update_channel == config.updates.channel
         && requested.update_manifest_url == config.updates.manifest_url
         && requested.update_allow_prerelease == config.updates.allow_prerelease;
@@ -2340,6 +2334,11 @@ async fn handle_client_hello(
     let mut capabilities = std::collections::BTreeSet::new();
     for capability in hello.capabilities {
         validate_hello_text(&capability, MAX_HELLO_CAPABILITY_BYTES, "capability")?;
+        if !allowed_hello_capability(&capability) {
+            return Err(Status::invalid_argument(format!(
+                "unsupported client capability {capability}"
+            )));
+        }
         if !capabilities.insert(capability) {
             return Err(Status::invalid_argument("duplicate client capability"));
         }
@@ -2371,6 +2370,10 @@ fn validate_hello_text(value: &str, maximum: usize, field: &str) -> Result<(), S
         return Err(Status::invalid_argument(format!("{field} is invalid")));
     }
     Ok(())
+}
+
+fn allowed_hello_capability(name: &str) -> bool {
+    name == "heartbeat" || (centrald_common::PRIVILEGED_OPERATIONS_ENABLED && name == "typed_jobs")
 }
 
 async fn handle_client_frame(
@@ -3186,4 +3189,17 @@ fn sha256(bytes: &[u8]) -> Vec<u8> {
 pub(crate) fn normalized_audit_timestamp(value: DateTime<Utc>) -> DateTime<Utc> {
     DateTime::from_timestamp(value.timestamp(), value.timestamp_subsec_micros() * 1000)
         .unwrap_or(value)
+}
+
+#[cfg(test)]
+mod hello_capability_tests {
+    use super::allowed_hello_capability;
+
+    #[test]
+    fn heartbeat_is_the_only_live_hello_capability() {
+        assert!(allowed_hello_capability("heartbeat"));
+        assert!(!allowed_hello_capability("typed_jobs"));
+        assert!(!allowed_hello_capability("pty"));
+        assert!(!allowed_hello_capability(""));
+    }
 }

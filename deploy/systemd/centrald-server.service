@@ -2,7 +2,7 @@
 Description=CentralD management server
 Documentation=https://github.com/BurntToasters/centrald
 After=network-online.target postgresql.service
-Wants=network-online.target
+Wants=network-online.target postgresql.service
 ConditionPathExists=/etc/centrald/server.toml
 
 [Service]

@@ -7,6 +7,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const GRANT_DOMAIN: &[u8] = b"centrald-grant-v1\0";
+/// Hard cap on grant lifetime. Server-issued grants use 960s; this bound
+/// refuses a compromised signing key from minting long-lived grants.
+pub const MAX_GRANT_LIFETIME_SECONDS: i64 = 1_800;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +56,8 @@ pub enum GrantError {
     WrongDevice,
     #[error("grant is expired or not yet valid")]
     OutsideValidity,
+    #[error("grant lifetime exceeds the maximum validity window")]
+    LifetimeTooLong,
 }
 
 impl PrivilegedGrant {
@@ -86,6 +91,10 @@ impl SignedGrant {
     ) -> Result<(), GrantError> {
         if self.grant.device_id != expected_device {
             return Err(GrantError::WrongDevice);
+        }
+        let lifetime = self.grant.expires_at - self.grant.issued_at;
+        if lifetime.num_seconds() <= 0 || lifetime.num_seconds() > MAX_GRANT_LIFETIME_SECONDS {
+            return Err(GrantError::LifetimeTooLong);
         }
         if now < self.grant.issued_at || now > self.grant.expires_at {
             return Err(GrantError::OutsideValidity);
@@ -143,6 +152,29 @@ mod tests {
         assert!(matches!(
             signed.verify(&key.verifying_key(), Uuid::now_v7(), Utc::now()),
             Err(GrantError::WrongDevice)
+        ));
+    }
+
+    #[test]
+    fn grant_rejects_expiry_and_oversized_lifetime() {
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let device = Uuid::now_v7();
+        let now = Utc::now();
+        let mut expired = grant(device);
+        expired.issued_at = now - Duration::seconds(60);
+        expired.expires_at = now - Duration::seconds(1);
+        let signed = expired.sign(&key).unwrap();
+        assert!(matches!(
+            signed.verify(&key.verifying_key(), device, now),
+            Err(GrantError::OutsideValidity)
+        ));
+        let mut long_lived = grant(device);
+        long_lived.issued_at = now;
+        long_lived.expires_at = now + Duration::seconds(MAX_GRANT_LIFETIME_SECONDS + 1);
+        let signed = long_lived.sign(&key).unwrap();
+        assert!(matches!(
+            signed.verify(&key.verifying_key(), device, now),
+            Err(GrantError::LifetimeTooLong)
         ));
     }
 }

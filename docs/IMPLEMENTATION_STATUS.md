@@ -66,11 +66,14 @@ production-ready.
   audit sink.
 - Basic identity/platform/version/health inventory, client/invitation lifecycle,
   revision-checked settings, and operator-approved Tauri self-update wiring
-  (Minisign-verified updater JSON, then Tauri `.sig`). Typed job and shell RPCs
-  exist but fail closed on the wire until `PRIVILEGED_OPERATIONS_ENABLED` /
-  `TERMINAL_SESSIONS_ENABLED` are release gates. Client Hello advertises only
-  `heartbeat`. Packaged brokers stay installed but are not enabled or
-  auto-started.
+  (Minisign-verified updater JSON from a Rust command, then Tauri `.sig` only
+  after the signed version matches). The WebView has no `updater:default`
+  capability. Typed job and shell RPCs exist but fail closed on the wire until
+  `PRIVILEGED_OPERATIONS_ENABLED` / `TERMINAL_SESSIONS_ENABLED` are release
+  gates. Client Hello advertises only `heartbeat`. The broker verifies grants
+  with a root/SYSTEM-owned copy of the grant verifying key, not the
+  daemon-writable identity PEM. Packaged brokers stay installed but are not
+  enabled or auto-started.
 - Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.

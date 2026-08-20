@@ -72,9 +72,11 @@ in tracked `centrald.config`.
 
 ## Known alpha limitations
 
-OS update check/apply execution on Windows hosts and low-privilege shell
-sessions on Windows are not enabled; everything else in the alpha scope is
-implemented. Admin self-update is explicit and Tauri-signature verified; client
-rescue and certificate renewal are implemented but still require platform
-integration testing. Their UI or protocol scaffolding must not be treated as a
-security boundary. See `docs/IMPLEMENTATION_STATUS.md`.
+Privileged jobs, PTY/ConPTY shells, OS-vault credential saving, and remote
+package installation stay fail-closed on the wire and in the Admin GUI. Admin
+self-update is operator-initiated: Rust commands Minisign-verify the updater
+JSON, then install only when the Tauri plugin version matches that signed feed.
+The WebView has no updater plugin ACL. Client rescue and certificate renewal are
+implemented but still require platform integration testing. Scaffolded UI or
+protocol surfaces are not a security boundary. See
+`docs/IMPLEMENTATION_STATUS.md`.

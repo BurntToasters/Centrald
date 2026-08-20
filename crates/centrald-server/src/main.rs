@@ -186,7 +186,11 @@ async fn run(config_path: &Path) -> Result<()> {
     info!(%admin_address, "admin mTLS listener ready");
 
     let enrollment = Server::builder()
-        .tls_config(ServerTlsConfig::new().identity(identity.clone()))?
+        .tls_config(
+            ServerTlsConfig::new()
+                .identity(identity.clone())
+                .timeout(Duration::from_secs(10)),
+        )?
         .add_service(
             EnrollmentServiceServer::new(EnrollmentRpc::new(state.clone()))
                 .max_decoding_message_size(ENROLLMENT_MAX_MESSAGE_BYTES)
@@ -197,7 +201,8 @@ async fn run(config_path: &Path) -> Result<()> {
         .tls_config(
             ServerTlsConfig::new()
                 .identity(identity.clone())
-                .client_ca_root(client_ca.clone()),
+                .client_ca_root(client_ca.clone())
+                .timeout(Duration::from_secs(10)),
         )?
         .add_service(
             ClientServiceServer::new(ClientRpc::new(state.clone()))
@@ -209,7 +214,8 @@ async fn run(config_path: &Path) -> Result<()> {
         .tls_config(
             ServerTlsConfig::new()
                 .identity(identity)
-                .client_ca_root(admin_ca),
+                .client_ca_root(admin_ca)
+                .timeout(Duration::from_secs(10)),
         )?
         .add_service(
             AdminServiceServer::new(AdminRpc::new(state))

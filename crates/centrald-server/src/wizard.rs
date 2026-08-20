@@ -159,7 +159,7 @@ fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptio
     println!("  Recovery bundle: {}", recovery_key_output.display());
     println!("  First Admin: {admin_name}");
     println!("  Ports: 7443 enrollment, 7444 client mTLS, 7445 Admin mTLS");
-    println!("  PostgreSQL database is created when absent and then migrated.");
+    println!("  PostgreSQL: a new dedicated database is created; an existing database is refused.");
     if !Confirm::with_theme(&theme)
         .with_prompt("Create this CentralD server?")
         .default(true)
@@ -329,5 +329,13 @@ mod tests {
             validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok()
         );
         assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn wizard_copy_refuses_existing_databases() {
+        let source = include_str!("wizard.rs");
+        assert!(source.contains(
+            "PostgreSQL: a new dedicated database is created; an existing database is refused."
+        ));
     }
 }

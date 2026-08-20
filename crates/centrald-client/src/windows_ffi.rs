@@ -7,8 +7,9 @@
 //!
 //! - a DACL-restricted named pipe for the broker transport,
 //! - the machine reboot API used by the machine-restart operation,
-//! - OS-account validation (`LogonUserW`) and DPAPI vault encryption, and
-//! - the vault file writer.
+//! - OS-account validation (`LogonUserW`) and DPAPI vault encryption,
+//! - the vault file writer, and
+//! - `GetTickCount64` for Hello uptime.
 //!
 //! The pipe DACL grants access only to Local System (the broker itself) and
 //! the fixed `NT SERVICE\CentralDClient` virtual service account, which is
@@ -54,6 +55,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, SetNamedPipeHandleState, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Shutdown::InitiateSystemShutdownExW;
+use windows_sys::Win32::System::SystemInformation::GetTickCount64;
 
 use centrald_platform::broker::{MAX_WIRE_REQUEST_BYTES, MAX_WIRE_RESPONSE_BYTES};
 
@@ -88,12 +90,20 @@ pub fn request_system_reboot() -> Result<()> {
     Ok(())
 }
 
+/// Returns the approximate system uptime in seconds.
+#[must_use]
+pub fn uptime_seconds() -> u64 {
+    // SAFETY: GetTickCount64 has no parameters and returns a process-independent
+    // monotonic millisecond counter maintained by the operating system.
+    unsafe { GetTickCount64() / 1_000 }
+}
+
 /// Creates one named-pipe instance with a DACL restricted to Local System and
 /// the `CentralD` client service account.
 fn create_pipe_instance() -> Result<OwnedHandle> {
     let service_sid = resolve_service_sid(SERVICE_ACCOUNT)?;
     let service_sid_string = sid_to_string(&service_sid)?;
-    let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{service_sid_string})");
+    let sddl = format!("D:P(A;;FRFW;;;SY)(A;;FRFW;;;{service_sid_string})");
     let mut descriptor_pointer: *mut c_void = ptr::null_mut();
     let converted = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(

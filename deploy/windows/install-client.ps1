@@ -366,6 +366,15 @@ try {
 
   Set-CentralDTreeAcl -Path $InstallDirectory -ServiceRights ReadAndExecute
   Set-CentralDTreeAcl -Path $DataDirectory -ServiceRights Modify
+  $brokerDirectory = Join-Path $DataDirectory "Broker"
+  if (-not (Test-Path -LiteralPath $brokerDirectory)) {
+    New-Item -ItemType Directory -Path $brokerDirectory | Out-Null
+  }
+  Assert-NoReparseAncestors -Path $brokerDirectory
+  # Broker state is SYSTEM/Administrators only. The unprivileged client service
+  # must not be able to replace the grant verifying key or plant a junction
+  # under updates staging.
+  Set-CentralDTreeAcl -Path $brokerDirectory -ServiceRights None
 
   $preserveManualOptOut = $KeepManualStart -or (
     -not $StartAfterInstall -and $null -ne $previousStartValue -and $previousStartValue -ne 2

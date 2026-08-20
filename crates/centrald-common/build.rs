@@ -54,10 +54,13 @@ fn main() {
         _ => String::new(),
     };
     let update_base_explicit = matches!(values.get("UPDATE_BASE_URL").map(String::as_str), Some(value) if !value.trim().is_empty());
-    let update_base = match values.get("UPDATE_BASE_URL").map(String::as_str) {
-        Some(value) if !value.trim().is_empty() => value.to_owned(),
-        _ if !cdn_base.is_empty() => format!("{cdn_base}/{release_channel}"),
-        _ => default_update_base(&repo_url, &release_channel),
+    let update_base = if cdn_base.is_empty() {
+        match values.get("UPDATE_BASE_URL").map(String::as_str) {
+            Some(value) if !value.trim().is_empty() => value.to_owned(),
+            _ => default_update_base(&repo_url, &release_channel),
+        }
+    } else {
+        format!("{cdn_base}/{release_channel}")
     };
     validate_https_base(&update_base, "UPDATE_BASE_URL");
     let artifact_template = match values.get("ARTIFACT_BASE_URL_TEMPLATE").map(String::as_str) {

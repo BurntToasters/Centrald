@@ -24,9 +24,12 @@ const packageJsonPath = path.join(root, "package.json");
 const cargoPath = path.join(root, "Cargo.toml");
 const tauriPath = path.join(root, "apps/admin/src-tauri/tauri.conf.json");
 
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-const cargo = fs.readFileSync(cargoPath, "utf8");
-const tauri = JSON.parse(fs.readFileSync(tauriPath, "utf8"));
+const originalPackageJsonText = fs.readFileSync(packageJsonPath, "utf8");
+const packageJson = JSON.parse(originalPackageJsonText);
+const originalCargoText = fs.readFileSync(cargoPath, "utf8");
+const cargo = originalCargoText;
+const originalTauriText = fs.readFileSync(tauriPath, "utf8");
+const tauri = JSON.parse(originalTauriText);
 
 const currentVersion = packageJson.version;
 if (nextVersion === currentVersion) {
@@ -90,9 +93,18 @@ if (fs.existsSync(lockPath)) {
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch (error) {
-    fs.unlinkSync(cargoPath);
-    fs.unlinkSync(packageJsonPath);
-    fs.unlinkSync(tauriPath);
+    fs.writeFileSync(packageJsonPath, originalPackageJsonText, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    fs.writeFileSync(cargoPath, originalCargoText, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    fs.writeFileSync(tauriPath, originalTauriText, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
     throw new Error(
       "Cargo.lock could not be regenerated; version files were restored.",
       { cause: error },

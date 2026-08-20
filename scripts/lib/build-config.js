@@ -115,10 +115,10 @@ export function loadBuildConfig(root = process.cwd(), overrides = {}) {
   const cdnBaseUrl = values.CDN_BASE_URL
     ? validateHttpsBase(values.CDN_BASE_URL, "CDN_BASE_URL")
     : "";
-  const updateBaseUrl = values.UPDATE_BASE_URL
-    ? validateHttpsBase(values.UPDATE_BASE_URL, "UPDATE_BASE_URL")
-    : cdnBaseUrl
-      ? `${cdnBaseUrl}/${releaseChannel}`
+  const updateBaseUrl = cdnBaseUrl
+    ? `${cdnBaseUrl}/${releaseChannel}`
+    : values.UPDATE_BASE_URL
+      ? validateHttpsBase(values.UPDATE_BASE_URL, "UPDATE_BASE_URL")
       : defaultUpdateBase(repoUrl, releaseChannel);
   const artifactBaseUrlTemplate = values.ARTIFACT_BASE_URL_TEMPLATE
     ? validateArtifactTemplate(values.ARTIFACT_BASE_URL_TEMPLATE)

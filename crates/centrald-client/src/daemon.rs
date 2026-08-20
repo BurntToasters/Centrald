@@ -1114,19 +1114,11 @@ fn system_uptime_seconds() -> u64 {
         }
     }
     #[cfg(windows)]
-    return windows_uptime_seconds();
+    return crate::windows_ffi::uptime_seconds();
     #[cfg(not(any(target_os = "linux", windows)))]
     return 0;
     #[cfg(target_os = "linux")]
     0
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn windows_uptime_seconds() -> u64 {
-    // SAFETY: GetTickCount64 has no parameters and returns a process-independent
-    // monotonic millisecond counter maintained by the operating system.
-    unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() / 1_000 }
 }
 
 fn memory_bytes() -> (u64, u64) {

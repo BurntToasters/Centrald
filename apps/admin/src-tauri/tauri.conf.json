@@ -15,9 +15,13 @@
         "default-src": "'self'",
         "connect-src": "'self' ipc: http://ipc.localhost",
         "font-src": "'self'",
-        "img-src": "'self' asset: http://asset.localhost",
+        "img-src": "'self' asset: http://asset.localhost data:",
         "script-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self' 'unsafe-inline'",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'",
+        "form-action": "'self'"
       },
       "capabilities": ["default"]
     },

@@ -150,14 +150,13 @@ pub fn update_client(parameters_json: &[u8], installed_version: &str) -> Result<
 fn http_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            let next = attempt.url();
             if attempt.previous().len() >= 3 {
                 return attempt.stop();
             }
-            if next.scheme() != "https" {
-                return attempt.stop();
+            match centrald_common::https::https_redirect_is_allowed(attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
             }
-            attempt.follow()
         }))
         .build()
         .context("build the update HTTP client")
@@ -455,12 +454,27 @@ fn install_artifact(artifact: &Path, package_kind: PackageKind) -> Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_lines)]
 fn install_windows_zip(artifact: &Path) -> Result<()> {
     use std::io::Read;
 
     let staging = staging_dir()?;
     let extract_dir = staging.join("extract");
     std::fs::create_dir_all(&extract_dir).context("create extract directory")?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let metadata = extract_dir
+            .symlink_metadata()
+            .context("inspect extract directory")?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_dir()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            bail!("extract directory is not a real directory");
+        }
+    }
     let file =
         std::fs::File::open(artifact).with_context(|| format!("open {}", artifact.display()))?;
     let mut archive = zip::ZipArchive::new(file).context("open the client ZIP")?;
@@ -620,12 +634,31 @@ fn staging_dir() -> Result<PathBuf> {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             bail!("update staging path is not a real directory");
         }
-    } else {
-        std::fs::create_dir_all(&staging).context("create update staging directory")?;
-        #[cfg(unix)]
+        #[cfg(windows)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))?;
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                bail!("update staging path is a reparse point");
+            }
+        }
+        std::fs::remove_dir_all(&staging).context("wipe previous update staging directory")?;
+    }
+    std::fs::create_dir_all(&staging).context("create update staging directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let metadata = staging
+            .symlink_metadata()
+            .context("inspect update staging directory")?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_dir() {
+            bail!("update staging path is not a real directory");
         }
     }
     Ok(staging)

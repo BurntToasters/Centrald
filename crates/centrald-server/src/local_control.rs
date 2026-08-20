@@ -286,9 +286,10 @@ pub fn acquire_server_lock(socket_path: &Path) -> Result<ServerLock> {
     } else {
         std::fs::create_dir(parent)
             .with_context(|| format!("create local socket directory {}", parent.display()))?;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    // Packaged units share /run/centrald at 0755 so the unprivileged client can
+    // reach the broker socket. The server socket itself stays mode 0600.
 
     let lock_path = parent.join("server.lock");
     if lock_path

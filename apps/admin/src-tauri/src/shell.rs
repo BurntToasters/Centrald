@@ -318,6 +318,9 @@ fn shell_input_inner(
     handle: &str,
     data_base64: &str,
 ) -> Result<()> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+        anyhow::bail!("interactive terminal is unavailable in this alpha release");
+    }
     if data_base64.len() > MAX_INPUT_BASE64_CHARS {
         anyhow::bail!("shell input exceeds the per-frame limit");
     }
@@ -346,6 +349,9 @@ fn shell_resize_inner(
     columns: u32,
     rows: u32,
 ) -> Result<()> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+        anyhow::bail!("interactive terminal is unavailable in this alpha release");
+    }
     if !(2..=500).contains(&columns) || !(2..=500).contains(&rows) {
         anyhow::bail!("terminal size must be 2-500 columns and rows");
     }
@@ -366,6 +372,9 @@ fn shell_resize_inner(
 }
 
 fn shell_close_inner(state: &State<'_, ShellSessions>, handle: &str) -> Result<()> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+        anyhow::bail!("interactive terminal is unavailable in this alpha release");
+    }
     let client = state
         .sessions
         .lock()

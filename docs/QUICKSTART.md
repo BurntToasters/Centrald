@@ -106,8 +106,14 @@ server controls.
 Privileged client operations, remote CentralD installation, PTY/ConPTY terminal
 sessions, and credential saving remain visibly disabled in this alpha. Their
 protocol and broker code is security scaffolding, not an operator-ready path.
-Use the Admin GUI for the implemented inventory, invitation, revocation, typed
-queue, and safe settings flows only.
+Use the Admin GUI for the implemented inventory, invitation, revocation, and
+safe settings flows only.
+
+Switch the server's client update channel with
+`sudo centrald-server channel beta` (or `alpha` / `stable`). Only installs whose
+baked channel matches will follow the new pointer. After an offline-root
+replacement, or when a client must replace its identity, run
+`sudo centrald-client reenroll`.
 
 PKI maintenance: `centrald-server config` offers online-issuer rotation (uses
 the offline root recovery PEM) and, for disaster recovery, an offline-root
@@ -124,6 +130,7 @@ Client diagnostics:
 sudo centrald-client rescue
 sudo centrald-client rescue --repair
 sudo centrald-client restart
+sudo centrald-client reenroll
 ```
 
 Server configuration remains repairable while the daemon is stopped:

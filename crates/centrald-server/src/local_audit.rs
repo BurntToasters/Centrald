@@ -90,11 +90,30 @@ pub fn record(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        const O_NOFOLLOW: i32 = 0o400000;
+        const O_CLOEXEC: i32 = 0o2000000;
+        options.mode(0o600).custom_flags(O_NOFOLLOW | O_CLOEXEC);
     }
     let mut file = options
         .open(&path)
         .with_context(|| format!("open local audit journal {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata().context("stat local audit journal")?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            bail!(
+                "local audit journal must be a single-linked regular file: {}",
+                path.display()
+            );
+        }
+        if metadata.mode() & 0o077 != 0 {
+            bail!(
+                "local audit journal must not be group/world accessible: {}",
+                path.display()
+            );
+        }
+    }
     file.write_all(&line)
         .with_context(|| format!("append local audit journal {}", path.display()))?;
     file.sync_data()

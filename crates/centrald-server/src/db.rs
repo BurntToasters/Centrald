@@ -616,6 +616,14 @@ fn reject_ambient_postgres_environment() -> Result<(), DatabaseAdminError> {
         "PGAPPNAME",
         "PGSERVICE",
         "PGSERVICEFILE",
+        "PGCHANNELBINDING",
+        "PGREQUIREPEER",
+        "PGTARGETSESSIONATTRS",
+        "PGSSLCRL",
+        "PGSSLCRLDIR",
+        "PGGSSENCMODE",
+        "PGSYSCONFDIR",
+        "PGKRBSRVNAME",
     ];
     let present: Vec<&str> = VARIABLES
         .iter()
@@ -704,6 +712,21 @@ mod tests {
             validate_database_url_policy("postgresql://user:secret@localhost:5432/centrald")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn ambient_postgres_deny_list_covers_libpq_override_variables() {
+        let source = include_str!("db.rs");
+        for name in [
+            "PGCHANNELBINDING",
+            "PGREQUIREPEER",
+            "PGTARGETSESSIONATTRS",
+            "PGSSLCRL",
+            "PGGSSENCMODE",
+            "PGSYSCONFDIR",
+        ] {
+            assert!(source.contains(name), "missing {name}");
+        }
     }
 
     #[test]

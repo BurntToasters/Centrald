@@ -203,3 +203,20 @@ test("rejects unknown keys and insecure URLs", () => {
   assert.throws(() => loadBuildConfig(insecure), /HTTPS/u);
   fs.rmSync(insecure, { recursive: true });
 });
+
+test("CDN_BASE_URL wins over UPDATE_BASE_URL for feed derivation", () => {
+  const root = temporaryConfig(
+    [
+      "REPO_URL=https://github.com/example/centrald",
+      "UPDATE_BASE_URL=https://cdn.example.test/centrald/latest",
+      "CDN_BASE_URL=https://updated.example.test",
+      "RELEASE_CHANNEL=beta",
+    ].join("\n"),
+  );
+  const config = loadBuildConfig(root);
+  assert.equal(
+    releaseManifestUrl(config),
+    "https://updated.example.test/beta/centrald-release.yml",
+  );
+  fs.rmSync(root, { recursive: true });
+});

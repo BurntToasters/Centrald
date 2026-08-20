@@ -66,9 +66,11 @@ pub async fn export_audit_chain(
         });
     }
     verify_chain(&rows, from_sequence, tail_hash.as_deref())?;
+    let first_sequence = rows.first().context("empty audit batch")?.sequence;
     let to_sequence = rows.last().context("empty audit batch")?.sequence;
     let last_hash = rows.last().context("empty audit batch")?.entry_hash.clone();
-    let filename = format!("{EXPORT_FILE_PREFIX}{from_sequence}-{to_sequence}{EXPORT_FILE_SUFFIX}");
+    let filename =
+        format!("{EXPORT_FILE_PREFIX}{first_sequence}-{to_sequence}{EXPORT_FILE_SUFFIX}");
     let path = directory.join(&filename);
     let mut lines = Vec::with_capacity(rows.len() * 512);
     for row in &rows {
@@ -122,14 +124,8 @@ fn existing_export_tail(directory: &Path) -> Result<(i64, Option<String>)> {
             continue;
         }
         let range = &name[EXPORT_FILE_PREFIX.len()..name.len() - EXPORT_FILE_SUFFIX.len()];
-        let (from, to) = range
-            .split_once('-')
-            .context("invalid audit export filename")?;
-        let from: i64 = from.parse().context("invalid audit export from sequence")?;
-        let to: i64 = to.parse().context("invalid audit export to sequence")?;
-        if from > to || from <= 0 || to <= 0 {
-            bail!("invalid audit export sequence range in {name}");
-        }
+        let (_from, to) = parse_export_range(range)
+            .with_context(|| format!("invalid audit export filename {name}"))?;
         if newest_to.is_none_or(|best| to > best) {
             newest_to = Some(to);
             newest_path = Some(entry.path());
@@ -271,6 +267,18 @@ fn prepare_export_directory(directory: &Path) -> Result<()> {
     Ok(())
 }
 
+fn parse_export_range(range: &str) -> Result<(i64, i64)> {
+    let (from, to) = range
+        .split_once('-')
+        .context("invalid audit export filename")?;
+    let from: i64 = from.parse().context("invalid audit export from sequence")?;
+    let to: i64 = to.parse().context("invalid audit export to sequence")?;
+    if from > to || from <= 0 || to <= 0 {
+        bail!("invalid audit export sequence range {from}-{to}");
+    }
+    Ok((from, to))
+}
+
 /// Serializes `AuditRow` for sqlx query-as.
 impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for AuditRow {
     fn from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<Self> {
@@ -357,5 +365,13 @@ mod tests {
         // Tampering with a record after the chain was built must fail.
         rows[1].outcome = "tampered".into();
         assert!(verify_chain(&rows, 0, None).is_err());
+    }
+
+    #[test]
+    fn export_filenames_start_at_sequence_one() {
+        assert_eq!(parse_export_range("1-10").unwrap(), (1, 10));
+        assert!(parse_export_range("0-10").is_err());
+        assert!(parse_export_range("10-1").is_err());
+        assert!(parse_export_range("abc-1").is_err());
     }
 }

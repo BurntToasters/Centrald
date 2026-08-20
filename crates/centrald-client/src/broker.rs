@@ -14,7 +14,7 @@
 //! dedicated process whose only job is serialized execution, so a running
 //! operation simply queues later connections.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(windows)]
@@ -30,8 +30,6 @@ use ed25519_dalek::VerifyingKey;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::path::Path;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(unix)]
@@ -103,8 +101,7 @@ pub async fn run_with_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool>)
 
 fn build_executor() -> Result<BrokerExecutor<SystemOperationRunner>> {
     let (_path, config) = crate::enrollment::load_latest_config()?;
-    let grant_pem = std::fs::read_to_string(&config.grant_signing_public_key)
-        .with_context(|| format!("read {}", config.grant_signing_public_key.display()))?;
+    let grant_pem = read_grant_verifying_key()?;
     let verifying_key = VerifyingKey::from_public_key_pem(&grant_pem)
         .context("parse the server grant verification key")?;
     let ledger = BrokerLedger::open(&broker_state_dir()?)?;
@@ -115,6 +112,11 @@ fn build_executor() -> Result<BrokerExecutor<SystemOperationRunner>> {
     }
     Ok(BrokerExecutor::new(verifier, ledger, SystemOperationRunner))
 }
+
+/// Root-owned copy of the server grant verifying key. The daemon-writable
+/// identity copy is not trusted for broker authorization.
+pub const GRANT_VERIFYING_KEY_FILE: &str = "grant-signing-public.pem";
+const MAX_GRANT_VERIFYING_KEY_BYTES: u64 = 16 * 1024;
 
 /// Returns the fixed root-owned broker state directory.
 ///
@@ -135,6 +137,176 @@ pub fn broker_state_dir() -> Result<PathBuf> {
     #[cfg(not(any(unix, windows)))]
     {
         bail!("broker state is unsupported on this operating system")
+    }
+}
+
+/// Publishes the server grant verifying key into the root/SYSTEM-owned broker
+/// state directory. Enrollment and Unix repair call this as root; the
+/// unprivileged daemon never writes this path.
+///
+/// # Errors
+///
+/// Returns an error when the broker state directory is unsafe or the key
+/// cannot be written as a new regular file.
+pub fn publish_grant_verifying_key(pem: &[u8]) -> Result<()> {
+    if pem.is_empty()
+        || u64::try_from(pem.len()).unwrap_or(u64::MAX) > MAX_GRANT_VERIFYING_KEY_BYTES
+    {
+        bail!("grant verifying key is empty or exceeds the size bound");
+    }
+    let directory = broker_state_dir()?;
+    prepare_broker_state_dir(&directory)?;
+    let path = directory.join(GRANT_VERIFYING_KEY_FILE);
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        bail!(
+            "refusing symbolic-link grant verifying key {}",
+            path.display()
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        {
+            bail!(
+                "refusing reparse-point grant verifying key {}",
+                path.display()
+            );
+        }
+    }
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("replace grant verifying key {}", path.display()))?;
+    }
+    centrald_common::secure_fs::write_new_file(&path, pem, false)
+        .with_context(|| format!("write grant verifying key {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        rustix::fs::chown(
+            &path,
+            Some(rustix::fs::Uid::ROOT),
+            Some(rustix::fs::Gid::ROOT),
+        )
+        .context("chown grant verifying key to root")?;
+    }
+    Ok(())
+}
+
+fn prepare_broker_state_dir(directory: &Path) -> Result<()> {
+    centrald_common::secure_fs::validate_no_symlink_ancestors(directory)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    if let Ok(metadata) = directory.symlink_metadata() {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            bail!(
+                "broker state directory is not a real directory: {}",
+                directory.display()
+            );
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                bail!(
+                    "broker state directory is a reparse point: {}",
+                    directory.display()
+                );
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if metadata.uid() != 0 || metadata.permissions().mode() & 0o022 != 0 {
+                bail!(
+                    "broker state directory must be root-owned and not group/world writable: {}",
+                    directory.display()
+                );
+            }
+        }
+        return Ok(());
+    }
+    std::fs::create_dir_all(directory)
+        .with_context(|| format!("create broker state directory {}", directory.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+        rustix::fs::chown(
+            directory,
+            Some(rustix::fs::Uid::ROOT),
+            Some(rustix::fs::Gid::ROOT),
+        )
+        .context("chown broker state directory to root")?;
+    }
+    Ok(())
+}
+
+fn read_grant_verifying_key() -> Result<String> {
+    let path = broker_state_dir()?.join(GRANT_VERIFYING_KEY_FILE);
+    centrald_common::secure_fs::validate_no_symlink_ancestors(&path)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        const O_NOFOLLOW: i32 = 0o400000;
+        const O_CLOEXEC: i32 = 0o2000000;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | O_CLOEXEC)
+            .open(&path)
+            .with_context(|| format!("open grant verifying key {}", path.display()))?;
+        let metadata = file.metadata().context("stat grant verifying key")?;
+        if !metadata.is_file() || metadata.nlink() != 1 || metadata.uid() != 0 {
+            bail!(
+                "grant verifying key must be a single-linked root-owned regular file: {}",
+                path.display()
+            );
+        }
+        if metadata.mode() & 0o022 != 0 {
+            bail!(
+                "grant verifying key must not be group/world writable: {}",
+                path.display()
+            );
+        }
+        if metadata.len() == 0 || metadata.len() > MAX_GRANT_VERIFYING_KEY_BYTES {
+            bail!("grant verifying key exceeds the size bound");
+        }
+        let mut pem = String::new();
+        file.read_to_string(&mut pem)
+            .context("read grant verifying key")?;
+        if pem.len() as u64 > MAX_GRANT_VERIFYING_KEY_BYTES {
+            bail!("grant verifying key exceeds the size bound");
+        }
+        return Ok(pem);
+    }
+    #[cfg(not(unix))]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let metadata = path
+            .symlink_metadata()
+            .with_context(|| format!("inspect grant verifying key {}", path.display()))?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            bail!(
+                "grant verifying key must be a regular file: {}",
+                path.display()
+            );
+        }
+        if metadata.len() == 0 || metadata.len() > MAX_GRANT_VERIFYING_KEY_BYTES {
+            bail!("grant verifying key exceeds the size bound");
+        }
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("read grant verifying key {}", path.display()))
     }
 }
 
@@ -273,16 +445,16 @@ async fn serve_unix(
         .context("set broker socket permissions")?;
     let expected_uid = resolve_daemon_account().map(|(uid, _)| uid)?;
     let expected_gid = resolve_daemon_account().map(|(_, gid)| gid)?;
-    // The unprivileged daemon connects as the `centrald` service account, so
-    // the socket must be owned by that account (mode 0660 with a root owner
-    // would still deny the connect).
+    // Mode 0660 with root owner and the `centrald` group lets the unprivileged
+    // daemon connect without owning the inode (so it cannot chmod/unlink it).
     rustix::fs::chown(
         socket_path,
-        Some(rustix::fs::Uid::from_raw(expected_uid)),
+        Some(rustix::fs::Uid::ROOT),
         Some(rustix::fs::Gid::from_raw(expected_gid)),
     )
-    .context("chown broker socket to the centrald service account")?;
+    .context("chown broker socket to root:centrald")?;
     let sessions = Arc::new(crate::broker_session::SessionManager::new());
+    let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -305,10 +477,22 @@ async fn serve_unix(
                 let std_stream = stream
                     .into_std()
                     .context("convert broker connection to blocking I/O")?;
+                let current = inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if current >= MAX_INFLIGHT_CONNECTIONS {
+                    inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    warn!(
+                        current,
+                        "broker connection limit reached; dropping connection"
+                    );
+                    continue;
+                }
                 let executor = executor.clone();
                 let sessions = sessions.clone();
+                let inflight = inflight.clone();
                 tokio::task::spawn_blocking(move || {
-                    if let Err(error) = handle_unix_connection_sync(std_stream, &executor, &sessions)
+                    let _connection_guard = ConnectionGuard::new(&inflight);
+                    if let Err(error) =
+                        handle_unix_connection_sync(std_stream, &executor, &sessions)
                     {
                         warn!(%error, "broker request failed");
                     }
@@ -328,11 +512,20 @@ fn handle_unix_connection_sync(
 ) -> Result<()> {
     use std::io::{Read, Write};
 
-    let read_half = stream.try_clone().context("clone broker connection")?;
-    let mut reader: Box<dyn Read + Send> = Box::new(read_half);
-    let writer: Box<dyn Write + Send> = Box::new(stream);
-    let first = crate::broker_session::read_frame(&mut reader, MAX_FIRST_FRAME_BYTES)
+    stream
+        .set_read_timeout(Some(FIRST_FRAME_TIMEOUT))
+        .context("set broker first-frame read timeout")?;
+    let mut read_half = stream.try_clone().context("clone broker connection")?;
+    let first = crate::broker_session::read_frame(&mut read_half, MAX_FIRST_FRAME_BYTES)
         .context("read first broker frame")?;
+    stream
+        .set_read_timeout(None)
+        .context("clear broker first-frame read timeout")?;
+    read_half
+        .set_read_timeout(None)
+        .context("clear cloned broker first-frame read timeout")?;
+    let reader: Box<dyn Read + Send> = Box::new(read_half);
+    let writer: Box<dyn Write + Send> = Box::new(stream);
     dispatch_connection(&first, reader, writer, executor, sessions)
 }
 
@@ -418,7 +611,9 @@ fn poll_first_frame(stream: &crate::windows_ffi::PipeStream) -> Result<Vec<u8>> 
                 bail!("first frame exceeds the bound or is empty");
             }
             if frame.len() == 4 + size {
-                return Ok(frame);
+                return Ok(
+                    crate::broker_session::unframe_message(&frame, MAX_FIRST_FRAME_BYTES)?.to_vec(),
+                );
             }
             if frame.len() > 4 + size {
                 bail!("first frame has trailing bytes");
@@ -442,12 +637,10 @@ fn poll_first_frame(stream: &crate::windows_ffi::PipeStream) -> Result<Vec<u8>> 
 }
 
 /// Releases the in-flight connection slot when the dispatch thread exits.
-#[cfg(windows)]
 struct ConnectionGuard {
     inflight: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-#[cfg(windows)]
 impl ConnectionGuard {
     fn new(inflight: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
         Self {
@@ -456,7 +649,6 @@ impl ConnectionGuard {
     }
 }
 
-#[cfg(windows)]
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         self.inflight
@@ -465,12 +657,10 @@ impl Drop for ConnectionGuard {
 }
 
 /// Maximum concurrent broker connections; excess connections are dropped.
-#[cfg(windows)]
 const MAX_INFLIGHT_CONNECTIONS: usize = 64;
 
 /// Bounds the wait for a client's first frame before the connection is
 /// dropped.
-#[cfg(windows)]
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Poll interval while waiting for the first frame.

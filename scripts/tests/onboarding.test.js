@@ -35,7 +35,7 @@ test("recommended server setup keeps advanced PostgreSQL and custom-config paths
   assert.doesNotMatch(main, /custom --config paths are unsupported/);
   assert.match(services, /loaded_config_revision/);
   assert.match(services, /redirect\(reqwest::redirect::Policy::custom/);
-  assert.match(services, /attempt.url\(\).scheme\(\) != "https"/);
+  assert.match(services, /https_redirect_is_allowed/);
 });
 
 test("managed local PostgreSQL setup is crash-recoverable before first mutation", () => {

@@ -390,8 +390,10 @@ to run it; never claim it passed.
 
 The enrollment, owned-database setup/config/reset flow, mTLS onboarding and
 renewal/activation, invitation lifecycle, basic inventory, leased typed job
-queueing, audited remote settings, client rescue, Admin Tauri updater, packaging,
+protocol (fail-closed on the wire in this alpha), audited remote settings,
+client rescue, Admin Tauri updater with Minisign feed verification, packaging,
 and immutable manifest/release pipeline are implemented in this alpha tree.
 PTY/ConPTY shell transport, the privileged operation runner, OS-vault credential
-saving, and server/client package installation remain gated.
+saving, and server/client package installation remain gated on the wire, broker,
+Tauri commands, Hello capabilities, and packaged service enablement.
 See `docs/IMPLEMENTATION_STATUS.md`.

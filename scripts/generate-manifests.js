@@ -47,8 +47,9 @@ writeAtomic(path.join(outputDir, config.releaseManifest), releaseManifest);
 
 const updater = buildTauriManifest({
   artifacts,
+  channel: config.releaseChannel,
   generatedAt,
-  notes: options.notes,
+  notes: `${options.notes}\ncentrald-channel:${config.releaseChannel}`,
   requireSignatures: options.requireSignatures,
   version,
 });
@@ -214,6 +215,7 @@ function renderReleaseManifest({
 
 function buildTauriManifest({
   artifacts,
+  channel,
   generatedAt,
   notes,
   requireSignatures,
@@ -258,6 +260,7 @@ function buildTauriManifest({
     version,
     notes,
     pub_date: generatedAt,
+    channel,
     platforms,
   };
 }

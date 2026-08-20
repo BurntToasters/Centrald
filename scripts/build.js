@@ -253,9 +253,8 @@ function buildLinuxDocker() {
 /// The channel is public build metadata; it is passed to container builds as
 /// a build argument so the builder's build.rs bakes the overridden channel.
 function dockerChannelArguments() {
-  return options.channel
-    ? ["--build-arg", `CENTRALD_RELEASE_CHANNEL=${options.channel}`]
-    : [];
+  const channel = options.channel || process.env.CENTRALD_RELEASE_CHANNEL || "";
+  return channel ? ["--build-arg", `CENTRALD_RELEASE_CHANNEL=${channel}`] : [];
 }
 
 /// Builds the Windows targets inside a Windows-container image and extracts the

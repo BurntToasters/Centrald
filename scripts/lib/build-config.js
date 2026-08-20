@@ -20,14 +20,23 @@ const CHANNEL_NAME = /^(?:stable|alpha|beta)$/u;
 /// The only release channels CentralD serves.
 export const SUPPORTED_CHANNELS = ["stable", "alpha", "beta"];
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
 /// Resolves the release channel. Precedence: an explicit `overrides` value,
 /// then the CENTRALD_RELEASE_CHANNEL environment variable, then the tracked
 /// `centrald.config`, then auto-detection from the package version (no
 /// prerelease suffix = stable; otherwise the prerelease identifier, e.g.
 /// `alpha` or `beta`).
 export function resolveReleaseChannel(values, version, overrides = {}) {
-  const explicit =
-    overrides.releaseChannel ?? process.env.CENTRALD_RELEASE_CHANNEL ?? "";
+  const explicit = firstNonEmpty(
+    overrides.releaseChannel,
+    process.env.CENTRALD_RELEASE_CHANNEL,
+  );
   if (explicit) return explicit;
   const configured = values.RELEASE_CHANNEL.trim();
   if (configured) return configured;
@@ -87,8 +96,10 @@ export function loadBuildConfig(root = process.cwd(), overrides = {}) {
     fs.readFileSync(path.join(root, "package.json"), "utf8"),
   );
   const version = packageJson.version;
-  const explicit =
-    overrides.releaseChannel ?? process.env.CENTRALD_RELEASE_CHANNEL ?? "";
+  const explicit = firstNonEmpty(
+    overrides.releaseChannel,
+    process.env.CENTRALD_RELEASE_CHANNEL,
+  );
   const configured = values.RELEASE_CHANNEL.trim();
   const releaseChannel = resolveReleaseChannel(values, version, overrides);
   if (!CHANNEL_NAME.test(releaseChannel)) {

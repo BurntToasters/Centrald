@@ -108,11 +108,12 @@ fn build_executor() -> Result<BrokerExecutor<SystemOperationRunner>> {
     let verifying_key = VerifyingKey::from_public_key_pem(&grant_pem)
         .context("parse the server grant verification key")?;
     let ledger = BrokerLedger::open(&broker_state_dir()?)?;
-    Ok(BrokerExecutor::new(
-        GrantVerifier::new(config.identity_id, verifying_key),
-        ledger,
-        SystemOperationRunner,
-    ))
+    let mut verifier = GrantVerifier::new(config.identity_id, verifying_key);
+    let now = Utc::now();
+    for (grant_id, expires_at) in ledger.load_consumed_grants(now)? {
+        verifier.restore(grant_id, expires_at, now);
+    }
+    Ok(BrokerExecutor::new(verifier, ledger, SystemOperationRunner))
 }
 
 /// Returns the fixed root-owned broker state directory.
@@ -503,6 +504,7 @@ fn dispatch_connection(
             reader,
             writer,
             executor.grant_verifier(),
+            executor.ledger(),
             sessions,
         );
     }
@@ -621,6 +623,10 @@ impl<R: OperationRunner> BrokerExecutor<R> {
         &self.verifier
     }
 
+    pub fn ledger(&self) -> &Mutex<BrokerLedger> {
+        &self.ledger
+    }
+
     /// Verifies and consumes the grant, then executes the operation once.
     ///
     /// # Errors
@@ -628,10 +634,20 @@ impl<R: OperationRunner> BrokerExecutor<R> {
     /// Returns an error for invalid/replayed grants, interrupted or already
     /// completed ledger state, ledger failures, or runner failures.
     pub fn execute(&self, request: &BrokerRequest, now: DateTime<Utc>) -> Result<BrokerResponse> {
+        if !centrald_common::PRIVILEGED_OPERATIONS_ENABLED && !cfg!(test) {
+            bail!("privileged operations are unavailable in this alpha release");
+        }
         self.verifier
             .lock()
             .map_err(|_| anyhow::anyhow!("broker verifier lock was poisoned"))?
             .verify_and_consume(&request.signed_grant, now)?;
+        self.ledger
+            .lock()
+            .map_err(|_| anyhow::anyhow!("broker ledger lock was poisoned"))?
+            .record_consumed_grant(
+                request.signed_grant.grant.id,
+                request.signed_grant.grant.expires_at,
+            )?;
         let digest = hex::encode(Sha256::digest(&request.parameters_json));
         if digest != request.signed_grant.grant.parameters_sha256 {
             bail!("operation parameters do not match the signed grant");

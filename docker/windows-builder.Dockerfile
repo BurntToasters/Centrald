@@ -52,5 +52,5 @@ RUN rustup update stable; rustup target add x86_64-pc-windows-msvc; rustup targe
 
 # Unsigned builds: signing happens on the host after extraction so the private
 # keys are never available inside the container.
-RUN node scripts/build.js --target windows-x64
-RUN node scripts/build.js --target windows-arm64
+RUN if ($env:CENTRALD_RELEASE_CHANNEL) { node scripts/build.js --target windows-x64 --channel $env:CENTRALD_RELEASE_CHANNEL } else { node scripts/build.js --target windows-x64 }
+RUN if ($env:CENTRALD_RELEASE_CHANNEL) { node scripts/build.js --target windows-arm64 --channel $env:CENTRALD_RELEASE_CHANNEL } else { node scripts/build.js --target windows-arm64 }

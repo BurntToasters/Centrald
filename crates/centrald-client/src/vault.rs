@@ -86,9 +86,19 @@ pub fn delete_account_credential(user: &str) -> Result<()> {
 }
 
 #[cfg(windows)]
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct VaultFile {
     entries: HashMap<String, Vec<u8>>,
+}
+
+#[cfg(windows)]
+impl std::fmt::Debug for VaultFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VaultFile")
+            .field("entries", &self.entries.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(windows)]

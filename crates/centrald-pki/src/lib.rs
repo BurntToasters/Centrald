@@ -241,7 +241,7 @@ pub fn rotate_online_issuers(
 }
 
 /// The complete material produced by the offline-root replacement ceremony.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RootReplacement {
     pub root_certificate_pem: String,
     /// The replacement offline root's private key. The server writes it only
@@ -254,6 +254,23 @@ pub struct RootReplacement {
     pub admin_certificate_pem: String,
     pub admin_private_key_pem: String,
     pub server_identity: PemIdentity,
+}
+
+impl fmt::Debug for RootReplacement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RootReplacement")
+            .field("root_certificate_pem", &"[CERTIFICATE PEM]")
+            .field("root_private_key_pem", &"[REDACTED]")
+            .field("server_certificate_pem", &"[CERTIFICATE PEM]")
+            .field("server_private_key_pem", &"[REDACTED]")
+            .field("client_certificate_pem", &"[CERTIFICATE PEM]")
+            .field("client_private_key_pem", &"[REDACTED]")
+            .field("admin_certificate_pem", &"[CERTIFICATE PEM]")
+            .field("admin_private_key_pem", &"[REDACTED]")
+            .field("server_identity", &self.server_identity)
+            .finish()
+    }
 }
 
 /// Replaces the offline root and all online issuers. Authorized only by the
@@ -662,6 +679,15 @@ mod tests {
         assert!(!identity_debug.contains("PRIVATE KEY"));
         assert!(authority_debug.contains("[REDACTED]"));
         assert!(identity_debug.contains("[REDACTED]"));
+        let replacement = crate::replace_root(
+            &hierarchy.root.certificate_pem(),
+            &hierarchy.root.private_key_pem(),
+            "centrald.home.arpa",
+        )
+        .expect("root replacement");
+        let replacement_debug = format!("{replacement:?}");
+        assert!(!replacement_debug.contains("PRIVATE KEY"));
+        assert!(replacement_debug.contains("[REDACTED]"));
     }
 
     #[test]

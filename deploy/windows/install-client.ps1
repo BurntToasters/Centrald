@@ -345,9 +345,6 @@ try {
 
   $brokerQuotedBinary = '"{0}" windows-service-broker' -f $destination
   $brokerStart = "demand"
-  if ($enrolled) {
-    $brokerStart = "delayed-auto"
-  }
   if ($null -eq $existingBroker) {
     Invoke-NativeChecked $ScExe create $brokerServiceName `
       "binPath= $brokerQuotedBinary" `
@@ -388,8 +385,7 @@ try {
   if ($shouldStart) {
     Start-Service -Name $serviceName
   }
-  $shouldStartBroker = $StartAfterInstall -or ($brokerWasRunning -and $enrolled)
-  if ($shouldStartBroker) {
+  if ($brokerWasRunning) {
     Start-Service -Name $brokerServiceName
   }
   if (Test-Path -LiteralPath $backupBinary) {

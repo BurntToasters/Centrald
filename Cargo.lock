@@ -698,6 +698,7 @@ dependencies = [
  "ed25519-dalek",
  "fs2",
  "hex",
+ "minisign",
  "pkcs8",
  "prost-types",
  "rand_core 0.6.4",

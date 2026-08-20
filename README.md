@@ -157,14 +157,13 @@ The Admin app renews its mTLS identity before expiry and currently provides:
   inventory;
 - one-time client invitation creation;
 - client and pending client-invitation revocation;
-- typed job submission for supported operations;
 - revision-checked server settings with restart-required reporting;
 - clear local-only boundaries for trust and Admin lifecycle settings;
-- an explicit, signed Tauri self-update flow that requires operator approval.
+- an explicit, signed Tauri self-update flow that requires operator approval and
+  verifies the updater JSON with Minisign before the Tauri plugin runs.
 
-See [Implementation status](docs/IMPLEMENTATION_STATUS.md) for features that are
-still gated during alpha, including the PTY terminal broker and update
-installation.
+Typed job submission and the interactive terminal stay unavailable in this
+alpha. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
 
 ## Destructive reset
 

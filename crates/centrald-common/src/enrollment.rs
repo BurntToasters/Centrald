@@ -295,8 +295,13 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+#[allow(clippy::expect_used)]
 fn argon2() -> Argon2<'static> {
-    let params = Params::new(64 * 1024, 3, 1, Some(32)).unwrap_or(Params::DEFAULT);
+    // These parameters are fixed CentralD policy, not runtime input. Invalid
+    // constants are a programming error and must not fall back to weaker
+    // crate defaults.
+    let params = Params::new(64 * 1024, 3, 1, Some(32))
+        .expect("CentralD Argon2id parameters (64 MiB, t=3, p=1, 32-byte tag) must be valid");
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
 

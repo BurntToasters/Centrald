@@ -116,6 +116,111 @@ impl BrokerLedger {
         Ok(Self { path })
     }
 
+    fn consumed_grants_path(&self) -> PathBuf {
+        self.path.with_file_name("consumed-grants.jsonl")
+    }
+
+    /// Returns whether this grant identifier was already recorded as consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the consumed-grant journal is corrupt.
+    pub fn grant_was_consumed(&self, grant_id: Uuid, now: DateTime<Utc>) -> Result<bool> {
+        Ok(self
+            .load_consumed_grants(now)?
+            .iter()
+            .any(|(id, _)| *id == grant_id))
+    }
+
+    /// Records a consumed grant identifier until its signed expiry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be written.
+    pub fn record_consumed_grant(&self, grant_id: Uuid, expires_at: DateTime<Utc>) -> Result<()> {
+        let path = self.consumed_grants_path();
+        validate_no_symlink_ancestors(&path)
+            .with_context(|| format!("validate consumed-grant journal {}", path.display()))?;
+        let payload = serde_json::json!({
+            "grant_id": grant_id,
+            "expires_at": expires_at,
+        });
+        let encoded = serde_json::to_vec(&payload)?;
+        let checksum = hex::encode(Sha256::digest(&encoded));
+        let mut line = serde_json::to_vec(&serde_json::json!({
+            "record": payload,
+            "checksum_sha256": checksum,
+        }))?;
+        line.push(b'\n');
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&path)
+            .with_context(|| format!("open consumed-grant journal {}", path.display()))?;
+        file.write_all(&line)
+            .with_context(|| format!("append consumed-grant journal {}", path.display()))?;
+        file.sync_data()
+            .with_context(|| format!("sync consumed-grant journal {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Loads unexpired consumed grant identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal is corrupt.
+    pub fn load_consumed_grants(&self, now: DateTime<Utc>) -> Result<Vec<(Uuid, DateTime<Utc>)>> {
+        let path = self.consumed_grants_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let raw = fs::read(&path)
+            .with_context(|| format!("read consumed-grant journal {}", path.display()))?;
+        let mut grants = Vec::new();
+        for (index, line) in raw.split(|byte| *byte == b'\n').enumerate() {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let envelope: serde_json::Value = serde_json::from_slice(line)
+                .with_context(|| format!("parse consumed-grant journal record {}", index + 1))?;
+            let record = envelope
+                .get("record")
+                .context("consumed-grant journal record missing payload")?;
+            let checksum = envelope
+                .get("checksum_sha256")
+                .and_then(serde_json::Value::as_str)
+                .context("consumed-grant journal record missing checksum")?;
+            let encoded = serde_json::to_vec(record)?;
+            if checksum != hex::encode(Sha256::digest(&encoded)) {
+                bail!(
+                    "consumed-grant journal checksum mismatch on record {}",
+                    index + 1
+                );
+            }
+            let grant_id: Uuid = serde_json::from_value(
+                record
+                    .get("grant_id")
+                    .cloned()
+                    .context("consumed-grant journal record missing grant_id")?,
+            )?;
+            let expires_at: DateTime<Utc> = serde_json::from_value(
+                record
+                    .get("expires_at")
+                    .cloned()
+                    .context("consumed-grant journal record missing expires_at")?,
+            )?;
+            if expires_at > now {
+                grants.push((grant_id, expires_at));
+            }
+        }
+        Ok(grants)
+    }
+
     /// Appends a durable `Executing` marker for a job. Fails when a record for
     /// the job already exists (a duplicate dispatch, or an interrupted
     /// execution whose outcome is unknown).

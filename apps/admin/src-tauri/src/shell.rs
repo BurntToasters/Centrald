@@ -158,6 +158,9 @@ async fn begin_elevation_inner(
     operation: String,
     reason: String,
 ) -> Result<ElevationChallengeView> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+        anyhow::bail!("interactive terminal is unavailable in this alpha release");
+    }
     let response = admin_client(app, profile_id)
         .await?
         .begin_elevation(BeginElevationRequest {
@@ -195,6 +198,9 @@ async fn open_shell_inner(
     challenge_signature: &str,
     channel: tauri::ipc::Channel<ShellEvent>,
 ) -> Result<ShellOpenView> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+        anyhow::bail!("interactive terminal is unavailable in this alpha release");
+    }
     let privilege_enum = match privilege {
         "low" => ShellPrivilege::Low,
         "elevated" => ShellPrivilege::Elevated,

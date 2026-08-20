@@ -156,10 +156,16 @@ async fn run(config_path: &Path) -> Result<()> {
         "server TLS private key",
     )?
     .into_bytes();
-    let root_certificate = centrald_server::file_security::read_root_public_text(
-        &config.pki.root_cert,
+    let client_issuer_certificate = centrald_server::file_security::read_root_public_text(
+        &config.pki.client_issuer_cert,
         256 * 1024,
-        "root CA certificate",
+        "client issuer certificate",
+    )?
+    .into_bytes();
+    let admin_issuer_certificate = centrald_server::file_security::read_root_public_text(
+        &config.pki.admin_issuer_cert,
+        256 * 1024,
+        "Admin issuer certificate",
     )?
     .into_bytes();
     let state = RuntimeState::load(config.clone(), config_path.to_path_buf()).await?;
@@ -172,7 +178,8 @@ async fn run(config_path: &Path) -> Result<()> {
     tokio::spawn(run_maintenance(state.clone()));
     tokio::spawn(run_update_checks(state.clone()));
     let identity = Identity::from_pem(server_chain, server_key);
-    let client_ca = Certificate::from_pem(root_certificate);
+    let client_ca = Certificate::from_pem(client_issuer_certificate);
+    let admin_ca = Certificate::from_pem(admin_issuer_certificate);
 
     info!(%enrollment_address, "enrollment TLS listener ready");
     info!(%client_address, "client mTLS listener ready");
@@ -202,7 +209,7 @@ async fn run(config_path: &Path) -> Result<()> {
         .tls_config(
             ServerTlsConfig::new()
                 .identity(identity)
-                .client_ca_root(client_ca),
+                .client_ca_root(admin_ca),
         )?
         .add_service(
             AdminServiceServer::new(AdminRpc::new(state))

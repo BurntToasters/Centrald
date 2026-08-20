@@ -100,13 +100,13 @@ Terminal authorization fields are reserved scaffolding. PTY/ConPTY sessions,
 OS-account authentication, and saved credentials remain disabled until the
 complete privileged broker and operating-system vault path is release-gated.
 
-Remote configuration reads expose all operational settings, including fields
-that are local-only, so the GUI can explain parity boundaries. Writes include an
-expected revision derived from the current serialized configuration. A stale
-write is rejected. The server validates the full candidate configuration, uses a
-shared cross-process lock, journals the original and intended revision,
-atomically replaces it, durably audits the change, and reports that restart is
-required.
+Remote configuration reads omit secret locations (data root, PKI paths, database
+URL, local socket). Writes include an expected revision derived from the current
+serialized configuration. A stale write is rejected. The server validates the
+full candidate configuration, uses a shared cross-process lock, journals the
+original and intended revision, atomically replaces it, durably audits the
+change, and reports that restart is required. Channel, manifest URL, and
+`allow_prerelease` stay server-local.
 
 Admin lifecycle, PKI paths/rotation, database secret location, local socket,
 data root, and destructive reset are local-only.

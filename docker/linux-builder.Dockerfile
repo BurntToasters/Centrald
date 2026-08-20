@@ -55,7 +55,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
     rustup update stable \
     && rustup target add x86_64-unknown-linux-gnu \
-    && node scripts/build.js --target linux-x64 --native
+    && if [ -n "$CENTRALD_RELEASE_CHANNEL" ]; then \
+         node scripts/build.js --target linux-x64 --native --channel "$CENTRALD_RELEASE_CHANNEL"; \
+       else \
+         node scripts/build.js --target linux-x64 --native; \
+       fi
 
 FROM scratch AS export
 COPY --from=builder /src/dist/linux-x64/ /

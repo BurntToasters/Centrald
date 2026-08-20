@@ -4,7 +4,9 @@
 //! shell is ever spawned. Output is merged from stdout/stderr and truncated at
 //! the job-event bound so a single result always fits one bounded job event.
 
+use std::ffi::OsStr;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -190,6 +192,7 @@ fn update_client_operation(parameters_json: &[u8]) -> Result<BoundedOutput, Syst
 }
 
 /// Runs a fixed command with bounded merged output and a hard timeout.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
     command
         .stdout(Stdio::piped())
@@ -202,6 +205,7 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    let skip_hard_kill = is_package_database_holder(command.get_program());
     let mut child = command
         .spawn()
         .context("start privileged operation command")?;
@@ -277,8 +281,26 @@ pub(crate) fn run_bounded(command: &mut Command) -> Result<BoundedOutput> {
                     .context("poll privileged operation command")?
                     .is_none()
                 {
-                    kill_command_tree(&mut child);
-                    let _ = child.wait();
+                    if skip_hard_kill {
+                        let extra_deadline = Instant::now() + Duration::from_secs(600);
+                        loop {
+                            match child
+                                .try_wait()
+                                .context("poll package-manager termination without SIGKILL")?
+                            {
+                                Some(_) => break,
+                                None if Instant::now() >= extra_deadline => {
+                                    bail!(
+                                        "package manager exceeded the timeout; left running to protect the package database"
+                                    );
+                                }
+                                None => std::thread::sleep(Duration::from_millis(100)),
+                            }
+                        }
+                    } else {
+                        kill_command_tree(&mut child);
+                        let _ = child.wait();
+                    }
                 }
                 bail!(
                     "privileged operation command exceeded the {}s timeout",
@@ -321,8 +343,19 @@ fn terminate_command_tree(child: &mut std::process::Child) {
     }
 }
 
+fn is_package_database_holder(program: &OsStr) -> bool {
+    matches!(
+        Path::new(program)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or(""),
+        "apt-get" | "dpkg" | "apt-get.exe" | "dpkg.exe"
+    )
+}
+
 /// Hard-terminates the whole child process tree after the graceful grace
-/// expired.
+/// expired. Never used for apt-get/dpkg: SIGKILL while they hold the package
+/// database can leave dpkg unusable.
 fn kill_command_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {

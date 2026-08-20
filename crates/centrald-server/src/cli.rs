@@ -37,12 +37,15 @@ pub enum ServerCommand {
     Config,
     /// Switch the release channel this server follows for client updates.
     Channel(ChannelArgs),
+    #[command(hide = true)]
     Status(TargetArgs),
     #[command(hide = true)]
     Restart,
     #[command(hide = true)]
     ExportTrust(OutputArgs),
+    #[command(hide = true)]
     EnrollClient(EnrollArgs),
+    #[command(hide = true)]
     EnrollAdmin(EnrollArgs),
     #[command(hide = true)]
     ListClients,

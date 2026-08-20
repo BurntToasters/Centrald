@@ -39,7 +39,7 @@ for (const [source, text, label] of [
   ],
   [
     app,
-    "Credential saving stores the password in the operating-system vault (Windows DPAPI or the Linux Secret Service) only.",
+    "Save the validated credentials in this machine's OS vault",
     "Admin vault-backed credential saving contract",
   ],
   [
@@ -55,8 +55,18 @@ for (const [source, text, label] of [
   ],
   [
     client,
-    'capabilities: vec!["heartbeat".into(), "typed_jobs".into()]',
-    "truthful client capabilities",
+    'capabilities: vec!["heartbeat".into()]',
+    "heartbeat-only client Hello capabilities",
+  ],
+  [
+    read("crates/centrald-common/src/lib.rs"),
+    "pub const PRIVILEGED_OPERATIONS_ENABLED: bool = false;",
+    "privileged operations stay fail-closed",
+  ],
+  [
+    read("crates/centrald-common/src/lib.rs"),
+    "pub const TERMINAL_SESSIONS_ENABLED: bool = false;",
+    "terminal sessions stay fail-closed",
   ],
   [build, "raw.githubusercontent.com", "Rust prerelease update origin"],
   [setupRecovery, "begin_setup", "PostgreSQL crash journal"],

@@ -71,6 +71,7 @@ test("Windows client daemon is a real SCM service isolated from LocalSystem", as
   assert.match(installer, /Set-Acl/);
   assert.match(installer, /ReparsePoint/);
   assert.doesNotMatch(installer, /obj= LocalSystem/i);
+  assert.doesNotMatch(installer, /\$brokerStart = "delayed-auto"/);
   assert.match(service, /define_windows_service!/);
   assert.match(service, /service_dispatcher::start/);
   assert.match(service, /service_control_handler::register/);
@@ -119,6 +120,18 @@ test("Admin updater is registered and remains operator initiated", async () => {
   assert.match(runtime, /tauri_plugin_updater::Builder/);
   assert.match(capability, /updater:default/);
   assert.match(app, /downloadAndInstall/);
+  assert.match(runtime, /verify_admin_update_feed/);
+  assert.match(cargo, /minisign/);
+  const updater = await read("apps/admin/src-tauri/src/updates.rs");
+  assert.match(updater, /minisign::verify/);
+  assert.match(
+    updater,
+    /minisign::verify\(&public_key, &signature_box, &mut cursor, true, false, false\)/,
+  );
+  assert.match(updater, /RELEASE_CHANNEL/);
+  const manifests = await read("scripts/generate-manifests.js");
+  assert.match(manifests, /channel,/);
+  assert.match(manifests, /centrald-channel:/);
   assert.equal(pkg.dependencies["@tauri-apps/plugin-updater"], "2.10.1");
   assert.ok(tauriConfig.bundle.icon.includes("icons/128x128.png"));
   assert.ok(tauriConfig.bundle.icon.includes("icons/icon.ico"));
@@ -141,6 +154,19 @@ test("terminal transport never falls back to an arbitrary command runner", async
   const app = await read("apps/admin/src/App.tsx");
   assert.match(app, /const TERMINAL_FEATURE_AVAILABLE = false/);
   assert.match(app, /const PRIVILEGED_CLIENT_OPERATIONS_AVAILABLE = false/);
+  const common = await read("crates/centrald-common/src/lib.rs");
+  assert.match(common, /pub const PRIVILEGED_OPERATIONS_ENABLED: bool = false/);
+  assert.match(common, /pub const TERMINAL_SESSIONS_ENABLED: bool = false/);
+  assert.match(
+    services,
+    /privileged client jobs are unavailable in this alpha release/,
+  );
+  assert.match(
+    services,
+    /interactive terminal is unavailable in this alpha release/,
+  );
+  assert.match(client, /capabilities: vec!\["heartbeat"\.into\(\)\]/);
+  assert.doesNotMatch(client, /typed_jobs/);
   assert.match(broker, /saved terminal credentials are unavailable/);
   assert.doesNotMatch(broker, /load_account_credential\(&user\)/);
 });
@@ -196,8 +222,13 @@ test("client updater verifies release integrity before installation", async () =
   assert.match(updater, /SHA-256 mismatch/);
   assert.match(updater, /create_new\(true\)/);
   assert.match(updater, /is_simple_entry_name/);
+  assert.match(updater, /sanitized_zip_entry_name/);
+  assert.match(updater, /foo\/CON\.txt/);
+  assert.match(updater, /\.\/install-client\.ps1/);
   assert.doesNotMatch(updater, /Command::new\([^)]*sh\b/);
   assert.match(runners, /update_client_operation/);
+  assert.match(runners, /is_package_database_holder/);
+  assert.match(runners, /left running to protect the package database/);
 });
 
 test("root replacement is authorized by the current root and journaled", async () => {
@@ -742,6 +773,8 @@ test("Admin updater pubkey and endpoints are baked into every build", async () =
     windowsDockerfile,
     /node scripts\/build\.js --target windows-arm64/,
   );
+  assert.match(linuxDockerfile, /--channel "\$CENTRALD_RELEASE_CHANNEL"/);
+  assert.match(windowsDockerfile, /--channel \$env:CENTRALD_RELEASE_CHANNEL/);
 });
 
 test("Linux enrollment publishes only the active pointer and enables the service", async () => {
@@ -1081,6 +1114,13 @@ test("documented client restart remains visible in the public CLI", async () => 
   assert.match(restart, /Restart/);
 });
 
+test("advanced server CLI commands stay hidden from public help", async () => {
+  const cli = await read("crates/centrald-server/src/cli.rs");
+  assert.match(cli, /#\[command\(hide = true\)\]\s+Status\(TargetArgs\)/);
+  assert.match(cli, /#\[command\(hide = true\)\]\s+EnrollClient\(EnrollArgs\)/);
+  assert.match(cli, /#\[command\(hide = true\)\]\s+EnrollAdmin\(EnrollArgs\)/);
+});
+
 test("setup recovery and destructive reset share one fixed mutation lock", async () => {
   const [main, recovery] = await Promise.all([
     read("crates/centrald-server/src/main.rs"),
@@ -1318,6 +1358,7 @@ test("package upgrades restart only already-active CentralD services", async () 
     /systemctl is-active --quiet centrald-client\.service/,
   );
   assert.match(packaging, /systemctl try-restart centrald-client\.service/);
+  assert.doesNotMatch(packaging, /systemctl enable centrald-broker/);
   assert.match(packaging, /"coreutils"/);
 });
 

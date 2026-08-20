@@ -27,6 +27,7 @@ chrono.workspace = true
 ed25519-dalek.workspace = true
 fs2.workspace = true
 hex.workspace = true
+minisign.workspace = true
 prost-types.workspace = true
 pkcs8.workspace = true
 rand_core_06.workspace = true

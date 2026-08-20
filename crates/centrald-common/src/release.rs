@@ -224,7 +224,39 @@ fn is_simple_filename(value: &str) -> bool {
         && !value.contains('/')
         && !value.contains('\\')
         && !value.contains('\0')
+        && !value.contains(':')
         && !value.chars().any(char::is_control)
+        && !is_windows_device_filename(value)
+}
+
+fn is_windows_device_filename(value: &str) -> bool {
+    let stem = value.split('.').next().unwrap_or("");
+    let stem = stem.to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 #[cfg(test)]

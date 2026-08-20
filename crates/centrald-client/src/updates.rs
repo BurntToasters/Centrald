@@ -479,9 +479,9 @@ fn install_windows_zip(artifact: &Path) -> Result<()> {
         let name = entry.name().to_owned();
         let is_directory = entry.is_dir();
         let name = name.strip_suffix('/').unwrap_or(&name).to_owned();
-        if !is_simple_entry_name(&name) {
+        let Some(name) = sanitized_zip_entry_name(&name) else {
             bail!("ZIP entry name is unsafe: {name}");
-        }
+        };
         if is_directory {
             std::fs::create_dir_all(extract_dir.join(&name))
                 .with_context(|| format!("create directory {name}"))?;
@@ -511,6 +511,9 @@ fn install_windows_zip(artifact: &Path) -> Result<()> {
                 extracted_total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
             if extracted_total > MAX_ARTIFACT_BYTES {
                 bail!("the client ZIP expands beyond the hard limit");
+            }
+            if extraction_started.elapsed() > EXTRACTION_TIMEOUT {
+                bail!("the client ZIP extraction exceeded the time bound");
             }
             output
                 .write_all(&buffer[..read])
@@ -547,21 +550,37 @@ fn install_windows_zip(artifact: &Path) -> Result<()> {
 }
 
 #[cfg(any(windows, test))]
+fn sanitized_zip_entry_name(name: &str) -> Option<String> {
+    let name = name.replace('\\', "/");
+    let mut name = name.as_str();
+    while let Some(rest) = name.strip_prefix("./") {
+        name = rest;
+    }
+    if is_simple_entry_name(name) {
+        Some(name.to_owned())
+    } else {
+        None
+    }
+}
+
+#[cfg(any(windows, test))]
 fn is_simple_entry_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
-        && name != "."
-        && name != ".."
         && !name.starts_with('/')
-        && !name.starts_with('\\')
         && !name.contains('\0')
         && !name.contains(':')
-        && !name.ends_with('.')
-        && !name.ends_with(' ')
-        && !name
-            .split(['/', '\\'])
-            .any(|part| matches!(part, "" | "." | ".."))
-        && !is_windows_device_name(name)
+        && name.split('/').all(is_simple_path_component)
+}
+
+#[cfg(any(windows, test))]
+fn is_simple_path_component(part: &str) -> bool {
+    !part.is_empty()
+        && part != "."
+        && part != ".."
+        && !part.ends_with('.')
+        && !part.ends_with(' ')
+        && !is_windows_device_name(part)
 }
 
 /// Windows reserves these device names even with an extension; a file named
@@ -693,9 +712,17 @@ mod tests {
             "centrald-client.exe",
             "install-client.ps1",
             "sub/dir/file.txt",
+            "./install-client.ps1",
         ] {
-            assert!(is_simple_entry_name(safe), "{safe} should be safe");
+            assert!(
+                sanitized_zip_entry_name(safe).is_some(),
+                "{safe} should be safe"
+            );
         }
+        assert_eq!(
+            sanitized_zip_entry_name("./install-client.ps1").as_deref(),
+            Some("install-client.ps1")
+        );
         for unsafe_name in [
             "../evil.exe",
             "/absolute.exe",
@@ -706,10 +733,14 @@ mod tests {
             "C:\\evil.exe",
             "C:evil.exe",
             "file.txt:$DATA",
+            "foo/CON.txt",
+            "CON",
+            "dir/file ",
+            "dir/file.",
             "",
         ] {
             assert!(
-                !is_simple_entry_name(unsafe_name),
+                sanitized_zip_entry_name(unsafe_name).is_none(),
                 "{unsafe_name} must be rejected"
             );
         }

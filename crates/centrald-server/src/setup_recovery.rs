@@ -88,6 +88,11 @@ pub fn acquire_setup_mutation_lock() -> Result<SetupMutationLock> {
             .write(true)
             .create(true)
             .mode(0o600)
+            .custom_flags({
+                const O_NOFOLLOW: i32 = 0o400000;
+                const O_CLOEXEC: i32 = 0o2000000;
+                O_NOFOLLOW | O_CLOEXEC
+            })
             .open(path)
             .with_context(|| format!("open setup mutation lock {}", path.display()))?;
         let metadata = file

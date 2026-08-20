@@ -1001,7 +1001,7 @@ fn client_hello(config: &ClientConfig) -> ClientHello {
             major: centrald_protocol::PROTOCOL_MAJOR,
             minor: centrald_protocol::PROTOCOL_MINOR,
         }),
-        capabilities: vec!["heartbeat".into(), "typed_jobs".into()],
+        capabilities: vec!["heartbeat".into()],
         boot_id: boot_id(),
     }
 }

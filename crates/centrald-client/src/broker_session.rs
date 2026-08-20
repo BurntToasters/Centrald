@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::ledger::BrokerLedger;
 use crate::ptys::{PtyController, PtyParts, PtySession, PtySessionSpec, SessionPrivilege};
 
 /// Upper bound for one session wire frame. The server permits data frames up
@@ -216,13 +217,18 @@ impl Default for SessionManager {
 ///
 /// Returns an error only for protocol violations that must terminate the
 /// connection; session-level failures are reported as frames.
+#[allow(clippy::too_many_lines)]
 pub fn serve_session(
     open_bytes: &[u8],
     reader: Box<dyn Read + Send>,
     mut writer: Box<dyn Write + Send>,
     verifier: &Mutex<GrantVerifier>,
+    ledger: &Mutex<BrokerLedger>,
     manager: &SessionManager,
 ) -> Result<()> {
+    if !centrald_common::TERMINAL_SESSIONS_ENABLED && !cfg!(test) {
+        bail!("interactive terminal is unavailable in this alpha release");
+    }
     let open = serde_json::from_slice::<SessionWireFrame>(open_bytes)
         .context("decode session open frame")?;
     let SessionWireFrame::Open {
@@ -251,10 +257,21 @@ pub fn serve_session(
             "session parameters do not match the signed grant"
         ));
     }
+    if ledger
+        .lock()
+        .map_err(|_| anyhow::anyhow!("broker ledger lock was poisoned"))?
+        .grant_was_consumed(grant.grant.id, Utc::now())?
+    {
+        return Err(anyhow::anyhow!("grant was already consumed"));
+    }
     verifier
         .lock()
         .map_err(|_| anyhow::anyhow!("broker verifier lock was poisoned"))?
         .verify_and_consume(&grant, Utc::now())?;
+    ledger
+        .lock()
+        .map_err(|_| anyhow::anyhow!("broker ledger lock was poisoned"))?
+        .record_consumed_grant(grant.grant.id, grant.grant.expires_at)?;
 
     let session_id = grant.grant.job_or_session_id;
     let reservation = manager.reserve(session_id)?;
@@ -279,6 +296,31 @@ pub fn serve_session(
         drop(reservation);
         let frame = SessionWireFrame::Error {
             message: "elevated shells require OS account credentials".to_owned(),
+        };
+        write_frame(&mut writer, &encode_frame(&frame))?;
+        return Ok(());
+    }
+    let named_user = if account_user.is_empty() {
+        params.user.clone()
+    } else {
+        account_user.clone()
+    };
+    if params.privilege == "low"
+        && !named_user.is_empty()
+        && named_user != "centrald"
+        && credentials.is_none()
+    {
+        drop(reservation);
+        let frame = SessionWireFrame::Error {
+            message: "low shells for a named OS account require a password".to_owned(),
+        };
+        write_frame(&mut writer, &encode_frame(&frame))?;
+        return Ok(());
+    }
+    if params.privilege == "elevated" && named_user != "root" && !cfg!(windows) {
+        drop(reservation);
+        let frame = SessionWireFrame::Error {
+            message: "elevated Linux shells require the root OS account".to_owned(),
         };
         write_frame(&mut writer, &encode_frame(&frame))?;
         return Ok(());

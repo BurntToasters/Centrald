@@ -85,6 +85,23 @@ test("release channel override beats the tracked configuration", () => {
   fs.rmSync(root, { recursive: true });
 });
 
+test("empty releaseChannel override does not mask CENTRALD_RELEASE_CHANNEL", () => {
+  const root = temporaryConfig(
+    "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=stable\n",
+  );
+  const previous = process.env.CENTRALD_RELEASE_CHANNEL;
+  process.env.CENTRALD_RELEASE_CHANNEL = "beta";
+  try {
+    const config = loadBuildConfig(root, { releaseChannel: "" });
+    assert.equal(config.releaseChannel, "beta");
+    assert.equal(config.channelSource, "override");
+  } finally {
+    if (previous === undefined) delete process.env.CENTRALD_RELEASE_CHANNEL;
+    else process.env.CENTRALD_RELEASE_CHANNEL = previous;
+    fs.rmSync(root, { recursive: true });
+  }
+});
+
 test("without CDN, stable stays on the GitHub latest pointer", () => {
   const root = temporaryConfig(
     "REPO_URL=https://github.com/example/centrald\nRELEASE_CHANNEL=stable\n",

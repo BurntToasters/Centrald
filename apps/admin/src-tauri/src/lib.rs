@@ -4,6 +4,7 @@ use serde::Serialize;
 
 mod profiles;
 mod shell;
+mod updates;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +53,8 @@ pub fn run() -> tauri::Result<()> {
             shell::open_shell,
             shell::shell_input,
             shell::shell_resize,
-            shell::shell_close
+            shell::shell_close,
+            updates::verify_admin_update_feed
         ])
         .run(tauri::generate_context!())
 }

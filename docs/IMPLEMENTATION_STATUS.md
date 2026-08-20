@@ -62,10 +62,15 @@ production-ready.
   file's tail hash and recomputes every record hash from its canonical bytes
   (timestamps are normalized to Postgres microsecond precision at append time —
   including local server-console audits — so read-back verification is
-  byte-stable).
+  byte-stable). This is a local JSONL export, not the threat-model external
+  audit sink.
 - Basic identity/platform/version/health inventory, client/invitation lifecycle,
-  typed job submission, revision-checked settings, and operator-approved Tauri
-  self-update wiring.
+  revision-checked settings, and operator-approved Tauri self-update wiring
+  (Minisign-verified updater JSON, then Tauri `.sig`). Typed job and shell RPCs
+  exist but fail closed on the wire until `PRIVILEGED_OPERATIONS_ENABLED` /
+  `TERMINAL_SESSIONS_ENABLED` are release gates. Client Hello advertises only
+  `heartbeat`. Packaged brokers stay installed but are not enabled or
+  auto-started.
 - Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.
@@ -83,10 +88,12 @@ production-ready.
 ## Deliberately gated
 
 - Privileged operation execution, including remote service/machine restart, OS
-  updates, and client package installation. Protocol, broker, and runner code is
-  security scaffolding and is not exposed as an active Admin action.
+  updates, and client package installation. Protocol, broker, runner, Tauri, and
+  package-enablement paths fail closed; GUI disable flags are not the security
+  boundary.
 - PTY/ConPTY shell transport and credential saving. The Admin Terminal page is
-  visibly unavailable; no password is loaded from or saved to a vault.
+  visibly unavailable; server/broker/Tauri commands reject sessions; no password
+  is loaded from or saved to a vault.
 - Server/client package installation. Build artifacts exist for manual alpha
   testing, but CentralD does not remotely install itself in this release.
 

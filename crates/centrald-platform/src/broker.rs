@@ -55,7 +55,7 @@ pub struct GrantVerifier {
     device_id: Uuid,
     signing_key: VerifyingKey,
     consumed: HashSet<Uuid>,
-    order: VecDeque<Uuid>,
+    order: VecDeque<(Uuid, DateTime<Utc>)>,
 }
 
 #[derive(Debug, Error)]
@@ -72,6 +72,8 @@ pub enum BrokerError {
     Operation(String),
     #[error("privileged operation output exceeded the broker limit")]
     OutputTooLarge,
+    #[error("grant replay set is full of still-valid grants")]
+    ReplaySetFull,
 }
 
 impl GrantVerifier {
@@ -82,6 +84,16 @@ impl GrantVerifier {
             signing_key,
             consumed: HashSet::new(),
             order: VecDeque::new(),
+        }
+    }
+
+    /// Restores a previously persisted consumed grant into the in-memory set.
+    pub fn restore(&mut self, grant_id: Uuid, expires_at: DateTime<Utc>, now: DateTime<Utc>) {
+        if expires_at <= now {
+            return;
+        }
+        if self.consumed.insert(grant_id) {
+            self.order.push_back((grant_id, expires_at));
         }
     }
 
@@ -97,16 +109,28 @@ impl GrantVerifier {
         now: DateTime<Utc>,
     ) -> Result<(), BrokerError> {
         grant.verify(&self.signing_key, self.device_id, now)?;
+        self.prune_expired(now);
         if !self.consumed.insert(grant.grant.id) {
             return Err(BrokerError::Replay);
         }
-        self.order.push_back(grant.grant.id);
-        if self.order.len() > MAX_REPLAY_ENTRIES
-            && let Some(expired_id) = self.order.pop_front()
-        {
-            self.consumed.remove(&expired_id);
+        self.order
+            .push_back((grant.grant.id, grant.grant.expires_at));
+        if self.order.len() > MAX_REPLAY_ENTRIES {
+            self.consumed.remove(&grant.grant.id);
+            self.order.pop_back();
+            return Err(BrokerError::ReplaySetFull);
         }
         Ok(())
+    }
+
+    fn prune_expired(&mut self, now: DateTime<Utc>) {
+        while let Some((id, expires_at)) = self.order.front().copied() {
+            if expires_at > now {
+                break;
+            }
+            self.order.pop_front();
+            self.consumed.remove(&id);
+        }
     }
 
     /// Verifies and consumes a grant, validates its exact parameter bytes, and
@@ -180,7 +204,15 @@ mod tests {
     }
 
     fn request(device_id: Uuid, key: &SigningKey, parameters: &[u8]) -> BrokerRequest {
-        let now = Utc::now();
+        request_at(device_id, key, parameters, Utc::now())
+    }
+
+    fn request_at(
+        device_id: Uuid,
+        key: &SigningKey,
+        parameters: &[u8],
+        now: DateTime<Utc>,
+    ) -> BrokerRequest {
         let grant = PrivilegedGrant {
             id: Uuid::now_v7(),
             device_id,
@@ -189,7 +221,7 @@ mod tests {
             operation: GrantOperation::RestartMachine,
             parameters_sha256: hex::encode(Sha256::digest(parameters)),
             issued_at: now - Duration::seconds(1),
-            expires_at: now + Duration::seconds(30),
+            expires_at: now + Duration::hours(1),
             nonce: Uuid::now_v7().to_string(),
         };
         BrokerRequest {
@@ -223,5 +255,34 @@ mod tests {
             Err(BrokerError::Replay)
         ));
         assert_eq!(runner.calls, 1);
+    }
+
+    #[test]
+    fn refuses_to_evict_unexpired_grants() {
+        let key = SigningKey::from_bytes(&[9_u8; 32]);
+        let device = Uuid::now_v7();
+        let mut verifier = GrantVerifier::new(device, key.verifying_key());
+        let now = Utc::now();
+        let first = request_at(device, &key, b"{}", now);
+        assert!(
+            verifier
+                .verify_and_consume(&first.signed_grant, now)
+                .is_ok()
+        );
+        for _ in 1..4096 {
+            let extra = request_at(device, &key, b"{}", now);
+            verifier
+                .verify_and_consume(&extra.signed_grant, now)
+                .unwrap();
+        }
+        let overflow = request_at(device, &key, b"{}", now);
+        assert!(matches!(
+            verifier.verify_and_consume(&overflow.signed_grant, now),
+            Err(BrokerError::ReplaySetFull)
+        ));
+        assert!(matches!(
+            verifier.verify_and_consume(&first.signed_grant, now),
+            Err(BrokerError::Replay)
+        ));
     }
 }

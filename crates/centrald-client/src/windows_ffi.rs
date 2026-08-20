@@ -300,13 +300,18 @@ impl Write for PipeStream {
         if result == 0 {
             return Err(io::Error::last_os_error());
         }
-        unsafe {
-            FlushFileBuffers(self.handle.as_raw_handle() as HANDLE);
+        let flushed = unsafe { FlushFileBuffers(self.handle.as_raw_handle() as HANDLE) };
+        if flushed == 0 {
+            return Err(io::Error::last_os_error());
         }
-        Ok(buffer.len())
+        Ok(written_bytes as usize)
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let flushed = unsafe { FlushFileBuffers(self.handle.as_raw_handle() as HANDLE) };
+        if flushed == 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(())
     }
 }

@@ -273,9 +273,9 @@ The release workflow expects:
 - `MINISIGN_SECRET_KEY_B64`, the base64 encoding of the ephemeral unprotected
   Minisign secret-key file used only by the final signing job.
 
-The workflow is a manual fallback, not a tag-push trigger. Dispatch it explicitly
-at the existing `v<package-version>` tag; this prevents it from racing the local
-`npm run release` flow that creates the tag and GitHub release itself. It builds
-platform artifacts in native jobs, signs general artifacts only after assembly,
-cryptographically verifies every Minisign signature, runs repository QA, and
-publishes last.
+The workflow is a manual fallback, not a tag-push trigger. Dispatch it
+explicitly at the existing `v<package-version>` tag; this prevents it from
+racing the local `npm run release` flow that creates the tag and GitHub release
+itself. It builds platform artifacts in native jobs, signs general artifacts
+only after assembly, cryptographically verifies every Minisign signature, runs
+repository QA, and publishes last.

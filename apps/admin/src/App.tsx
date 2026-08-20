@@ -426,6 +426,7 @@ export function App() {
     setCheckingUpdate(true);
     setError(null);
     try {
+      await invoke("verify_admin_update_feed");
       const update = await check();
       setAvailableUpdate(update);
       setNotice(
@@ -454,6 +455,7 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
+      await invoke("verify_admin_update_feed");
       await availableUpdate.downloadAndInstall();
       setNotice(
         "The signed update was installed. Reopen CentralD Admin to run the new version.",
@@ -918,7 +920,7 @@ function Overview({
         <div>
           <p className="eyebrow">At a glance</p>
           <h3>Homelab overview</h3>
-          <p>Inventory, enrollment, jobs, and server health in one place.</p>
+          <p>Inventory, enrollment, and server health in one place.</p>
         </div>
         <button
           className="button primary"
@@ -998,7 +1000,7 @@ function Overview({
             <li>One-time Argon2id-backed invitations</li>
             <li>Separate client and Admin mTLS identities</li>
             <li>Server-local Admin lifecycle and destructive reset</li>
-            <li>Typed jobs instead of an arbitrary command queue</li>
+            <li>Pinned TLS names and role-specific mTLS issuers</li>
           </ul>
         </section>
       </div>
@@ -1080,8 +1082,9 @@ function Devices({
           <p className="eyebrow">Managed endpoints</p>
           <h3>Devices</h3>
           <p>
-            Inventory, enrollment, and typed maintenance jobs are active on
-            clients that report the broker capability.
+            Inventory and enrollment are active. Typed maintenance jobs stay
+            unavailable in this alpha until the complete privileged execution
+            path is a release gate.
           </p>
         </div>
         <button
@@ -1761,20 +1764,19 @@ function SettingsPanel({
               {settings.updateAvailable
                 ? " (newer than this server)"
                 : " (matches this server)"}
-              . The Devices page installs only this server-verified version.
+              . Client package installation stays unavailable in this alpha.
             </p>
           ) : (
             <p className="field-hint">
-              No release manifest has been verified yet; the Devices page stays
-              disabled until the server checks the feed.
+              No release manifest has been verified yet; client package
+              installation stays unavailable in this alpha.
             </p>
           )}
           <label className="checkbox-row">
             <input
               checked={settings.updateAllowPrerelease}
-              onChange={(event) =>
-                onPatch({ updateAllowPrerelease: event.target.checked })
-              }
+              disabled
+              title="The prerelease flag is server-local-only. Change the release channel from centrald-server config or centrald-server channel."
               type="checkbox"
             />
             Allow prerelease versions

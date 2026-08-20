@@ -170,7 +170,7 @@ fn shell_command(spec: &PtySessionSpec) -> Result<(String, Vec<String>)> {
     } else {
         LINUX_ALLOWED_SHELLS
     };
-    let shell = if spec.shell.is_empty() {
+    let requested = if spec.shell.is_empty() {
         allowed[0]
     } else if allowed.contains(&spec.shell.as_str()) {
         spec.shell.as_str()
@@ -180,8 +180,9 @@ fn shell_command(spec: &PtySessionSpec) -> Result<(String, Vec<String>)> {
             spec.shell
         );
     };
+    let shell = resolve_shell_executable(requested)?;
     match spec.privilege {
-        SessionPrivilege::Elevated => Ok((shell.to_owned(), Vec::new())),
+        SessionPrivilege::Elevated => Ok((shell, Vec::new())),
         SessionPrivilege::Low => {
             #[cfg(target_os = "linux")]
             {
@@ -195,7 +196,7 @@ fn shell_command(spec: &PtySessionSpec) -> Result<(String, Vec<String>)> {
                 }
                 Ok((
                     "/usr/bin/runuser".to_owned(),
-                    vec!["-u".to_owned(), user, "--".to_owned(), shell.to_owned()],
+                    vec!["-u".to_owned(), user, "--".to_owned(), shell],
                 ))
             }
             #[cfg(not(target_os = "linux"))]
@@ -206,6 +207,23 @@ fn shell_command(spec: &PtySessionSpec) -> Result<(String, Vec<String>)> {
                 )
             }
         }
+    }
+}
+
+fn resolve_shell_executable(name: &str) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let path = match name {
+            "cmd.exe" => centrald_common::config::windows_system_executable("cmd.exe"),
+            "powershell.exe" => centrald_common::config::windows_powershell_executable(),
+            _ => None,
+        }
+        .context("Windows did not return its trusted system directory")?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(name.to_owned())
     }
 }
 

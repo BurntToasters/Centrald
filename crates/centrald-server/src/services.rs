@@ -385,7 +385,15 @@ pub async fn run_update_checks(state: RuntimeState) {
 async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 3 {
+                return attempt.stop();
+            }
+            if attempt.url().scheme() != "https" {
+                return attempt.stop();
+            }
+            attempt.follow()
+        }))
         .build()?;
     let mut response = client
         .get(&state.config.updates.manifest_url)
@@ -512,6 +520,14 @@ async fn verify_manifest_signature(
         .send()
         .await?
         .error_for_status()?;
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| !value.eq_ignore_ascii_case("identity"))
+    {
+        anyhow::bail!("release manifest signature must not use content encoding");
+    }
     if response
         .content_length()
         .is_some_and(|length| length > 4096)
@@ -1112,6 +1128,14 @@ impl AdminService for AdminRpc {
                 "identity changed before revocation; refresh and try again",
             ));
         }
+        sqlx::query(
+            "UPDATE identity_certificates SET revoked_at = NOW() \
+             WHERE identity_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(identity_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
         append_audit(
             &mut transaction,
             Some(actor),
@@ -1130,6 +1154,11 @@ impl AdminService for AdminRpc {
     }
 
     async fn start_job(&self, request: Request<StartJobRequest>) -> Result<Response<Job>, Status> {
+        if !centrald_common::PRIVILEGED_OPERATIONS_ENABLED {
+            return Err(Status::failed_precondition(
+                "privileged client jobs are unavailable in this alpha release",
+            ));
+        }
         let actor = authenticate(&self.state.pool, &request, "admin").await?;
         let request = request.into_inner();
         let request_id = parse_uuid(&request.request_id, "request_id")?;
@@ -1347,6 +1376,11 @@ impl AdminService for AdminRpc {
         &self,
         request: Request<BeginElevationRequest>,
     ) -> Result<Response<ElevationChallenge>, Status> {
+        if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+            return Err(Status::failed_precondition(
+                "interactive terminal is unavailable in this alpha release",
+            ));
+        }
         let actor = authenticate(&self.state.pool, &request, "admin").await?;
         let challenge =
             crate::shell::begin_elevation(&self.state.pool, actor, request.into_inner()).await?;
@@ -1357,6 +1391,11 @@ impl AdminService for AdminRpc {
         &self,
         request: Request<Streaming<AdminShellFrame>>,
     ) -> Result<Response<Self::OpenShellStream>, Status> {
+        if !centrald_common::TERMINAL_SESSIONS_ENABLED {
+            return Err(Status::failed_precondition(
+                "interactive terminal is unavailable in this alpha release",
+            ));
+        }
         let actor = authenticate(&self.state.pool, &request, "admin").await?;
         let presented_fingerprint = peer_certificate_fingerprint(&request)?;
         // The permit lives for the whole session (moved into the relay task),
@@ -1659,11 +1698,11 @@ async fn server_settings(
         update_manifest_url: config.updates.manifest_url.clone(),
         update_check_interval_seconds: config.updates.check_interval_seconds,
         update_allow_prerelease: config.updates.allow_prerelease,
-        data_dir: config.server.data_dir.display().to_string(),
-        local_socket: config.server.local_socket.display().to_string(),
-        database_url_env: config.database.url_env.clone(),
-        database_environment_file: config.database.environment_file.display().to_string(),
-        root_cert_path: config.pki.root_cert.display().to_string(),
+        data_dir: String::new(),
+        local_socket: String::new(),
+        database_url_env: String::new(),
+        database_environment_file: String::new(),
+        root_cert_path: String::new(),
         local_only_fields: vec![
             "instanceId".into(),
             "publicHost".into(),
@@ -1674,6 +1713,7 @@ async fn server_settings(
             "rootCertPath".into(),
             "updateChannel".into(),
             "updateManifestUrl".into(),
+            "updateAllowPrerelease".into(),
             "pki".into(),
             "adminAccess".into(),
             "nuke".into(),
@@ -1690,14 +1730,20 @@ fn validate_read_only_settings(
 ) -> Result<(), Status> {
     let unchanged = requested.instance_id == config.server.instance_id.to_string()
         && requested.public_host == config.server.public_host
-        && requested.data_dir == config.server.data_dir.display().to_string()
-        && requested.local_socket == config.server.local_socket.display().to_string()
-        && requested.database_url_env == config.database.url_env
-        && requested.database_environment_file
-            == config.database.environment_file.display().to_string()
-        && requested.root_cert_path == config.pki.root_cert.display().to_string()
+        && (requested.data_dir.is_empty()
+            || requested.data_dir == config.server.data_dir.display().to_string())
+        && (requested.local_socket.is_empty()
+            || requested.local_socket == config.server.local_socket.display().to_string())
+        && (requested.database_url_env.is_empty()
+            || requested.database_url_env == config.database.url_env)
+        && (requested.database_environment_file.is_empty()
+            || requested.database_environment_file
+                == config.database.environment_file.display().to_string())
+        && (requested.root_cert_path.is_empty()
+            || requested.root_cert_path == config.pki.root_cert.display().to_string())
         && requested.update_channel == config.updates.channel
-        && requested.update_manifest_url == config.updates.manifest_url;
+        && requested.update_manifest_url == config.updates.manifest_url
+        && requested.update_allow_prerelease == config.updates.allow_prerelease;
     if !unchanged {
         return Err(Status::permission_denied(
             "one or more server-local settings were modified",
@@ -2875,6 +2921,9 @@ fn validate_protocol(
     let protocol = protocol.ok_or_else(|| Status::invalid_argument("protocol version required"))?;
     if protocol.major != centrald_protocol::PROTOCOL_MAJOR {
         return Err(Status::failed_precondition("incompatible protocol major"));
+    }
+    if protocol.minor != centrald_protocol::PROTOCOL_MINOR {
+        return Err(Status::failed_precondition("incompatible protocol minor"));
     }
     Ok(())
 }

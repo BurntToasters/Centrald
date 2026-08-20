@@ -84,6 +84,9 @@ fn open_lock_file(config_path: &Path) -> Result<(File, PathBuf)> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        const O_NOFOLLOW: i32 = 0o400000;
+        const O_CLOEXEC: i32 = 0o2000000;
+        options.custom_flags(O_NOFOLLOW | O_CLOEXEC);
     }
     let file = options
         .open(&path)

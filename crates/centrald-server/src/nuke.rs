@@ -567,6 +567,13 @@ fn remove_data_dir_if_present(data_dir: &Path, instance_id: uuid::Uuid) -> Resul
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("refusing non-directory or symbolic-link data root");
     }
+    #[cfg(unix)]
+    let root_dev = {
+        use std::os::unix::fs::MetadataExt;
+        Some(metadata.dev())
+    };
+    #[cfg(not(unix))]
+    let root_dev = None::<u64>;
 
     let marker = data_dir.join(DATA_ROOT_MARKER);
     match marker.symlink_metadata() {
@@ -584,7 +591,7 @@ fn remove_data_dir_if_present(data_dir: &Path, instance_id: uuid::Uuid) -> Resul
                 if entry.file_name() == DATA_ROOT_MARKER {
                     continue;
                 }
-                remove_data_root_entry(&entry.path())?;
+                remove_data_root_entry(&entry.path(), root_dev)?;
             }
             std::fs::File::open(data_dir)
                 .and_then(|directory| directory.sync_all())
@@ -616,7 +623,7 @@ fn remove_data_dir_if_present(data_dir: &Path, instance_id: uuid::Uuid) -> Resul
     })
 }
 
-fn remove_data_root_entry(path: &Path) -> Result<()> {
+fn remove_data_root_entry(path: &Path, root_dev: Option<u64>) -> Result<()> {
     let metadata = path
         .symlink_metadata()
         .with_context(|| format!("inspect CentralD data entry {}", path.display()))?;
@@ -625,6 +632,28 @@ fn remove_data_root_entry(path: &Path) -> Result<()> {
             .with_context(|| format!("remove CentralD data file {}", path.display()));
     }
     if metadata.is_dir() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if root_dev.is_some_and(|device| metadata.dev() != device) {
+                bail!(
+                    "refusing to remove data-root child on a different device (bind mount?): {}",
+                    path.display()
+                );
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                bail!(
+                    "refusing to remove a reparse-point data-root child: {}",
+                    path.display()
+                );
+            }
+        }
+        let _ = root_dev;
         return std::fs::remove_dir_all(path)
             .with_context(|| format!("remove CentralD data directory {}", path.display()));
     }

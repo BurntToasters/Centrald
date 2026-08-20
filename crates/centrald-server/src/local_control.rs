@@ -270,7 +270,7 @@ pub struct ServerLock {
 #[cfg(unix)]
 pub fn acquire_server_lock(socket_path: &Path) -> Result<ServerLock> {
     use std::fs::OpenOptions;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     use fs2::FileExt;
 
@@ -302,6 +302,11 @@ pub fn acquire_server_lock(socket_path: &Path) -> Result<ServerLock> {
         .write(true)
         .create(true)
         .truncate(false)
+        .custom_flags({
+            const O_NOFOLLOW: i32 = 0o400000;
+            const O_CLOEXEC: i32 = 0o2000000;
+            O_NOFOLLOW | O_CLOEXEC
+        })
         .open(&lock_path)
         .with_context(|| format!("open local server lock {}", lock_path.display()))?;
     std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))?;

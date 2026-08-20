@@ -704,7 +704,8 @@ pub async fn revoke_identity_record(
         .await?;
     if role == "admin" {
         let active_admins: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM identities WHERE role = 'admin' AND revoked_at IS NULL",
+            "SELECT COUNT(*) FROM identities WHERE role = 'admin' \
+             AND activated_at IS NOT NULL AND revoked_at IS NULL",
         )
         .fetch_one(&mut *transaction)
         .await?;
@@ -725,6 +726,13 @@ pub async fn revoke_identity_record(
     if affected != 1 {
         bail!("identity changed before revocation; refresh and try again");
     }
+    sqlx::query(
+        "UPDATE identity_certificates SET revoked_at = NOW() \
+         WHERE identity_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(identity_id)
+    .execute(&mut *transaction)
+    .await?;
     append_local_audit(
         &mut transaction,
         "identity.revoke",
@@ -2624,7 +2632,8 @@ pub async fn diagnostic_summary(pool: &PgPool) -> Result<DiagnosticsSummary> {
     .fetch_one(pool)
     .await?;
     let admins: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM identities WHERE role = 'admin' AND revoked_at IS NULL",
+        "SELECT COUNT(*) FROM identities WHERE role = 'admin' \
+         AND activated_at IS NOT NULL AND revoked_at IS NULL",
     )
     .fetch_one(pool)
     .await?;

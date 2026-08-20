@@ -766,6 +766,9 @@ async fn start_job_inner(
     reason: String,
     parameters_json: String,
 ) -> anyhow::Result<JobView> {
+    if !centrald_common::PRIVILEGED_OPERATIONS_ENABLED {
+        anyhow::bail!("privileged client jobs are unavailable in this alpha release");
+    }
     let (job_kind, kind_name) = parse_job_kind(kind)?;
     let parameters_json = parameters_json.trim();
     let parameters: serde_json::Value =

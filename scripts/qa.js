@@ -8,6 +8,8 @@ for (const [command, args] of [
   ["npm", ["--prefix", "site", "run", "check"]],
   ["npm", ["--prefix", "site", "run", "build"]],
   ["npm", ["test"]],
+  ["npm", ["run", "test:cargo-safe-update"]],
+  ["npm", ["run", "check:cargo-update-policy"]],
   ["npm", ["run", "test:rust"]],
 ]) {
   run(command, args);

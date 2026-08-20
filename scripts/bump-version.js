@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
 import { parseSemver } from "./lib/release-metadata.js";
+import { selectedPackages, validateCandidate } from "./cargo-safe-update.mjs";
 
 const root = process.cwd();
 const candidate = process.argv[2];
@@ -19,6 +20,16 @@ try {
   );
 }
 const nextVersion = candidate.trim();
+
+function readSelectedCargoPackages() {
+  const metadata = JSON.parse(
+    execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }),
+  );
+  return selectedPackages(metadata);
+}
 
 const packageJsonPath = path.join(root, "package.json");
 const cargoPath = path.join(root, "Cargo.toml");
@@ -87,12 +98,21 @@ fs.writeFileSync(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`, {
 // trees without a lockfile (e.g. temp-dir tests); the real repo always has one.
 const lockPath = path.join(root, "Cargo.lock");
 if (fs.existsSync(lockPath)) {
+  const originalLock = fs.readFileSync(lockPath);
   try {
+    // generate-lockfile re-resolves the graph, so any newly selected registry
+    // version must pass the 72-hour publish-age policy before it is accepted.
+    const baseline = readSelectedCargoPackages();
     execFileSync("cargo", ["generate-lockfile"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
+    await validateCandidate(baseline, readSelectedCargoPackages(), {
+      allowYoung: new Set(),
+      allowGit: new Set(),
+    });
   } catch (error) {
+    fs.writeFileSync(lockPath, originalLock, { encoding: "utf8", mode: 0o644 });
     fs.writeFileSync(packageJsonPath, originalPackageJsonText, {
       encoding: "utf8",
       mode: 0o644,
@@ -106,13 +126,13 @@ if (fs.existsSync(lockPath)) {
       mode: 0o644,
     });
     throw new Error(
-      "Cargo.lock could not be regenerated; version files were restored.",
+      "Cargo.lock failed policy validation; version files and the lockfile were restored.",
       { cause: error },
     );
   }
 } else {
   console.warn(
-    "No Cargo.lock found; skipped lockfile regeneration. Run `cargo generate-lockfile` before any --locked build.",
+    "No Cargo.lock found; skipped lockfile regeneration. Regenerate the lockfile before any --locked build.",
   );
 }
 

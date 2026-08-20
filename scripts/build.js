@@ -151,7 +151,9 @@ function buildWindows(architecture) {
     ];
     if (releaseConfig) tauriArgs.push("--config", releaseConfig);
     tauriArgs.push("--", "--locked");
-    run("npx", ["--no-install", ...tauriArgs], { cwd: path.join(root, "apps/admin") });
+    run("npx", ["--no-install", ...tauriArgs], {
+      cwd: path.join(root, "apps/admin"),
+    });
   } finally {
     removeTemporaryConfig(releaseConfig);
   }
@@ -403,7 +405,9 @@ function buildLinuxNative() {
     ];
     if (releaseConfig) tauriArgs.push("--config", releaseConfig);
     tauriArgs.push("--", "--locked");
-    run("npx", ["--no-install", ...tauriArgs], { cwd: path.join(root, "apps/admin") });
+    run("npx", ["--no-install", ...tauriArgs], {
+      cwd: path.join(root, "apps/admin"),
+    });
   } finally {
     removeTemporaryConfig(releaseConfig);
   }

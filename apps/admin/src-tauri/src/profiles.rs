@@ -273,6 +273,7 @@ pub struct ServerSettingsView {
     restart_required: bool,
     update_latest_version: String,
     update_available: bool,
+    update_last_check_error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,7 +414,9 @@ async fn enroll_admin_inner(
         anyhow::bail!("this access key is not for an Admin identity");
     }
     if claims.expires_at <= chrono::Utc::now() {
-        anyhow::bail!("this Admin access key has expired");
+        anyhow::bail!(
+            "this Admin access key has expired (or this machine's clock is skewed); check NTP, then create a new access key from centrald-server config"
+        );
     }
     let connection_host = input
         .connection_override
@@ -1251,6 +1254,7 @@ fn settings_view(settings: ServerSettings) -> ServerSettingsView {
         restart_required: settings.restart_required,
         update_latest_version: settings.update_latest_version,
         update_available: settings.update_available,
+        update_last_check_error: settings.update_last_check_error,
     }
 }
 
@@ -1282,6 +1286,7 @@ fn settings_proto(settings: ServerSettingsView) -> ServerSettings {
         restart_required: settings.restart_required,
         update_latest_version: settings.update_latest_version,
         update_available: settings.update_available,
+        update_last_check_error: settings.update_last_check_error,
     }
 }
 

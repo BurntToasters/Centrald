@@ -51,7 +51,9 @@ pub async fn run(args: EnrollmentArgs, reenroll: bool) -> Result<PathBuf> {
         bail!("this access key is for an Admin, not a managed client");
     }
     if claims.expires_at <= Utc::now() {
-        bail!("this client invitation has expired");
+        bail!(
+            "this client invitation has expired (or this machine's clock is skewed); check NTP with timedatectl status, then create a new invitation"
+        );
     }
     // Key-file/stdin enrollment is intended for unattended provisioning. When
     // no destination override is supplied, use the invitation endpoint without

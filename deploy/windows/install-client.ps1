@@ -461,7 +461,8 @@ try {
 }
 
 Write-Host "CentralD Client installed as $serviceIdentity with start mode $desiredStart."
-Write-Host "CentralD Broker installed as LocalSystem."
+Write-Host "CentralD Broker installed as LocalSystem (demand-start)."
+Write-Host "Do not set CentralDBroker to automatic start until privileged operations are an accepted release gate."
 if ($enrolled) {
   Write-Host "This client is already enrolled. Confirm the CentralDClient service is running with: Get-Service CentralDClient"
 } else {

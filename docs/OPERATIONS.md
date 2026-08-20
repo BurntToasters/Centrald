@@ -1,5 +1,46 @@
 # Operations
 
+## Scope of this release
+
+Operators can rely on setup, PKI, `centrald-invite1` enrollment, mTLS inventory,
+invitation lifecycle, audited remote settings, client rescue, and Admin
+self-update wiring. Typed jobs, privileged broker enablement, PTY/ConPTY shell,
+OS-vault credential saving, and remote CentralD package installation remain
+fail-closed. Do not auto-start or enable `centrald-broker` / `CentralDBroker`
+until `PRIVILEGED_OPERATIONS_ENABLED` is a release gate with acceptance tests.
+
+## Firewall and listeners
+
+Default packaged listeners (all unprivileged ports 1024–65535):
+
+| Port | Role           |
+| ---- | -------------- |
+| 7443 | Enrollment TLS |
+| 7444 | Client mTLS    |
+| 7445 | Admin mTLS     |
+
+Open those three TCP ports inbound on the **server** only. Clients and Admin are
+outbound-only. Example:
+
+```text
+sudo ufw allow 7443/tcp && sudo ufw allow 7444/tcp && sudo ufw allow 7445/tcp
+```
+
+## Clock / NTP
+
+Invitation and certificate validity use wall-clock time. Before enroll or renew,
+ensure NTP is active on server, clients, and Admin hosts (`timedatectl status`).
+If a freshly issued invitation fails as expired immediately, fix clock skew
+before regenerating keys.
+
+## Server process identity
+
+Packaged `centrald-server.service` runs as **root**. That is required in this
+release for local-control peer-credential checks, PKI material, and the
+root-only database environment file. Do not set `User=` / `Group=` to an
+unprivileged account; listener ports stay unprivileged without
+`CAP_NET_BIND_SERVICE`. An unprivileged server user is post-0.1.0 work.
+
 ## Default paths
 
 | Purpose              | Default                                              |
@@ -132,13 +173,16 @@ The bundle is redacted and contains paths/status metadata, not private keys or
 invitation values. On Windows, the network service must run as
 `NT SERVICE\CentralDClient` and the isolated privileged broker runs as
 LocalSystem (`CentralDBroker` service); on Debian/Ubuntu the broker runs as root
-through `centrald-broker.service`. The installer preserves the prior startup
-mode during upgrades. Debian package upgrades call `try-restart` only when the
-corresponding CentralD service was already active, so an upgraded binary takes
-effect without unexpectedly starting an inactive or unenrolled service. A first
-installation becomes delayed-auto after successful enrollment unless the
-operator explicitly used `-KeepManualStart`; that choice is persisted in the
-administrator-owned installation directory.
+through `centrald-broker.service`. Windows installs the broker as demand-start
+and Linux packages install but do not enable `centrald-broker.service`. Do not
+switch the broker to automatic start until privileged operations are an accepted
+release gate. The installer preserves the prior startup mode during upgrades.
+Debian package upgrades call `try-restart` only when the corresponding CentralD
+service was already active, so an upgraded binary takes effect without
+unexpectedly starting an inactive or unenrolled service. A first installation
+becomes delayed-auto after successful enrollment unless the operator explicitly
+used `-KeepManualStart`; that choice is persisted in the administrator-owned
+installation directory.
 
 ## PKI lifetime and rotation planning
 

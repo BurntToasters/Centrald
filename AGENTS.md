@@ -398,6 +398,9 @@ npm run qa
 
 `npm test` runs the JS contract tests in `scripts/tests/` (hardening,
 channel/URL parity, manifest reproducibility, cleanup safety, bump helper).
+CI also runs a PostgreSQL migrate smoke job
+(`CENTRALD_TEST_DATABASE_URL` + `postgres_migrate_smoke`) and a Linux `.deb`
+install smoke (`scripts/ci-linux-package-smoke.js`, `--debs-only` packaging).
 Security changes need negative tests for malformed input, wrong role, expiry,
 replay, tampering, stale revisions, path escape, partial failure, and reconnect.
 If the local environment cannot run a gate, state that explicitly and leave CI
@@ -408,9 +411,12 @@ to run it; never claim it passed.
 The enrollment, owned-database setup/config/reset flow, mTLS onboarding and
 renewal/activation, invitation lifecycle, basic inventory, leased typed job
 protocol (fail-closed on the wire in this alpha), audited remote settings,
-client rescue, Admin Tauri updater with Minisign-then-plugin installation
-(no WebView updater ACL), packaging,
-and immutable manifest/release pipeline are implemented in this alpha tree.
+client rescue, Admin Tauri updater (Minisign-verified feed once for availability;
+install requires plugin JSON to match the verified body; no WebView
+`updater:default` ACL), packaging, and immutable manifest/release pipeline are
+implemented in this alpha tree. Admin Terminal navigation stays hidden while
+`TERMINAL_FEATURE_AVAILABLE` is false. Release-manifest check failures are
+persisted and surfaced in Admin settings and `centrald-server config` Health.
 PTY/ConPTY shell transport, the privileged operation runner, OS-vault credential
 saving, and server/client package installation remain gated on the wire, broker,
 Tauri commands, Hello capabilities, and packaged service enablement.

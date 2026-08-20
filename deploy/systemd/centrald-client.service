@@ -12,6 +12,10 @@ Group=centrald
 ExecStart=/usr/bin/centrald-client daemon
 Restart=always
 RestartSec=5s
+RuntimeDirectory=centrald
+# Shared with the broker and server: world-traversable so the unprivileged
+# client can reach broker.sock when privileged operations are later enabled.
+RuntimeDirectoryMode=0755
 UMask=0077
 NoNewPrivileges=true
 CapabilityBoundingSet=
@@ -33,7 +37,7 @@ RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-ReadWritePaths=/var/lib/centrald-client /var/lib/centrald-client.lock
+ReadWritePaths=/var/lib/centrald-client /var/lib/centrald-client.lock /run/centrald
 
 [Install]
 WantedBy=multi-user.target

@@ -83,6 +83,7 @@ pub async fn run() -> Result<()> {
 /// loaded. Transient network failures continue to use bounded reconnects.
 pub async fn run_with_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
+    let mut consecutive_failures: u32 = 0;
     loop {
         if *shutdown.borrow() {
             return Ok(());
@@ -145,6 +146,15 @@ pub async fn run_with_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()
         }
         if healthy_stream {
             backoff = Duration::from_secs(1);
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            if consecutive_failures == 5 || consecutive_failures.is_multiple_of(20) {
+                warn!(
+                    failures = consecutive_failures,
+                    "client still offline after repeated reconnects; confirm NTP/network, then run centrald-client rescue"
+                );
+            }
         }
         tokio::select! {
             () = tokio::time::sleep(backoff) => {}

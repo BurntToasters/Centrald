@@ -367,6 +367,9 @@ message ServerSettings {
   // running server version.
   string update_latest_version = 25;
   bool update_available = 26;
+  // Empty when the latest successful check is newer than any failure; otherwise
+  // the last release-manifest check error for operators.
+  string update_last_check_error = 27;
 }
 
 message OperationResult {

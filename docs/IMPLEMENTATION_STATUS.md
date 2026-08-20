@@ -1,8 +1,10 @@
 # Implementation status
 
 This file distinguishes working alpha paths from deliberately gated security
-boundaries. It is not a claim that an uncompiled pre-release checkout is
-production-ready.
+boundaries. Tagging a numeric `0.1.0` (or later) means **enrollment and
+inventory are operator-stable on LAN/VPN**, not that every v1 product goal
+(jobs, shell, remote package install) is live. Gated surfaces stay fail-closed
+until their gates flip with acceptance tests.
 
 ## Implemented in this hardening tree
 
@@ -66,9 +68,10 @@ production-ready.
   audit sink.
 - Basic identity/platform/version/health inventory, client/invitation lifecycle,
   revision-checked settings, and operator-approved Tauri self-update wiring
-  (Minisign-verified updater JSON from a Rust command, then Tauri `.sig` only
-  after the signed version matches). The WebView has no `updater:default`
-  capability. Typed job and shell RPCs exist but fail closed on the wire until
+  (Minisign-verified updater JSON once for availability; install requires the
+  plugin feed JSON to match that verified body, then Tauri `.sig`). The WebView
+  has no `updater:default` capability. Typed job and shell RPCs exist but fail
+  closed on the wire until
   `PRIVILEGED_OPERATIONS_ENABLED` / `TERMINAL_SESSIONS_ENABLED` are release
   gates. Client Hello advertises only `heartbeat`. The broker verifies grants
   with a root/SYSTEM-owned copy of the grant verifying key, not the
@@ -94,15 +97,19 @@ production-ready.
   updates, and client package installation. Protocol, broker, runner, Tauri, and
   package-enablement paths fail closed; GUI disable flags are not the security
   boundary.
-- PTY/ConPTY shell transport and credential saving. The Admin Terminal page is
-  visibly unavailable; server/broker/Tauri commands reject sessions; no password
-  is loaded from or saved to a vault.
+- PTY/ConPTY shell transport and credential saving. The Admin Terminal nav entry
+  is hidden while gated; server/broker/Tauri commands reject sessions; no
+  password is loaded from or saved to a vault.
 - Server/client package installation. Build artifacts exist for manual alpha
   testing, but CentralD does not remotely install itself in this release.
 
 ## Validation expectation
 
 A release candidate is not ready until CI compiles/tests the Rust workspace on
-Ubuntu and Windows, runs frontend checks, exercises PostgreSQL integration
-tests, creates native packages, verifies signatures, and tests setup/enrollment/
-renewal/reset on disposable machines.
+Ubuntu and Windows, runs frontend checks, runs the PostgreSQL migrate smoke job,
+builds and installs Linux `.deb` packages in CI (file/unit smoke), verifies
+release signatures on the release path, and operators still exercise
+setup/enrollment/renewal/reset on disposable machines before the tag.
+
+Windows NSIS/ZIP install smoke remains a release-host / disposable-VM checklist
+item until an equivalent Windows CI job exists.

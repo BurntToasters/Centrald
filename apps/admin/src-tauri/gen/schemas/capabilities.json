@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Minimal capability set for the CentralD Admin main window.","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Minimal capability set for the CentralD Admin main window. Do not grant the updater plugin default permission set; Admin updates are Minisign-verified in Rust commands only. Generated plugin schemas may still list updater permissions — that is not authority to grant them.","local":true,"windows":["main"],"permissions":["core:default"]}}

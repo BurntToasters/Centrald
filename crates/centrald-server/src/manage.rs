@@ -2554,11 +2554,9 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
         config_path.display()
     );
 
-    let pool = open_pool(config).await;
-    match pool {
+    match open_pool(config).await {
         Ok(pool) => {
             let summary = diagnostic_summary(&pool).await?;
-            pool.close().await;
             println!(
                 "{} PostgreSQL connected and migrations current",
                 style("✓").green()
@@ -2566,6 +2564,18 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
             println!("  Active clients: {}", summary.active_clients);
             println!("  Active Admins: {}", summary.active_admins);
             println!("  Pending invitations: {}", summary.pending_enrollments);
+            match latest_release_manifest_check_error(&pool).await {
+                Ok(Some(error)) => println!(
+                    "{} Last release-manifest check failed: {error}",
+                    style("!").yellow()
+                ),
+                Ok(None) => {}
+                Err(error) => println!(
+                    "{} Could not read release-manifest check status: {error:#}",
+                    style("!").yellow()
+                ),
+            }
+            pool.close().await;
         }
         Err(error) => println!("{} PostgreSQL unavailable: {error:#}", style("!").yellow()),
     }
@@ -2618,6 +2628,28 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
         config.pki.root_cert.display()
     );
     Ok(())
+}
+
+async fn latest_release_manifest_check_error(pool: &PgPool) -> Result<Option<String>> {
+    let success_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT created_at FROM update_snapshots \
+         WHERE scope = 'server_release_manifest' AND expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let error_row: Option<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT updates->>'error', created_at FROM update_snapshots \
+         WHERE scope = 'server_release_manifest_error' AND expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(match (error_row, success_at) {
+        (Some((error, error_at)), Some(ok_at)) if error_at > ok_at => Some(error),
+        (Some((error, _)), None) => Some(error),
+        _ => None,
+    })
 }
 
 /// Returns bounded, non-secret server health counts.

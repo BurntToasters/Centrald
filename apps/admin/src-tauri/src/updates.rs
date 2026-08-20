@@ -4,9 +4,13 @@
 //! That is not a `CentralD` release signature. This module fetches the updater
 //! JSON plus its Minisign `.minisig`, verifies with the baked Minisign public
 //! key, and refuses a channel other than this build's `RELEASE_CHANNEL`.
+//! Availability is decided from that single verified body. Install still uses
+//! the Tauri plugin for artifact download, but only after the plugin's feed
+//! JSON matches the Minisign-verified bytes (closes feed TOCTOU).
 //! Install runs only through these Rust commands; the `WebView` has no updater
 //! plugin ACL.
 
+use std::cmp::Ordering;
 use std::io::Cursor;
 use std::time::Duration;
 
@@ -28,28 +32,33 @@ pub struct AdminUpdateStatus {
     version: Option<String>,
 }
 
-/// Minisign-verifies the Admin updater feed, then asks the plugin whether an
-/// update matching that signed version is available.
+struct VerifiedAdminFeed {
+    version: String,
+    parsed: serde_json::Value,
+}
+
+/// Minisign-verifies the Admin updater feed once and reports whether a newer
+/// version exists for this platform.
 ///
 /// # Errors
 ///
-/// Returns an error when the feed cannot be fetched, Minisign fails, the
-/// signed channel does not match this build, or the plugin version disagrees
-/// with the signed feed.
+/// Returns an error when the feed cannot be fetched, Minisign fails, or the
+/// signed channel does not match this build.
 #[tauri::command]
 pub async fn check_admin_update(app: AppHandle) -> Result<AdminUpdateStatus, String> {
-    check_admin_update_inner(app)
+    let _ = app;
+    check_admin_update_inner()
         .await
         .map_err(|error| error.to_string())
 }
 
-/// Minisign-verifies the feed again, then installs only if the plugin update
-/// version matches the signed feed.
+/// Minisign-verifies the feed, then installs only if the plugin's second fetch
+/// returns JSON identical to the verified body and the same version.
 ///
 /// # Errors
 ///
-/// Returns an error when verification fails, no update is available, versions
-/// disagree, or installation fails.
+/// Returns an error when verification fails, no update is available, the plugin
+/// feed disagrees with the signed body, or installation fails.
 #[tauri::command]
 pub async fn install_admin_update(app: AppHandle) -> Result<(), String> {
     install_admin_update_inner(app)
@@ -57,33 +66,50 @@ pub async fn install_admin_update(app: AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-async fn check_admin_update_inner(app: AppHandle) -> Result<AdminUpdateStatus> {
-    let signed_version = verify_admin_update_feed_inner().await?;
-    match app.updater()?.check().await? {
-        Some(update) if update.version == signed_version => Ok(AdminUpdateStatus {
-            available: true,
-            version: Some(update.version),
-        }),
-        Some(update) => bail!(
-            "updater plugin version {} does not match the Minisign-verified feed {signed_version}",
-            update.version
-        ),
-        None => Ok(AdminUpdateStatus {
+async fn check_admin_update_inner() -> Result<AdminUpdateStatus> {
+    let feed = verify_admin_update_feed_inner().await?;
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .context("parse this Admin build version")?;
+    let remote =
+        semver::Version::parse(&feed.version).context("parse the signed Admin updater version")?;
+    if !platform_present_in_feed(&feed.parsed) {
+        return Ok(AdminUpdateStatus {
             available: false,
             version: None,
-        }),
+        });
     }
+    let available = remote.cmp_precedence(&current) == Ordering::Greater;
+    Ok(AdminUpdateStatus {
+        available,
+        version: available.then_some(feed.version),
+    })
 }
 
 async fn install_admin_update_inner(app: AppHandle) -> Result<()> {
-    let signed_version = verify_admin_update_feed_inner().await?;
+    let feed = verify_admin_update_feed_inner().await?;
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .context("parse this Admin build version")?;
+    let remote =
+        semver::Version::parse(&feed.version).context("parse the signed Admin updater version")?;
+    if remote.cmp_precedence(&current) != Ordering::Greater {
+        bail!("no Admin update is available");
+    }
+    if !platform_present_in_feed(&feed.parsed) {
+        bail!("the signed Admin updater feed has no artifact for this platform");
+    }
     let Some(update) = app.updater()?.check().await? else {
         bail!("no Admin update is available");
     };
-    if update.version != signed_version {
+    if update.version != feed.version {
         bail!(
-            "updater plugin version {} does not match the Minisign-verified feed {signed_version}",
-            update.version
+            "updater plugin version {} does not match the Minisign-verified feed {}",
+            update.version,
+            feed.version
+        );
+    }
+    if update.raw_json != feed.parsed {
+        bail!(
+            "updater plugin feed JSON does not match the Minisign-verified body; refusing install"
         );
     }
     update
@@ -93,7 +119,7 @@ async fn install_admin_update_inner(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
-async fn verify_admin_update_feed_inner() -> Result<String> {
+async fn verify_admin_update_feed_inner() -> Result<VerifiedAdminFeed> {
     let manifest_url = tauri_update_manifest_url();
     if manifest_url.is_empty() {
         bail!("this Admin build has no updater manifest URL");
@@ -135,7 +161,40 @@ async fn verify_admin_update_feed_inner() -> Result<String> {
         .filter(|value| !value.is_empty())
         .context("Admin updater JSON is missing version")?
         .to_owned();
-    Ok(version)
+    Ok(VerifiedAdminFeed { version, parsed })
+}
+
+fn platform_present_in_feed(parsed: &serde_json::Value) -> bool {
+    let Some(platforms) = parsed
+        .get("platforms")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    platforms.contains_key(current_updater_platform())
+}
+
+fn current_updater_platform() -> &'static str {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "linux-x86_64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "windows-x86_64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        "windows-aarch64"
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
+    )))]
+    {
+        "unsupported"
+    }
 }
 
 async fn fetch_bounded(client: &reqwest::Client, url: &str, max_bytes: usize) -> Result<Vec<u8>> {

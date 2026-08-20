@@ -4,6 +4,47 @@ This is the recommended path for a first CentralD homelab. Advanced network,
 database, PKI, storage, and release settings are available later; you do not
 need them for normal enrollment.
 
+**This release’s live path** is server setup, one-time invitations, client and
+Admin enrollment, inventory, invitation lifecycle, and safe remote settings.
+Privileged jobs, remote package install, and PTY/ConPTY terminal sessions stay
+fail-closed until their security gates are release-ready—do not treat this build
+as a full remote-management suite.
+
+## 0. Network and clock prerequisites
+
+Before enrollment, confirm every machine has accurate time (NTP) and that the
+server can receive CentralD traffic.
+
+```text
+timedatectl status
+# Enable NTP if needed, then:
+sudo timedatectl set-ntp true
+```
+
+Enrollment invitations and certificates use wall-clock expiry. Large clock skew
+looks like an expired invitation even when the token was just created.
+
+On the **server**, allow inbound TCP for the three TLS listeners (defaults):
+
+| Port | Listener                              |
+| ---- | ------------------------------------- |
+| 7443 | Enrollment (server-authenticated TLS) |
+| 7444 | Client mTLS                           |
+| 7445 | Admin mTLS                            |
+
+Example with `ufw` (adjust if you changed listeners in
+`centrald-server config`):
+
+```text
+sudo ufw allow 7443/tcp
+sudo ufw allow 7444/tcp
+sudo ufw allow 7445/tcp
+sudo ufw reload
+```
+
+**Clients and Admin** only make outbound connections; they do not need inbound
+CentralD ports. Keep them on the same LAN or VPN as the server.
+
 ## 1. Initialize the Ubuntu server
 
 Install the CentralD server package and PostgreSQL, then run:
@@ -104,10 +145,10 @@ remote settings. Use `centrald-server config` for local-only trust and advanced
 server controls.
 
 Privileged client operations, remote CentralD installation, PTY/ConPTY terminal
-sessions, and credential saving remain visibly disabled in this alpha. Their
-protocol and broker code is security scaffolding, not an operator-ready path.
-Use the Admin GUI for the implemented inventory, invitation, revocation, and
-safe settings flows only.
+sessions, and credential saving remain gated and hidden from the Admin surface
+in this release. Their protocol and broker code is security scaffolding, not an
+operator-ready path. Use the Admin GUI for inventory, invitation, revocation,
+and safe settings only.
 
 Switch the server's client update channel with
 `sudo centrald-server channel beta` (or `alpha` / `stable`). Only installs whose
@@ -123,6 +164,11 @@ console exports the verified audit chain to root-owned, append-only
 `centrald-audit-<from>-<to>.jsonl` files.
 
 ## Recovery
+
+If Admin shows a client offline for a long time after a working enroll, confirm
+NTP and network path first, then run client diagnostics. The daemon reconnects
+with bounded backoff (up to 60s); rescue reports identity and service state
+without printing secrets.
 
 Client diagnostics:
 

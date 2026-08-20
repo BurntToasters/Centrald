@@ -13,6 +13,7 @@ const quickstart = read("docs/QUICKSTART.md");
 const serverMain = read("crates/centrald-server/src/main.rs");
 const manage = read("crates/centrald-server/src/manage.rs");
 const app = read("apps/admin/src/App.tsx");
+const terminalPanel = read("apps/admin/src/TerminalPanel.tsx");
 const client = read("crates/centrald-client/src/daemon.rs");
 const build = read("crates/centrald-common/build.rs");
 const setupRecovery = read("crates/centrald-server/src/setup_recovery.rs");
@@ -24,6 +25,8 @@ for (const [source, text, label] of [
   [quickstart, "centrald-client enroll", "quick start"],
   [quickstart, "centrald-server channel", "quick start channel switch"],
   [quickstart, "centrald-client reenroll", "quick start reenroll"],
+  [quickstart, "7443", "quick start enrollment port"],
+  [quickstart, "timedatectl", "quick start NTP guidance"],
   [serverMain, "enable", "server setup service activation"],
   [serverMain, "CENTRALD_SKIP_SERVICE_START", "advanced service-start opt-out"],
   [manage, "Add a client (guided)", "guided server TUI"],
@@ -40,7 +43,7 @@ for (const [source, text, label] of [
     "Admin listener port validation",
   ],
   [
-    app,
+    terminalPanel,
     "Save the validated credentials in this machine's OS vault",
     "Admin vault-backed credential saving contract",
   ],
@@ -49,6 +52,7 @@ for (const [source, text, label] of [
     "Change the release channel from centrald-server config",
     "Admin local-only update channel",
   ],
+  [app, "TERMINAL_FEATURE_AVAILABLE = false", "Admin terminal nav stays gated"],
   [serverMain, "READY:", "setup success only when daemon is healthy"],
   [
     serverMain,

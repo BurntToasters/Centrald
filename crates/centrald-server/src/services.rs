@@ -376,6 +376,11 @@ pub async fn run_update_checks(state: RuntimeState) {
     loop {
         if let Err(error) = check_release_manifest(&state).await {
             warn!(%error, "CentralD release-manifest check failed");
+            if let Err(record_error) =
+                record_release_manifest_check_error(&state, &error.to_string()).await
+            {
+                warn!(%record_error, "failed to persist release-manifest check error");
+            }
         }
         tokio::time::sleep(delay).await;
     }
@@ -491,6 +496,41 @@ async fn check_release_manifest(state: &RuntimeState) -> anyhow::Result<()> {
         "DELETE FROM update_snapshots WHERE id IN ( \
              SELECT id FROM update_snapshots \
              WHERE scope = 'server_release_manifest' \
+             ORDER BY created_at DESC OFFSET 20 \
+         ) OR expires_at < NOW() - INTERVAL '7 days'",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn record_release_manifest_check_error(
+    state: &RuntimeState,
+    message: &str,
+) -> anyhow::Result<()> {
+    let snapshot = serde_json::json!({
+        "error": message,
+        "checked_at": Utc::now().to_rfc3339(),
+    });
+    let expires_at = Utc::now()
+        + chrono::Duration::seconds(
+            i64::from(state.config.updates.check_interval_seconds).saturating_mul(2),
+        );
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO update_snapshots (id, target_id, scope, updates, expires_at) \
+         VALUES ($1, NULL, 'server_release_manifest_error', $2, $3)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(snapshot)
+    .bind(expires_at)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "DELETE FROM update_snapshots WHERE id IN ( \
+             SELECT id FROM update_snapshots \
+             WHERE scope = 'server_release_manifest_error' \
              ORDER BY created_at DESC OFFSET 20 \
          ) OR expires_at < NOW() - INTERVAL '7 days'",
     )
@@ -1670,16 +1710,30 @@ async fn server_settings(
     revision: String,
     restart_required: bool,
 ) -> Result<ServerSettings, Status> {
-    let snapshot = sqlx::query_as::<_, (String, String)>(
-        "SELECT updates->>'version', updates->>'available' FROM update_snapshots \
-         WHERE scope = 'server_release_manifest' AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+    let snapshot = sqlx::query_as::<_, (String, String, chrono::DateTime<Utc>)>(
+        "SELECT updates->>'version', updates->>'available', created_at FROM update_snapshots \
+         WHERE scope = 'server_release_manifest' AND expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 1",
     )
     .fetch_optional(&state.pool)
     .await
     .map_err(internal)?;
-    let (update_latest_version, update_available) = snapshot
-        .map(|(version, available)| (version, available == "true"))
+    let error_snapshot = sqlx::query_as::<_, (String, chrono::DateTime<Utc>)>(
+        "SELECT updates->>'error', created_at FROM update_snapshots \
+         WHERE scope = 'server_release_manifest_error' AND expires_at > NOW() \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(internal)?;
+    let (update_latest_version, update_available, success_at) = snapshot
+        .map(|(version, available, created_at)| (version, available == "true", Some(created_at)))
         .unwrap_or_default();
+    let update_last_check_error = match (error_snapshot, success_at) {
+        (Some((error, error_at)), Some(ok_at)) if error_at > ok_at => error,
+        (Some((error, _)), None) => error,
+        _ => String::new(),
+    };
     Ok(ServerSettings {
         revision,
         instance_id: config.server.instance_id.to_string(),
@@ -1721,6 +1775,7 @@ async fn server_settings(
         restart_required,
         update_latest_version,
         update_available,
+        update_last_check_error,
     })
 }
 

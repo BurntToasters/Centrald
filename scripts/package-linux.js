@@ -90,27 +90,30 @@ buildDebianPackage({
   ],
 });
 
-const appImage = findSingleArtifact(
-  options.appImage ? path.resolve(root, options.appImage) : targetDir,
-  (file) => file.endsWith(".AppImage"),
-  "CentralD Admin AppImage",
-);
-const adminArtifact = path.join(
-  output,
-  `centrald-admin_${version}_linux_x86_64.AppImage`,
-);
-copyArtifact(appImage, adminArtifact, 0o755);
-copySignatureIfPresent(appImage, adminArtifact);
+if (!options.debsOnly) {
+  const appImage = findSingleArtifact(
+    options.appImage ? path.resolve(root, options.appImage) : targetDir,
+    (file) => file.endsWith(".AppImage"),
+    "CentralD Admin AppImage",
+  );
+  const adminArtifact = path.join(
+    output,
+    `centrald-admin_${version}_linux_x86_64.AppImage`,
+  );
+  copyArtifact(appImage, adminArtifact, 0o755);
+  copySignatureIfPresent(appImage, adminArtifact);
+  console.log(`Created ${adminArtifact}`);
+}
 
 console.log(`Created ${serverArtifact}`);
 console.log(`Created ${clientArtifact}`);
-console.log(`Created ${adminArtifact}`);
 
 function parseArguments(args) {
   const result = {
     targetDir: "target/x86_64-unknown-linux-gnu/release",
     output: "dist/linux-x64",
     appImage: "",
+    debsOnly: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -120,6 +123,8 @@ function parseArguments(args) {
       result.output = requiredValue(args, ++index, argument);
     } else if (argument === "--appimage") {
       result.appImage = requiredValue(args, ++index, argument);
+    } else if (argument === "--debs-only") {
+      result.debsOnly = true;
     } else {
       throw new Error(`Unknown argument ${argument}`);
     }

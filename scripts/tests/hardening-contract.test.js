@@ -118,7 +118,7 @@ test("Admin updater is registered and remains operator initiated", async () => {
   );
   assert.match(cargo, /tauri-plugin-updater/);
   assert.match(runtime, /tauri_plugin_updater::Builder/);
-  assert.doesNotMatch(capability, /updater:default/);
+  assert.doesNotMatch(capability, /"updater:default"/);
   assert.match(runtime, /updates::check_admin_update/);
   assert.match(runtime, /updates::install_admin_update/);
   assert.match(app, /check_admin_update/);
@@ -133,7 +133,12 @@ test("Admin updater is registered and remains operator initiated", async () => {
     /minisign::verify\(&public_key, &signature_box, &mut cursor, true, false, false\)/,
   );
   assert.match(updater, /RELEASE_CHANNEL/);
-  assert.match(updater, /update\.version == signed_version/);
+  assert.match(updater, /update\.raw_json != feed\.parsed/);
+  assert.match(updater, /cmp_precedence/);
+  assert.match(
+    capability,
+    /Do not grant the updater plugin default permission set/,
+  );
   const manifests = await read("scripts/generate-manifests.js");
   assert.match(manifests, /channel,/);
   assert.match(manifests, /centrald-channel:/);
@@ -1383,6 +1388,9 @@ test("packaged services use exec startup semantics and setup waits for server re
   ]);
   assert.match(serverUnit, /Type=exec/);
   assert.match(clientUnit, /Type=exec/);
+  assert.match(clientUnit, /RuntimeDirectory=centrald/);
+  assert.match(clientUnit, /RuntimeDirectoryMode=0755/);
+  assert.match(clientUnit, /ReadWritePaths=.*\/run\/centrald/);
   assert.match(main, /async fn try_start_packaged_service/);
   assert.match(
     main,
@@ -1523,6 +1531,8 @@ test("audit findings stay closed: grant key, broker first frame, Hello, redirect
   );
   assert.match(services, /fn allowed_hello_capability/);
   assert.match(services, /https_redirect_is_allowed/);
+  assert.match(services, /server_release_manifest_error/);
+  assert.match(services, /record_release_manifest_check_error/);
   assert.match(services, /requested\.data_dir\.is_empty\(\)/);
   assert.doesNotMatch(
     services,

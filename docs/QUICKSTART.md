@@ -47,14 +47,17 @@ CentralD ports. Keep them on the same LAN or VPN as the server.
 
 ## 1. Initialize the Ubuntu server
 
-Install the CentralD server package, then run:
+Install the CentralD server package with apt so PostgreSQL is pulled in
+automatically, then run setup:
 
 ```text
+sudo apt install ./centrald-server_*.deb
 sudo centrald-server initial-setup
 ```
 
-The wizard asks for the public DNS name/IP (it suggests this machine's hostname
-when that name is usable), PostgreSQL setup mode, offline-root recovery
+The installer prints that setup command until `/etc/centrald/server.toml`
+exists. The wizard asks for the public DNS name/IP (it suggests this machine's
+hostname when that name is usable), PostgreSQL setup mode, offline-root recovery
 location, and first Admin name. Accept the recommended local PostgreSQL option
 unless you already run a dedicated database. It creates the dedicated database,
 PKI, server identity, and one-time Admin access key. On a packaged systemd
@@ -112,6 +115,7 @@ operation.
 Install the CentralD client package on the Linux or Windows machine. On Linux:
 
 ```text
+sudo apt install ./centrald-client_*.deb
 sudo centrald-client enroll
 ```
 

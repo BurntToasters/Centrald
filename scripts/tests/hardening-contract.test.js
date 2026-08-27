@@ -1067,6 +1067,8 @@ test("client invitations never use public process arguments", async () => {
   assert.match(enrollment, /stdin\(\)\.is_terminal\(\)/);
   assert.match(quickstart, /--key-file/);
   assert.match(quickstart, /--key-stdin/);
+  assert.match(quickstart, /sudo apt install \.\/centrald-server_\*\.deb/);
+  assert.match(quickstart, /sudo apt install \.\/centrald-client_\*\.deb/);
 });
 
 test("managed PostgreSQL objects require instance-bound ownership markers", async () => {

@@ -81,7 +81,9 @@ trees.
   secure execution path exists. Scaffolded broker/terminal operations stay
   visibly unavailable.
 - Keep `docs/QUICKSTART.md` and `npm run check:onboarding` aligned with the
-  recommended first-run path.
+  recommended first-run path: `sudo apt install ./centrald-server_*.deb` then
+  `initial-setup`, Admin paste-enroll, then `sudo apt install
+  ./centrald-client_*.deb` and `centrald-client enroll`.
 
 ## Enrollment and Admin authentication contract
 

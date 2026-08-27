@@ -51,9 +51,10 @@ novice walkthrough.
 
 ### 1. Initialize the server
 
-Install the server package and then run:
+Install the server package with apt (this also pulls PostgreSQL), then run:
 
 ```text
+sudo apt install ./centrald-server_*.deb
 sudo centrald-server initial-setup
 ```
 
@@ -84,28 +85,6 @@ target database name must not already exist: setup creates a dedicated database
 and binds both its PostgreSQL comment and an internal installation marker to the
 new CentralD server instance.
 
-### 2. Configure and administer the server locally
-
-```text
-sudo centrald-server config
-```
-
-The local guided console works even when the daemon is stopped. It provides all
-persisted settings and local-only security operations, including:
-
-- listener, timing, update policy, database-pool, and audit settings;
-- package-managed fixed security paths for configuration, database secrets, PKI,
-  runtime state, and sockets;
-- safe server TLS-name rotation and guided online-issuer rotation using the
-  offline root recovery bundle;
-- client invitations, Admin access keys, identity listing, and revocation;
-- health and diagnostic summaries.
-
-Admin identity creation, rotation, revocation, PKI paths, database secret
-location, and destructive reset remain server-local by design. The desktop app
-can manage clients and non-secret runtime settings, but it cannot make itself an
-Admin or change these trust anchors.
-
 On a normal packaged systemd installation, `initial-setup` enables and starts
 the service automatically. If setup reports that service startup was skipped or
 failed, run:
@@ -116,12 +95,36 @@ sudo systemctl enable --now centrald-server
 sudo centrald-server run
 ```
 
+### 2. Enroll the Admin app
+
+Open CentralD Admin and paste the one-time Admin access key produced by
+`initial-setup`. The app generates its mTLS key locally, uses the embedded CA to
+enroll, and stores only the resulting profile. The one-time access key is not
+retained. You do not need `centrald-server config` before this step. Privileged
+shell keys will be registered only when the brokered terminal subsystem is
+implemented.
+
+The Admin app renews its mTLS identity before expiry and currently provides:
+
+- basic server/client identity, platform, version, health, and last-seen
+  inventory;
+- one-time client invitation creation;
+- client and pending client-invitation revocation;
+- revision-checked server settings with restart-required reporting;
+- clear local-only boundaries for trust and Admin lifecycle settings;
+- an explicit, signed Tauri self-update flow that requires operator approval and
+  verifies the updater JSON with Minisign before the Tauri plugin runs.
+
+Typed job submission and the interactive terminal stay unavailable in this
+alpha. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
+
 ### 3. Enroll a client
 
-Create a client invitation in `centrald-server config` or from an enrolled Admin
-app. On the client run:
+Create a client invitation from the enrolled Admin app (or later from
+`centrald-server config`). On Linux:
 
 ```text
+sudo apt install ./centrald-client_*.deb
 sudo centrald-client enroll
 ```
 
@@ -146,27 +149,29 @@ server state. Successful enrollment publishes `current.pointer` and
 enables/starts the client service; `rescue --repair` never trusts a
 configuration-provided repair root.
 
-### 4. Enroll the Admin app
+### 4. Optional local console
 
-Open CentralD Admin and paste the one-time Admin access key produced by setup or
-`centrald-server config`. The app generates its mTLS key locally, uses the
-embedded CA to enroll, and stores only the resulting profile. The one-time
-access key is not retained. Privileged shell keys will be registered only when
-the brokered terminal subsystem is implemented.
+The local guided console is optional after the first Admin enroll:
 
-The Admin app renews its mTLS identity before expiry and currently provides:
+```text
+sudo centrald-server config
+```
 
-- basic server/client identity, platform, version, health, and last-seen
-  inventory;
-- one-time client invitation creation;
-- client and pending client-invitation revocation;
-- revision-checked server settings with restart-required reporting;
-- clear local-only boundaries for trust and Admin lifecycle settings;
-- an explicit, signed Tauri self-update flow that requires operator approval and
-  verifies the updater JSON with Minisign before the Tauri plugin runs.
+It works even when the daemon is stopped. Use it for health, extra invitations,
+and local-only security operations, including:
 
-Typed job submission and the interactive terminal stay unavailable in this
-alpha. See [Implementation status](docs/IMPLEMENTATION_STATUS.md).
+- listener, timing, update policy, database-pool, and audit settings;
+- package-managed fixed security paths for configuration, database secrets, PKI,
+  runtime state, and sockets;
+- safe server TLS-name rotation and guided online-issuer rotation using the
+  offline root recovery bundle;
+- client invitations, Admin access keys, identity listing, and revocation;
+- health and diagnostic summaries.
+
+Admin identity creation, rotation, revocation, PKI paths, database secret
+location, and destructive reset remain server-local by design. The desktop app
+can manage clients and non-secret runtime settings, but it cannot make itself an
+Admin or change these trust anchors.
 
 ## Destructive reset
 

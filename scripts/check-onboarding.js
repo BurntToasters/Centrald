@@ -21,7 +21,22 @@ const localPostgres = read("crates/centrald-server/src/local_postgres.rs");
 
 for (const [source, text, label] of [
   [readme, "centrald-server initial-setup", "README"],
+  [
+    readme,
+    "sudo apt install ./centrald-server_*.deb",
+    "README server package install",
+  ],
   [quickstart, "centrald-server config", "quick start"],
+  [
+    quickstart,
+    "sudo apt install ./centrald-server_*.deb",
+    "quick start server package install",
+  ],
+  [
+    quickstart,
+    "sudo apt install ./centrald-client_*.deb",
+    "quick start client package install",
+  ],
   [quickstart, "centrald-client enroll", "quick start"],
   [quickstart, "centrald-server channel", "quick start channel switch"],
   [quickstart, "centrald-client reenroll", "quick start reenroll"],

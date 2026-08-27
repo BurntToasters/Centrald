@@ -1400,8 +1400,9 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   assert.match(smoke, /privileged-broker/);
   assert.match(smoke, /dpkg-query", \["-W", "postgresql"\]/);
   assert.match(smoke, /"--non-interactive"/);
-  assert.match(smoke, /\/etc\/centrald\/server\.toml/);
+  assert.match(smoke, /sudo", \["test", "-f", "\/etc\/centrald\/server\.toml"\]/);
   assert.match(smoke, /READY:/);
+  assert.match(smoke, /journalctl/);
 });
 
 test("packaged first-start systemd command has an execution deadline", async () => {
@@ -1428,7 +1429,7 @@ test("packaged services use exec startup semantics and setup waits for server re
     main,
     /UnixStream::connect\(centrald_server::DEFAULT_LOCAL_SOCKET\)/,
   );
-  assert.match(main, /Duration::from_secs\(15\)/);
+  assert.match(main, /Duration::from_secs\(60\)/);
 });
 
 test("systemd services drop ambient Linux capabilities and restrict address families", async () => {

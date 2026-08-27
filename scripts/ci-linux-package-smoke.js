@@ -189,9 +189,7 @@ const setupLog = runCaptured("sudo", [
   "--recovery-key-output",
   "/root/centrald-root-recovery.pem",
 ]);
-if (!fs.existsSync("/etc/centrald/server.toml")) {
-  throw new Error("initial-setup did not write /etc/centrald/server.toml");
-}
+run("sudo", ["test", "-f", "/etc/centrald/server.toml"]);
 if (!setupLog.includes("Initial Admin access key")) {
   throw new Error("initial-setup did not print the Admin access key banner");
 }
@@ -201,8 +199,22 @@ if (!setupLog.includes("Paste this single key into CentralD Admin")) {
   );
 }
 if (!setupLog.includes("READY:")) {
+  const status = optionalCommandOutput("sudo", [
+    "systemctl",
+    "status",
+    "centrald-server",
+    "--no-pager",
+  ]);
+  const journal = optionalCommandOutput("sudo", [
+    "journalctl",
+    "-u",
+    "centrald-server",
+    "-n",
+    "80",
+    "--no-pager",
+  ]);
   throw new Error(
-    `packaged initial-setup did not leave a usable systemd service:\n${setupLog}`,
+    `packaged initial-setup did not leave a usable systemd service:\n${setupLog}\n--- systemctl status ---\n${status}\n--- journalctl ---\n${journal}`,
   );
 }
 
@@ -230,6 +242,14 @@ function commandOutput(command, args) {
     throw new Error(`${command} ${args.join(" ")} failed:\n${text}`);
   }
   return text;
+}
+
+function optionalCommandOutput(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    shell: false,
+  });
+  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 }
 
 function runCaptured(command, args) {

@@ -51,7 +51,7 @@ novice walkthrough.
 
 ### 1. Initialize the server
 
-Install the server package, PostgreSQL, and then run:
+Install the server package and then run:
 
 ```text
 sudo centrald-server initial-setup

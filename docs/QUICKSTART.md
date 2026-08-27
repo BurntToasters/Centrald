@@ -47,7 +47,7 @@ CentralD ports. Keep them on the same LAN or VPN as the server.
 
 ## 1. Initialize the Ubuntu server
 
-Install the CentralD server package and PostgreSQL, then run:
+Install the CentralD server package, then run:
 
 ```text
 sudo centrald-server initial-setup

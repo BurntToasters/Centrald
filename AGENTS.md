@@ -311,6 +311,10 @@ execution and credential saving visibly disabled.
   workspace setup; `scripts/bump-version.js` — lockstep version + Cargo.lock
   regen; `scripts/sign-release.js`, `scripts/generate-manifests.js`,
   `scripts/check-config.js`, `scripts/check-onboarding.js`, `scripts/qa.js`.
+- `scripts/cargo-safe-update.mjs` generates a candidate `Cargo.lock` in a
+  copied workspace until Cargo advertises a stable `--lockfile-path`. Do not
+  restore `CARGO_RESOLVER_LOCKFILE_PATH`; current stable Cargo ignores it and
+  would mutate the real lock before age approval.
 - `scripts/lib/build-config.js` and `crates/centrald-common/build.rs` mirror
   each other for channel detection/URL derivation; `scripts/tests/*.test.js`
   are the contract tests that pin these invariants.

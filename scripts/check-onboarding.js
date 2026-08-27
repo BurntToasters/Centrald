@@ -76,12 +76,12 @@ for (const [source, text, label] of [
   ],
   [
     readme,
-    "You do not need the local server console before the first Admin enroll",
+    "You do not need the local server console before the",
     "README first-run does not require config console",
   ],
   [
     app,
-    "The server-local console is optional after this first enroll.",
+    "is optional after this first enroll.",
     "Admin empty state does not require config console",
   ],
   [

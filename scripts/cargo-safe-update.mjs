@@ -211,13 +211,20 @@ function packageOverride(set, pkg, value) {
   return set.has(`${pkg.name}@${value}`);
 }
 
+let temporaryLockfileSupport;
+
 export function cargoSupportsTemporaryLockfile() {
-  const version = run("cargo", ["--version"]).stdout;
-  const match = version.match(/cargo\s+(\d+)\.(\d+)/i);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  return major > 1 || (major === 1 && minor >= 97);
+  if (temporaryLockfileSupport !== undefined) return temporaryLockfileSupport;
+  const result = run("cargo", ["update", "--help"]);
+  const help = `${result.stdout}\n${result.stderr}`;
+  // `CARGO_RESOLVER_LOCKFILE_PATH` is ignored on current stable Cargo.
+  // `--lockfile-path` exists only on nightly until Cargo stabilizes it.
+  temporaryLockfileSupport =
+    /(?:^|\s)--lockfile-path\b/.test(help) &&
+    !/unstable[\s\S]{0,120}--lockfile-path|--lockfile-path[\s\S]{0,120}unstable/i.test(
+      help,
+    );
+  return temporaryLockfileSupport;
 }
 
 // P1: Authoritative workspace root via `cargo locate-project --workspace`.
@@ -334,9 +341,9 @@ export function prepareCandidate({
     }
     // IMPORTANT: if no existing lockfile, leave candidateLock NONEXISTENT!
     return {
-      args: dryArgs,
+      args: [...dryArgs, `--lockfile-path=${candidateLock}`],
       cwd,
-      env: { ...process.env, CARGO_RESOLVER_LOCKFILE_PATH: candidateLock },
+      env: process.env,
       candidateLock,
       copiedWorkspace: false,
     };

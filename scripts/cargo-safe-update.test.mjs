@@ -51,9 +51,27 @@ function createCargoFixture(
   } else {
     writeFileSync(
       path.join(dir, "Cargo.toml"),
-      `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n`,
+      `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n`,
     );
   }
+}
+
+function applyCandidateUpdate(prep) {
+  const result = spawnSync("cargo", ["update", ...prep.args], {
+    cwd: prep.cwd,
+    env: prep.env,
+    encoding: "utf8",
+  });
+  assert.equal(
+    result.status,
+    0,
+    `cargo update failed:\n${result.stderr}\n${result.stdout}`,
+  );
+  assert.equal(
+    existsSync(prep.candidateLock),
+    true,
+    "candidate Cargo.lock must exist after cargo update",
+  );
 }
 
 const now = Date.parse("2026-08-20T12:00:00Z");
@@ -722,26 +740,29 @@ test("23. preserves and forwards standard Cargo update arguments", () => {
   ]);
 });
 
-test("24. unit: prepares candidate in temporary lockfile using CARGO_RESOLVER_LOCKFILE_PATH and leaves it nonexistent if no baseline", () => {
+test("24. unit: prepares an isolated candidate when no baseline lock exists", () => {
   const workspaceDir = mkdtempSync(path.join(os.tmpdir(), "cargo-test-ws-"));
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "cargo-test-temp-"));
   try {
-    // When no baseline lockfile exists:
+    mkdirSync(path.join(workspaceDir, "src"), { recursive: true });
+    writeFileSync(path.join(workspaceDir, "src", "lib.rs"), "// no-op\n");
+    writeFileSync(
+      path.join(workspaceDir, "Cargo.toml"),
+      '[package]\nname = "temp-lock-probe"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "src/lib.rs"\n',
+    );
     const result = prepareCandidate({
       cargoArgs: ["--manifest-path", path.join(workspaceDir, "Cargo.toml")],
       cwd: workspaceDir,
       realLock: null,
       baselineMetadata: null,
       tempRoot,
+      workspaceRoot: workspaceDir,
     });
-    if (!result.copiedWorkspace) {
-      assert.ok(result.env.CARGO_RESOLVER_LOCKFILE_PATH);
-      assert.equal(
-        path.basename(result.env.CARGO_RESOLVER_LOCKFILE_PATH),
-        "Cargo.lock",
-      );
-      // Invariant: candidateLock MUST NOT exist before Cargo creates it!
-      assert.equal(existsSync(result.candidateLock), false);
+    assert.equal(existsSync(result.candidateLock), false);
+    if (result.copiedWorkspace) {
+      assert.equal(result.cwd.startsWith(tempRoot), true);
+    } else {
+      assert.match(result.args.join("\n"), /--lockfile-path=/);
     }
   } finally {
     rmSync(workspaceDir, { recursive: true, force: true });
@@ -964,7 +985,7 @@ test(
       writeFileSync(path.join(appDir, "src", "lib.rs"), "// member\n");
       writeFileSync(
         path.join(appDir, "Cargo.toml"),
-        '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n',
+        '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
       );
       writeFileSync(
         path.join(wsDir, "Cargo.toml"),
@@ -1001,7 +1022,7 @@ test(
       writeFileSync(path.join(crateA, "src", "lib.rs"), "// crate a\n");
       writeFileSync(
         path.join(crateA, "Cargo.toml"),
-        '[package]\nname = "crate-a"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n',
+        '[package]\nname = "crate-a"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
       );
       // Virtual workspace: no [package], just [workspace]
       writeFileSync(
@@ -1059,90 +1080,58 @@ test(
         workspaceRoot: tempWs,
       });
 
-      if (!prep.copiedWorkspace) {
-        // CARGO_RESOLVER_LOCKFILE_PATH mode: candidate starts absent
-        assert.equal(
-          existsSync(prep.candidateLock),
-          false,
-          "candidate must not exist before cargo update",
-        );
+      assert.equal(
+        existsSync(prep.candidateLock),
+        false,
+        "candidate must not exist before cargo update",
+      );
+      applyCandidateUpdate(prep);
+      assert.equal(
+        existsSync(realLock),
+        false,
+        "real Cargo.lock must remain absent before approval",
+      );
 
-        // Run real cargo update with redirected lock
-        const result = spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
-        assert.equal(
-          result.status,
-          0,
-          `cargo update failed:\n${result.stderr}`,
-        );
+      const metaResult = spawnSync(
+        "cargo",
+        ["metadata", "--locked", "--format-version=1", ...prep.args],
+        { cwd: prep.cwd, env: prep.env, encoding: "utf8" },
+      );
+      assert.equal(
+        metaResult.status,
+        0,
+        `cargo metadata failed:\n${metaResult.stderr}`,
+      );
 
-        // Candidate lock must now exist
-        assert.equal(
-          existsSync(prep.candidateLock),
-          true,
-          "candidate Cargo.lock must exist after cargo update",
-        );
+      installValidatedLock(
+        prep.candidateLock,
+        { path: realLock, existed: false, bytes: null },
+        ["--manifest-path", manifestFilePath],
+        tempWs,
+      );
 
-        // Real workspace lock must still be absent
-        assert.equal(
-          existsSync(realLock),
-          false,
-          "real Cargo.lock must remain absent before approval",
-        );
+      assert.equal(
+        existsSync(realLock),
+        true,
+        "real Cargo.lock installed after approval",
+      );
 
-        // cargo metadata --locked with candidate env must succeed
-        const metaResult = spawnSync(
-          "cargo",
-          [
-            "metadata",
-            "--locked",
-            "--format-version=1",
-            "--manifest-path",
-            manifestFilePath,
-          ],
-          { cwd: prep.cwd, env: prep.env, encoding: "utf8" },
-        );
-        assert.equal(
-          metaResult.status,
-          0,
-          `cargo metadata failed:\n${metaResult.stderr}`,
-        );
-
-        // Install the candidate
-        installValidatedLock(
-          prep.candidateLock,
-          { path: realLock, existed: false, bytes: null },
-          ["--manifest-path", manifestFilePath],
-          tempWs,
-        );
-
-        assert.equal(
-          existsSync(realLock),
-          true,
-          "real Cargo.lock installed after approval",
-        );
-
-        // Final cargo metadata --locked must succeed
-        const finalMeta = spawnSync(
-          "cargo",
-          [
-            "metadata",
-            "--locked",
-            "--format-version=1",
-            "--manifest-path",
-            manifestFilePath,
-          ],
-          { cwd: tempWs, env: process.env, encoding: "utf8" },
-        );
-        assert.equal(
-          finalMeta.status,
-          0,
-          `final cargo metadata failed:\n${finalMeta.stderr}`,
-        );
-      }
+      const finalMeta = spawnSync(
+        "cargo",
+        [
+          "metadata",
+          "--locked",
+          "--format-version=1",
+          "--manifest-path",
+          manifestFilePath,
+        ],
+        { cwd: tempWs, env: process.env, encoding: "utf8" },
+      );
+      assert.equal(
+        finalMeta.status,
+        0,
+        `final cargo metadata failed:\n${finalMeta.stderr}`,
+      );
     } finally {
       rmSync(tempWs, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });
@@ -1174,19 +1163,12 @@ test(
         workspaceRoot: tempWs,
       });
 
-      if (!prep.copiedWorkspace) {
-        spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
-        // In dry-run we never call installValidatedLock, so real lock stays absent
-        assert.equal(
-          existsSync(realLock),
-          false,
-          "real Cargo.lock must remain absent in dry-run",
-        );
-      }
+      applyCandidateUpdate(prep);
+      assert.equal(
+        existsSync(realLock),
+        false,
+        "real Cargo.lock must remain absent in dry-run",
+      );
     } finally {
       rmSync(tempWs, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });
@@ -1227,24 +1209,18 @@ test(
         workspaceRoot: wsRoot,
       });
 
-      if (!prep.copiedWorkspace) {
-        spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
+      applyCandidateUpdate(prep);
 
-        assert.equal(
-          existsSync(expectedLock),
-          false,
-          "real lock must not exist in src-tauri before approval",
-        );
-        assert.equal(
-          existsSync(wrongLock),
-          false,
-          "lock must NOT be created in parent dir",
-        );
-      }
+      assert.equal(
+        existsSync(expectedLock),
+        false,
+        "real lock must not exist in src-tauri before approval",
+      );
+      assert.equal(
+        existsSync(wrongLock),
+        false,
+        "lock must NOT be created in parent dir",
+      );
     } finally {
       rmSync(tempProject, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });
@@ -1267,7 +1243,7 @@ test(
       writeFileSync(path.join(appDir, "src", "lib.rs"), "// member\n");
       writeFileSync(
         path.join(appDir, "Cargo.toml"),
-        '[package]\nname = "ws-member-fixture"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n',
+        '[package]\nname = "ws-member-fixture"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
       );
       writeFileSync(
         path.join(tempWs, "Cargo.toml"),
@@ -1290,24 +1266,18 @@ test(
         workspaceRoot: wsRoot,
       });
 
-      if (!prep.copiedWorkspace) {
-        spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
+      applyCandidateUpdate(prep);
 
-        assert.equal(
-          existsSync(expectedLock),
-          false,
-          "real workspace lock must stay absent before approval",
-        );
-        assert.equal(
-          existsSync(wrongLock),
-          false,
-          "lock must NOT be created at member level",
-        );
-      }
+      assert.equal(
+        existsSync(expectedLock),
+        false,
+        "real workspace lock must stay absent before approval",
+      );
+      assert.equal(
+        existsSync(wrongLock),
+        false,
+        "lock must NOT be created at member level",
+      );
     } finally {
       rmSync(tempWs, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });
@@ -1328,7 +1298,7 @@ test(
       writeFileSync(path.join(crateA, "src", "lib.rs"), "// virtual member\n");
       writeFileSync(
         path.join(crateA, "Cargo.toml"),
-        '[package]\nname = "virtual-fixture"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n',
+        '[package]\nname = "virtual-fixture"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n',
       );
       writeFileSync(
         path.join(tempWs, "Cargo.toml"),
@@ -1348,18 +1318,12 @@ test(
         workspaceRoot: wsRoot,
       });
 
-      if (!prep.copiedWorkspace) {
-        spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
-        assert.equal(
-          existsSync(path.join(tempWs, "Cargo.lock")),
-          false,
-          "root lock must stay absent before approval",
-        );
-      }
+      applyCandidateUpdate(prep);
+      assert.equal(
+        existsSync(path.join(tempWs, "Cargo.lock")),
+        false,
+        "root lock must stay absent before approval",
+      );
     } finally {
       rmSync(tempWs, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });
@@ -1406,19 +1370,12 @@ test(
         workspaceRoot: tempWs,
       });
 
-      if (!prep.copiedWorkspace) {
-        spawnSync("cargo", ["update", ...prep.args], {
-          cwd: prep.cwd,
-          env: prep.env,
-          encoding: "utf8",
-        });
-        // Real lock must be unchanged before approval
-        assert.deepEqual(
-          readFileSync(realLock),
-          originalLockBytes,
-          "real lock must remain unchanged before approval",
-        );
-      }
+      applyCandidateUpdate(prep);
+      assert.deepEqual(
+        readFileSync(realLock),
+        originalLockBytes,
+        "real lock must remain unchanged before approval",
+      );
     } finally {
       rmSync(tempWs, { recursive: true, force: true });
       rmSync(tempGuard, { recursive: true, force: true });

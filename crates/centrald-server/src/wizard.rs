@@ -141,7 +141,7 @@ fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptio
     println!("  Package-managed data directory: {}", data_dir.display());
     let recovery_key_output = path_prompt(
         &theme,
-        "Offline root recovery bundle path",
+        "Offline recovery file (move this off the server after setup)",
         &args
             .recovery_key_output
             .unwrap_or_else(default_recovery_path),

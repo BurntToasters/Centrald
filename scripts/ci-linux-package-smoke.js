@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -92,4 +93,72 @@ run("bash", [
   "systemctl is-enabled centrald-broker.service >/dev/null 2>&1 && exit 1 || exit 0",
 ]);
 
+const serverPostinst = controlScript(serverDeb, "postinst");
+if (
+  !serverPostinst.includes(
+    "CentralD server is installed. Next: sudo centrald-server initial-setup",
+  )
+) {
+  throw new Error("server package postinst is missing the first-run command");
+}
+const clientPostinst = controlScript(clientDeb, "postinst");
+if (
+  !clientPostinst.includes(
+    "CentralD client is installed. Next: sudo centrald-client enroll",
+  )
+) {
+  throw new Error("client package postinst is missing the enroll command");
+}
+
+const serverHelp = commandOutput("centrald-server", ["--help"]);
+for (const command of ["initial-setup", "config", "run", "channel"]) {
+  if (!serverHelp.includes(command)) {
+    throw new Error(
+      `centrald-server --help is missing public command ${command}`,
+    );
+  }
+}
+if (
+  /\benroll-client\b/.test(serverHelp) ||
+  /\benroll-admin\b/.test(serverHelp)
+) {
+  throw new Error("centrald-server --help leaked a hidden enrollment command");
+}
+
+const clientHelp = commandOutput("centrald-client", ["--help"]);
+for (const command of ["enroll", "restart", "reenroll", "rescue"]) {
+  if (!clientHelp.includes(command)) {
+    throw new Error(
+      `centrald-client --help is missing public command ${command}`,
+    );
+  }
+}
+if (/\bdaemon\b/.test(clientHelp) || /\bprivileged-broker\b/.test(clientHelp)) {
+  throw new Error("centrald-client --help leaked an internal daemon command");
+}
+
 console.log("Linux package install smoke OK");
+
+function controlScript(deb, name) {
+  const extract = path.join(output, `${path.basename(deb)}.control`);
+  fs.mkdirSync(extract, { recursive: true });
+  run("dpkg-deb", ["-e", deb, extract]);
+  const script = path.join(extract, name);
+  if (!fs.existsSync(script)) {
+    throw new Error(`package ${deb} is missing DEBIAN/${name}`);
+  }
+  return fs.readFileSync(script, "utf8");
+}
+
+function commandOutput(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    shell: false,
+  });
+  if (result.error) throw result.error;
+  const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(" ")} failed:\n${text}`);
+  }
+  return text;
+}

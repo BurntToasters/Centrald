@@ -11,10 +11,13 @@ pub struct ClientCli {
 
 #[derive(Debug, Subcommand)]
 pub enum ClientCommand {
+    /// Enroll this device with a one-time invitation from your administrator.
     Enroll(EnrollmentArgs),
     /// Restart the installed `CentralD` client service.
     Restart,
+    /// Replace this device identity with a new one-time invitation.
     Reenroll(EnrollmentArgs),
+    /// Diagnose local client state, and optionally repair or restart.
     Rescue(RescueArgs),
     #[command(hide = true)]
     Daemon,

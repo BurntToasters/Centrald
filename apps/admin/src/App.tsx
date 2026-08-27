@@ -1108,7 +1108,10 @@ function Devices({
         {loading ? (
           <div className="panel-empty">Loading device inventory...</div>
         ) : targets.length === 0 ? (
-          <div className="panel-empty">No enrolled clients reported.</div>
+          <div className="panel-empty">
+            No enrolled clients reported. Create an invitation, then on the
+            device run <code>centrald-client enroll</code>.
+          </div>
         ) : (
           <div
             className="device-table"

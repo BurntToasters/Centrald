@@ -85,6 +85,11 @@ for (const [source, text, label] of [
     "Admin empty state does not require config console",
   ],
   [
+    app,
+    "No enrolled clients reported. Create an invitation, then on the",
+    "Admin devices empty state names enroll command",
+  ],
+  [
     client,
     'capabilities: vec!["heartbeat".into()]',
     "heartbeat-only client Hello capabilities",

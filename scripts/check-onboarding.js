@@ -127,6 +127,11 @@ for (const [source, text, label] of [
     "cleanup_managed_resources",
     "managed PostgreSQL retry cleanup",
   ],
+  [
+    read("crates/centrald-server/src/wizard.rs"),
+    "fn recommended_local_database",
+    "non-interactive Ubuntu setup defaults to recommended local PostgreSQL",
+  ],
   [quickstart, "Rerun the same command", "interrupted setup recovery guidance"],
 ])
   requireText(source, text, label);

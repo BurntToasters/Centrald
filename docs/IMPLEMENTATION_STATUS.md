@@ -12,8 +12,9 @@ until their gates flip with acceptance tests.
   `centrald-server config` console. Packaged `.deb` postinst scripts print the
   next command (`initial-setup` / `enroll`) until that step is done. The server
   package depends on PostgreSQL so `apt install ./centrald-server_*.deb` pulls
-  it in. Setup suggests this host's hostname as the TLS name when it is a usable
-  DNS name.
+  it in. Unix non-interactive setup without `CENTRALD_DATABASE_URL` uses the
+  same recommended local PostgreSQL path as the wizard default. Setup suggests
+  this host's hostname as the TLS name when it is a usable DNS name.
 - Recommended local PostgreSQL provisioning plus an advanced external-URL path.
   Managed local role/database names use the full server UUID, role and database
   comments bind them to that exact instance, setup writes non-secret recovery

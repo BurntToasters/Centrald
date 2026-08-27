@@ -68,7 +68,19 @@ listeners before writing anything. It creates the database schema, an offline
 root recovery bundle, role-specific online issuers, the server identity, and the
 first one-time Admin access key.
 
-Non-interactive setup remains available for automation:
+Non-interactive setup remains available for automation. On Ubuntu, omit the
+database URL to use the same recommended local PostgreSQL path as the wizard
+default:
+
+```text
+sudo centrald-server initial-setup \
+  --non-interactive \
+  --public-host centrald.home.arpa \
+  --admin-name owner \
+  --recovery-key-output /root/centrald-offline-root.pem
+```
+
+An existing or remote PostgreSQL URL remains the advanced automation path:
 
 ```text
 sudo CENTRALD_DATABASE_URL='postgresql://...' \

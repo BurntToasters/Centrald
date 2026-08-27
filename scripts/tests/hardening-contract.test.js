@@ -1392,13 +1392,16 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   assert.match(job, /libclang-dev/);
   assert.match(job, /libpam0g-dev/);
   const smoke = await read("scripts/ci-linux-package-smoke.js");
-  assert.match(smoke, /\["apt-get", "install", "-y"/);
+  assert.match(smoke, /"apt-get",\s*"install",\s*"-y"/);
   assert.match(smoke, /centrald-server", \["--help"\]/);
   assert.match(smoke, /initial-setup/);
   assert.match(smoke, /enroll-client/);
   assert.match(smoke, /centrald-client", \["--help"\]/);
   assert.match(smoke, /privileged-broker/);
-  assert.match(smoke, /controlScript\(serverDeb, "postinst"\)/);
+  assert.match(smoke, /dpkg-query", \["-W", "postgresql"\]/);
+  assert.match(smoke, /"--non-interactive"/);
+  assert.match(smoke, /\/etc\/centrald\/server\.toml/);
+  assert.match(smoke, /READY:/);
 });
 
 test("packaged first-start systemd command has an execution deadline", async () => {

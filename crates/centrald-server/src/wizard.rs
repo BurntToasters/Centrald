@@ -202,9 +202,23 @@ fn collect_non_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupO
     validate_host(&public_host).map_err(anyhow::Error::msg)?;
     let public_host = canonical_host(&public_host).context("canonicalize public TLS host")?;
     let database_url_env = args.database_url_env.unwrap_or_else(|| DATABASE_ENV.into());
-    let database_url = std::env::var(&database_url_env)
-        .with_context(|| format!("{database_url_env} must be set for non-interactive setup"))?;
-    validate_database_url(&database_url).map_err(anyhow::Error::msg)?;
+    let (database_url, managed_local_role) = match std::env::var(&database_url_env) {
+        Ok(value) if !value.trim().is_empty() => {
+            validate_database_url(&value).map_err(anyhow::Error::msg)?;
+            (SecretString::from(value), None)
+        }
+        _ => {
+            #[cfg(unix)]
+            {
+                let (url, role) = recommended_local_database(instance_id);
+                (url, Some(role))
+            }
+            #[cfg(not(unix))]
+            {
+                bail!("{database_url_env} must be set for non-interactive setup");
+            }
+        }
+    };
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
     if data_dir != *SERVER_DATA_DIR {
         bail!("packaged CentralD uses fixed server data directory {SERVER_DATA_DIR}");
@@ -222,8 +236,8 @@ fn collect_non_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupO
         config_path: config_path.to_path_buf(),
         public_host,
         database_url_env,
-        database_url: SecretString::from(database_url),
-        managed_local_role: None,
+        database_url,
+        managed_local_role,
         environment_file,
         data_dir,
         recovery_key_output,
@@ -246,21 +260,12 @@ fn database_setup(
         .default(0)
         .interact()?;
     if selected == 0 {
-        let role = format!("centrald_{}", instance_id.simple());
-        let mut secret = [0_u8; 32];
-        rand::rng().fill_bytes(&mut secret);
-        let password = SecretString::from(hex::encode(secret));
-        secret.fill(0);
-        let database = role.clone();
-        let url = format!(
-            "postgresql://{role}:{}@127.0.0.1:5432/{database}",
-            password.expose_secret()
-        );
+        let (url, role) = recommended_local_database(instance_id);
         println!("  CentralD will create one dedicated local PostgreSQL role and database.");
         println!(
             "  The generated password is stored only in the root-protected server environment file."
         );
-        Ok((SecretString::from(url), Some(role)))
+        Ok((url, Some(role)))
     } else {
         Ok((advanced_database_secret(theme, variable)?, None))
     }
@@ -325,6 +330,20 @@ fn validate_database_url(value: &str) -> Result<(), String> {
     }
 }
 
+fn recommended_local_database(instance_id: uuid::Uuid) -> (SecretString, String) {
+    let role = format!("centrald_{}", instance_id.simple());
+    let mut secret = [0_u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    let password = SecretString::from(hex::encode(secret));
+    secret.fill(0);
+    let database = role.clone();
+    let url = format!(
+        "postgresql://{role}:{}@127.0.0.1:5432/{database}",
+        password.expose_secret()
+    );
+    (SecretString::from(url), role)
+}
+
 fn suggested_public_host(provided: Option<String>) -> String {
     if let Some(value) = provided.filter(|value| !value.trim().is_empty()) {
         return value;
@@ -355,6 +374,7 @@ fn default_recovery_path() -> PathBuf {
 mod tests {
     use super::*;
     use crate::db::validate_database_url_structure;
+    use secrecy::ExposeSecret;
 
     #[test]
     fn validators_reject_urls_in_host_and_non_postgres_database() {
@@ -382,5 +402,16 @@ mod tests {
         assert!(source.contains(
             "PostgreSQL: a new dedicated database is created; an existing database is refused."
         ));
+    }
+
+    #[test]
+    fn recommended_local_database_is_instance_bound() {
+        let instance_id = uuid::Uuid::nil();
+        let (url, role) = recommended_local_database(instance_id);
+        assert_eq!(role, format!("centrald_{}", instance_id.simple()));
+        let url = url.expose_secret();
+        assert!(url.starts_with(&format!("postgresql://{role}:")));
+        assert!(url.ends_with(&format!("@127.0.0.1:5432/{role}")));
+        assert!(!url.contains(' '));
     }
 }

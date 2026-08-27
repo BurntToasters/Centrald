@@ -9,7 +9,9 @@ import { run } from "./command.js";
  * verifies unit files and binaries landed with the expected hardening markers.
  * Intended for CI on Ubuntu runners (requires apt/dpkg). The install step
  * uses `apt-get install` on the built .deb files so PostgreSQL is pulled in
- * the same way as `sudo apt install ./centrald-server_*.deb`.
+ * the same way as `sudo apt install ./centrald-server_*.deb`. After install it
+ * runs non-interactive `initial-setup` with the recommended local PostgreSQL
+ * path so the packaged first-run becomes a usable server.
  */
 const root = process.cwd();
 const targetDir = path.join(root, "target", "debug");
@@ -49,7 +51,29 @@ for (const artifact of [serverDeb, clientDeb]) {
   }
 }
 
-run("sudo", ["apt-get", "install", "-y", serverDeb, clientDeb]);
+const installLog = runCaptured("sudo", [
+  "apt-get",
+  "install",
+  "-y",
+  serverDeb,
+  clientDeb,
+]);
+if (
+  !installLog.includes(
+    "CentralD server is installed. Next: sudo centrald-server initial-setup",
+  )
+) {
+  throw new Error("apt install did not print the server first-run command");
+}
+if (
+  !installLog.includes(
+    "CentralD client is installed. Next: sudo centrald-client enroll",
+  )
+) {
+  throw new Error("apt install did not print the client enroll command");
+}
+
+run("dpkg-query", ["-W", "postgresql"]);
 
 const requiredFiles = [
   "/usr/bin/centrald-server",
@@ -139,6 +163,49 @@ if (/\bdaemon\b/.test(clientHelp) || /\bprivileged-broker\b/.test(clientHelp)) {
   throw new Error("centrald-client --help leaked an internal daemon command");
 }
 
+const setupLog = runCaptured("sudo", [
+  "env",
+  "-u",
+  "CENTRALD_DATABASE_URL",
+  "-u",
+  "PGHOST",
+  "-u",
+  "PGPORT",
+  "-u",
+  "PGUSER",
+  "-u",
+  "PGDATABASE",
+  "-u",
+  "PGPASSWORD",
+  "-u",
+  "PGSERVICE",
+  "centrald-server",
+  "initial-setup",
+  "--non-interactive",
+  "--public-host",
+  "ci.centrald.test",
+  "--admin-name",
+  "CI Admin",
+  "--recovery-key-output",
+  "/root/centrald-root-recovery.pem",
+]);
+if (!fs.existsSync("/etc/centrald/server.toml")) {
+  throw new Error("initial-setup did not write /etc/centrald/server.toml");
+}
+if (!setupLog.includes("Initial Admin access key")) {
+  throw new Error("initial-setup did not print the Admin access key banner");
+}
+if (!setupLog.includes("Paste this single key into CentralD Admin")) {
+  throw new Error(
+    "initial-setup did not tell the operator to enroll Admin next",
+  );
+}
+if (!setupLog.includes("READY:")) {
+  throw new Error(
+    `packaged initial-setup did not leave a usable systemd service:\n${setupLog}`,
+  );
+}
+
 console.log("Linux package install smoke OK");
 
 function controlScript(deb, name) {
@@ -159,6 +226,21 @@ function commandOutput(command, args) {
   });
   if (result.error) throw result.error;
   const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(" ")} failed:\n${text}`);
+  }
+  return text;
+}
+
+function runCaptured(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    shell: false,
+  });
+  if (result.error) throw result.error;
+  const text = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  process.stdout.write(text);
+  if (!text.endsWith("\n")) process.stdout.write("\n");
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed:\n${text}`);
   }

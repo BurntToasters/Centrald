@@ -47,18 +47,21 @@ CentralD ports. Keep them on the same LAN or VPN as the server.
 
 ## 1. Initialize the Ubuntu server
 
-Install the CentralD server package and PostgreSQL, then run:
+Install the CentralD server package with apt so PostgreSQL is pulled in
+automatically, then run setup:
 
 ```text
+sudo apt install ./centrald-server_*.deb
 sudo centrald-server initial-setup
 ```
 
-The wizard asks for the public DNS name/IP, PostgreSQL setup mode, offline-root
-recovery location, and first Admin name. The recommended mode configures local
-PostgreSQL automatically; only the advanced mode asks for a database URL. It
-creates the dedicated database, PKI, server identity, and one-time Admin access
-key. On a packaged systemd installation it also enables and starts
-`centrald-server.service`.
+The installer prints that setup command until `/etc/centrald/server.toml`
+exists. The wizard asks for the public DNS name/IP (it suggests this machine's
+hostname when that name is usable), PostgreSQL setup mode, offline-root recovery
+location, and first Admin name. Accept the recommended local PostgreSQL option
+unless you already run a dedicated database. It creates the dedicated database,
+PKI, server identity, and one-time Admin access key. On a packaged systemd
+installation it also enables and starts `centrald-server.service`.
 
 Move the offline-root recovery PEM off the server after setup. Keep the one-time
 Admin access key only long enough to enroll the Admin app.
@@ -85,21 +88,34 @@ the same non-secret setup journal; if a crash happens in PostgreSQL's narrow
 `CREATE DATABASE`-before-ownership-comment window, CentralD fails closed and
 asks you to inspect that dedicated database instead of guessing that it owns it.
 
-## 2. Open guided server management
+## 2. Enroll CentralD Admin
+
+Open the Admin application and choose **Add server**. Paste the one-time Admin
+access key from `initial-setup`. The Admin app generates its own mTLS private
+key locally.
+
+After connecting, the **Getting started and common tasks** panel remains
+available as a checklist. Create client invitations from the GUI. Routine
+non-secret settings can be managed in the GUI. Admin lifecycle, PKI, database
+secrets, update origin/channel, and destructive reset remain server-local.
+
+The local console is optional after the first Admin enroll:
 
 ```text
 sudo centrald-server config
 ```
 
-Routine choices are listed first. Use **Add a client (guided)** to create a
-short-lived invitation and **Health, status, and next steps** to confirm the
-server is healthy. Items marked **advanced** are optional for normal operation.
+Routine choices are listed first. Use **Add a client (guided)** if you prefer to
+mint invitations on the server, and **Health, status, and next steps** to
+confirm the server is healthy. Items marked **advanced** are optional for normal
+operation.
 
 ## 3. Enroll a client
 
 Install the CentralD client package on the Linux or Windows machine. On Linux:
 
 ```text
+sudo apt install ./centrald-client_*.deb
 sudo centrald-client enroll
 ```
 
@@ -127,18 +143,7 @@ directory chain. A secret manager on any platform may instead pipe one token to
 unless `--server` is supplied and therefore do not stop for another prompt.
 Running without key flags remains the recommended interactive wizard.
 
-## 4. Enroll CentralD Admin
-
-Open the Admin application and choose **Add server**. Paste the one-time Admin
-access key from `initial-setup` or from `centrald-server config`. The Admin app
-generates its own mTLS private key locally.
-
-After connecting, the **Getting started and common tasks** panel remains
-available as a checklist. Routine non-secret settings can be managed in the GUI.
-Admin lifecycle, PKI, database secrets, update origin/channel, and destructive
-reset remain server-local.
-
-## 5. Day-to-day operation
+## 4. Day-to-day operation
 
 Use the Admin GUI for inventory, enrollment invitations, revocation, and safe
 remote settings. Use `centrald-server config` for local-only trust and advanced

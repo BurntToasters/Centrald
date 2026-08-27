@@ -21,7 +21,22 @@ const localPostgres = read("crates/centrald-server/src/local_postgres.rs");
 
 for (const [source, text, label] of [
   [readme, "centrald-server initial-setup", "README"],
+  [
+    readme,
+    "sudo apt install ./centrald-server_*.deb",
+    "README server package install",
+  ],
   [quickstart, "centrald-server config", "quick start"],
+  [
+    quickstart,
+    "sudo apt install ./centrald-server_*.deb",
+    "quick start server package install",
+  ],
+  [
+    quickstart,
+    "sudo apt install ./centrald-client_*.deb",
+    "quick start client package install",
+  ],
   [quickstart, "centrald-client enroll", "quick start"],
   [quickstart, "centrald-server channel", "quick start channel switch"],
   [quickstart, "centrald-client reenroll", "quick start reenroll"],
@@ -56,8 +71,43 @@ for (const [source, text, label] of [
   [serverMain, "READY:", "setup success only when daemon is healthy"],
   [
     serverMain,
+    "install_rustls_crypto_provider",
+    "server installs rustls crypto provider before listeners",
+  ],
+  [
+    serverMain,
     "INCOMPLETE:",
     "setup incomplete when service fails to become healthy",
+  ],
+  [
+    read("crates/centrald-server/src/wizard.rs"),
+    "fn suggested_public_host",
+    "setup suggests this host's TLS name",
+  ],
+  [
+    read("scripts/package-linux.js"),
+    "CentralD server is installed. Next: sudo centrald-server initial-setup",
+    "server package prints first-run command",
+  ],
+  [
+    read("scripts/package-linux.js"),
+    "CentralD client is installed. Next: sudo centrald-client enroll",
+    "client package prints enroll command",
+  ],
+  [
+    readme,
+    "You do not need the local server console before the",
+    "README first-run does not require config console",
+  ],
+  [
+    app,
+    "is optional after this first enroll.",
+    "Admin empty state does not require config console",
+  ],
+  [
+    app,
+    "No enrolled clients reported. Create an invitation, then on the",
+    "Admin devices empty state names enroll command",
   ],
   [
     client,
@@ -81,6 +131,11 @@ for (const [source, text, label] of [
     localPostgres,
     "cleanup_managed_resources",
     "managed PostgreSQL retry cleanup",
+  ],
+  [
+    read("crates/centrald-server/src/wizard.rs"),
+    "fn recommended_local_database",
+    "non-interactive Ubuntu setup defaults to recommended local PostgreSQL",
   ],
   [quickstart, "Rerun the same command", "interrupted setup recovery guidance"],
 ])

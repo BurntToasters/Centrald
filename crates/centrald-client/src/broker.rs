@@ -255,8 +255,8 @@ fn read_grant_verifying_key() -> Result<String> {
     {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        const O_NOFOLLOW: i32 = 0o400000;
-        const O_CLOEXEC: i32 = 0o2000000;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        const O_CLOEXEC: i32 = 0o2_000_000;
         let mut file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(O_NOFOLLOW | O_CLOEXEC)
@@ -284,7 +284,7 @@ fn read_grant_verifying_key() -> Result<String> {
         if pem.len() as u64 > MAX_GRANT_VERIFYING_KEY_BYTES {
             bail!("grant verifying key exceeds the size bound");
         }
-        return Ok(pem);
+        Ok(pem)
     }
     #[cfg(not(unix))]
     {
@@ -443,14 +443,13 @@ async fn serve_unix(
         .with_context(|| format!("bind broker socket {}", socket_path.display()))?;
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o660))
         .context("set broker socket permissions")?;
-    let expected_uid = resolve_daemon_account().map(|(uid, _)| uid)?;
-    let expected_gid = resolve_daemon_account().map(|(_, gid)| gid)?;
+    let (uid, gid) = resolve_daemon_account()?;
     // Mode 0660 with root owner and the `centrald` group lets the unprivileged
     // daemon connect without owning the inode (so it cannot chmod/unlink it).
     rustix::fs::chown(
         socket_path,
         Some(rustix::fs::Uid::ROOT),
-        Some(rustix::fs::Gid::from_raw(expected_gid)),
+        Some(rustix::fs::Gid::from_raw(gid)),
     )
     .context("chown broker socket to root:centrald")?;
     let sessions = Arc::new(crate::broker_session::SessionManager::new());
@@ -467,7 +466,7 @@ async fn serve_unix(
                 let credentials = stream
                     .peer_cred()
                     .context("read broker peer credentials")?;
-                if credentials.uid() != expected_uid {
+                if credentials.uid() != uid {
                     warn!(
                         uid = credentials.uid(),
                         "rejected broker peer outside the centrald service account"
@@ -753,7 +752,7 @@ fn encode_wire_error(message: &str) -> Vec<u8> {
 #[cfg(unix)]
 fn validate_socket_path(path: &Path) -> Result<()> {
     if path != Path::new(BROKER_SOCKET_PATH) {
-        bail!("broker socket must be exactly {}", BROKER_SOCKET_PATH);
+        bail!("broker socket must be exactly {BROKER_SOCKET_PATH}");
     }
     Ok(())
 }
@@ -773,7 +772,7 @@ fn resolve_daemon_account() -> Result<(u32, u32)> {
     file.take(MAX_PASSWD_BYTES + 1)
         .read_to_end(&mut content)
         .context("read /etc/passwd")?;
-    if content.len() > MAX_PASSWD_BYTES as usize {
+    if u64::try_from(content.len()).is_ok_and(|len| len > MAX_PASSWD_BYTES) {
         bail!("/etc/passwd exceeds the bounded read size");
     }
     let text = String::from_utf8(content).context("/etc/passwd is not valid UTF-8")?;

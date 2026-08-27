@@ -184,7 +184,7 @@ fn linux_load(user: &str) -> Result<Option<SecretString>> {
 #[cfg(target_os = "linux")]
 fn linux_store(user: &str, password: &SecretString) -> Result<()> {
     linux_secret_service(|connection, service, session| {
-        let item_path = linux_search_inner(&connection, &service, user)?;
+        let item_path = linux_search_inner(connection, service, user)?;
         let collection = zbus::zvariant::OwnedObjectPath::try_from(
             "/org/freedesktop/secrets/collection/default",
         )
@@ -231,7 +231,7 @@ fn linux_store(user: &str, password: &SecretString) -> Result<()> {
 #[cfg(target_os = "linux")]
 fn linux_delete(user: &str) -> Result<()> {
     linux_secret_service(|connection, service, _session| {
-        let Some(item_path) = linux_search_inner(&connection, &service, user)? else {
+        let Some(item_path) = linux_search_inner(connection, service, user)? else {
             return Ok(());
         };
         let _: zbus::Message = connection
@@ -251,7 +251,7 @@ fn linux_delete(user: &str) -> Result<()> {
 fn linux_search(user: &str) -> Result<Option<String>> {
     let mut found = None;
     linux_secret_service(|connection, service, session| {
-        found = linux_search_inner(&connection, &service, user)?.map(|item_path| {
+        found = linux_search_inner(connection, service, user)?.map(|item_path| {
             let secret: (zbus::zvariant::OwnedObjectPath, Vec<u8>, Vec<u8>, String) = connection
                 .call_method(
                     Some("org.freedesktop.secrets"),
@@ -264,8 +264,7 @@ fn linux_search(user: &str) -> Result<Option<String>> {
                 .body()
                 .deserialize()
                 .context("decode Secret Service item secret")?;
-            Ok(String::from_utf8(secret.2)
-                .context("Secret Service credential is not valid text")?)
+            String::from_utf8(secret.2).context("Secret Service credential is not valid text")
         });
         Ok(())
     })?;
@@ -306,6 +305,7 @@ fn attributes(user: &str) -> std::collections::HashMap<String, String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_wraps)]
 fn secret_tuple(
     session: &zbus::zvariant::OwnedObjectPath,
     value: &[u8],

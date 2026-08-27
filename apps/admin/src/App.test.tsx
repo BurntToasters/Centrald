@@ -10,5 +10,7 @@ describe("Admin onboarding", () => {
       screen.getByRole("button", { name: "Enroll this Admin" }),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+    expect(screen.getByText(/initial-setup/)).toBeTruthy();
+    expect(screen.queryByText(/centrald-server config/)).toBeNull();
   });
 });

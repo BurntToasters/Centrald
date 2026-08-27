@@ -3,73 +3,77 @@
 /* Temporary regression scanner. Remove together with cargo-safe-update.mjs
  * when stable Cargo minimum-publish-age replaces the wrapper. */
 
-import console from 'node:console';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import path from 'node:path';
-import process from 'node:process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import console from "node:console";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const CARGO_UPDATE_POLICY_SCANNER_VERSION = 3;
 export const CARGO_UPDATE_SCANNER_VERSION = 3;
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 export const EXECUTABLE_EXTENSIONS = new Set([
-  '.js',
-  '.mjs',
-  '.cjs',
-  '.ts',
-  '.mts',
-  '.cts',
-  '.sh',
-  '.bash',
-  '.zsh',
-  '.ps1',
-  '.psm1',
-  '.cmd',
-  '.bat',
-  '.yml',
-  '.yaml',
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".mts",
+  ".cts",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".ps1",
+  ".psm1",
+  ".cmd",
+  ".bat",
+  ".yml",
+  ".yaml",
 ]);
 
 export const EXACT_AUTOMATION_FILES = new Set([
-  'Makefile',
-  'makefile',
-  'GNUmakefile',
-  'justfile',
-  'Justfile',
-  'Taskfile',
-  'Taskfile.yml',
-  'Taskfile.yaml',
+  "Makefile",
+  "makefile",
+  "GNUmakefile",
+  "justfile",
+  "Justfile",
+  "Taskfile",
+  "Taskfile.yml",
+  "Taskfile.yaml",
 ]);
 
 export const IGNORED_DIRECTORIES = new Set([
-  '.git',
-  'node_modules',
-  'target',
-  'dist',
-  'release',
-  'coverage',
-  'vendor',
-  '.vite',
-  '.next',
-  'build',
-  'out',
+  ".git",
+  "node_modules",
+  "target",
+  "dist",
+  "release",
+  "coverage",
+  "vendor",
+  ".vite",
+  ".next",
+  "build",
+  "out",
 ]);
 
 export const EXCLUDED_FILES = new Set([
-  'scripts/cargo-safe-update.mjs',
-  'scripts/cargo-safe-update.test.mjs',
-  'scripts/check-cargo-update-policy.mjs',
-  'scripts/check-cargo-update-policy.test.mjs',
+  "scripts/cargo-safe-update.mjs",
+  "scripts/cargo-safe-update.test.mjs",
+  "scripts/check-cargo-update-policy.mjs",
+  "scripts/check-cargo-update-policy.test.mjs",
   // bump-version.js calls cargo generate-lockfile then runs validateCandidate()
   // from cargo-safe-update.mjs before accepting any newly selected packages.
   // It is approved automation with its own internal 72-hour policy enforcement.
-  'scripts/bump-version.js',
+  "scripts/bump-version.js",
 ]);
 
 // P0: raw shell-level Cargo mutation command
-const RAW_CARGO_MUTATION_REGEX = /\bcargo\s+(update|upgrade|add|generate-lockfile)\b/;
+const RAW_CARGO_MUTATION_REGEX =
+  /\bcargo\s+(update|upgrade|add|generate-lockfile)\b/;
 
 // Cargo.lock deletion via shell/PowerShell/Node API
 const LOCKFILE_DELETE_REGEX =
@@ -84,14 +88,13 @@ const LOCKFILE_TRUNCATE_OVERWRITE_REGEX =
 // Also catches execSync("cargo update") style calls.
 // Uses conservative regex — false positives in docs are reviewable.
 const PROGRAMMATIC_CARGO_MUTATION_REGEX =
-  /\b(?:spawn(?:Sync)?|execFile(?:Sync)?|execa(?:Sync)?)\s*\(\s*['"]cargo['"]\s*,\s*\[\s*['"](?:update|upgrade|add|generate-lockfile)['"]/
-  // Also catch execSync("cargo update") / exec("cargo update") forms
-  ;
+  /\b(?:spawn(?:Sync)?|execFile(?:Sync)?|execa(?:Sync)?)\s*\(\s*['"]cargo['"]\s*,\s*\[\s*['"](?:update|upgrade|add|generate-lockfile)['"]/;
+// Also catch execSync("cargo update") / exec("cargo update") forms
 const EXEC_SYNC_CARGO_MUTATION_REGEX =
   /\b(?:execSync|exec)\s*\(\s*['"]cargo\s+(?:update|upgrade|add|generate-lockfile)\b/;
 
 export function normalizeRelPath(relPath) {
-  return relPath.split(path.sep).join('/');
+  return relPath.split(path.sep).join("/");
 }
 
 export function commandSegments(command) {
@@ -104,19 +107,19 @@ export function stripCommentLines(text) {
     .map((line) => {
       const trimmed = line.trim();
       if (
-        trimmed.startsWith('//') ||
-        trimmed.startsWith('#') ||
-        trimmed.startsWith('*') ||
-        trimmed.startsWith('/*') ||
-        trimmed.startsWith('REM ') ||
-        trimmed.startsWith('rem ') ||
-        trimmed.startsWith('::')
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("#") ||
+        trimmed.startsWith("*") ||
+        trimmed.startsWith("/*") ||
+        trimmed.startsWith("REM ") ||
+        trimmed.startsWith("rem ") ||
+        trimmed.startsWith("::")
       ) {
-        return '';
+        return "";
       }
       return line;
     })
-    .join('\n');
+    .join("\n");
 }
 
 // P0: No line-wide segmentIsGuarded short-circuit.
@@ -125,30 +128,33 @@ export function classifyLine(line) {
   for (const segment of commandSegments(line)) {
     if (RAW_CARGO_MUTATION_REGEX.test(segment)) {
       return {
-        kind: 'raw Cargo mutation',
+        kind: "raw Cargo mutation",
         text: segment.trim(),
       };
     }
 
     if (LOCKFILE_DELETE_REGEX.test(segment)) {
       return {
-        kind: 'Cargo.lock deletion',
+        kind: "Cargo.lock deletion",
         text: segment.trim(),
       };
     }
 
     if (LOCKFILE_TRUNCATE_OVERWRITE_REGEX.test(segment)) {
       return {
-        kind: 'Cargo.lock overwrite/truncate',
+        kind: "Cargo.lock overwrite/truncate",
         text: segment.trim(),
       };
     }
 
     // P1: programmatic Node/JS cargo mutation (full-line check since these are not
     // typically chained with &&; checking each segment is still correct)
-    if (PROGRAMMATIC_CARGO_MUTATION_REGEX.test(segment) || EXEC_SYNC_CARGO_MUTATION_REGEX.test(segment)) {
+    if (
+      PROGRAMMATIC_CARGO_MUTATION_REGEX.test(segment) ||
+      EXEC_SYNC_CARGO_MUTATION_REGEX.test(segment)
+    ) {
       return {
-        kind: 'programmatic Cargo mutation',
+        kind: "programmatic Cargo mutation",
         text: segment.trim(),
       };
     }
@@ -174,7 +180,10 @@ export function walkExecutableFiles(root, currentDir = root, results = []) {
       walkExecutableFiles(root, fullPath, results);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
-      if (EXECUTABLE_EXTENSIONS.has(ext) || EXACT_AUTOMATION_FILES.has(entry.name)) {
+      if (
+        EXECUTABLE_EXTENSIONS.has(ext) ||
+        EXACT_AUTOMATION_FILES.has(entry.name)
+      ) {
         results.push({ relPath, fullPath, ext, name: entry.name });
       }
     }
@@ -189,7 +198,7 @@ export function scanFile(relPath, fullPath, violations) {
 
   let content;
   try {
-    content = readFileSync(fullPath, 'utf8');
+    content = readFileSync(fullPath, "utf8");
   } catch {
     return;
   }
@@ -214,21 +223,21 @@ export function scanFile(relPath, fullPath, violations) {
 }
 
 export function scanPackageJson(root, violations) {
-  const manifestPath = path.join(root, 'package.json');
+  const manifestPath = path.join(root, "package.json");
   let scripts;
   try {
-    scripts = JSON.parse(readFileSync(manifestPath, 'utf8')).scripts ?? {};
+    scripts = JSON.parse(readFileSync(manifestPath, "utf8")).scripts ?? {};
   } catch {
     return;
   }
 
   for (const [name, command] of Object.entries(scripts)) {
-    if (typeof command !== 'string') continue;
+    if (typeof command !== "string") continue;
     for (const segment of commandSegments(command)) {
       const finding = classifyLine(segment);
       if (finding) {
         violations.push({
-          file: 'package.json',
+          file: "package.json",
           script: name,
           kind: finding.kind,
           text: finding.text,
@@ -243,8 +252,8 @@ export function scanPackageJson(root, violations) {
 // Disallow aliases whose expansion begins with or invokes update/upgrade/add/generate-lockfile.
 export function scanCargoConfig(root, violations) {
   const configPaths = [
-    path.join(root, '.cargo', 'config.toml'),
-    path.join(root, '.cargo', 'config'),
+    path.join(root, ".cargo", "config.toml"),
+    path.join(root, ".cargo", "config"),
   ];
 
   const MUTATION_ALIAS_REGEX = /^\s*(?:update|upgrade|add|generate-lockfile)\b/;
@@ -252,7 +261,7 @@ export function scanCargoConfig(root, violations) {
   for (const configPath of configPaths) {
     let content;
     try {
-      content = readFileSync(configPath, 'utf8');
+      content = readFileSync(configPath, "utf8");
     } catch {
       continue;
     }
@@ -262,30 +271,33 @@ export function scanCargoConfig(root, violations) {
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
+      if (!trimmed || trimmed.startsWith("#")) continue;
 
       // Detect section headers
-      if (trimmed.startsWith('[')) {
-        inAliasSection = trimmed === '[alias]';
+      if (trimmed.startsWith("[")) {
+        inAliasSection = trimmed === "[alias]";
         continue;
       }
 
       if (!inAliasSection) continue;
 
       // Key = "value" or Key = ["value", ...]
-      const eqIdx = trimmed.indexOf('=');
+      const eqIdx = trimmed.indexOf("=");
       if (eqIdx < 0) continue;
       const aliasValue = trimmed.slice(eqIdx + 1).trim();
 
       // Extract the first word from the alias expansion (strip quotes, brackets)
-      const stripped = aliasValue.replace(/^\[?\s*['"]?/, '').replace(/['"\]].*/u, '').trim();
+      const stripped = aliasValue
+        .replace(/^\[?\s*['"]?/, "")
+        .replace(/['"\]].*/u, "")
+        .trim();
 
       if (MUTATION_ALIAS_REGEX.test(stripped)) {
         const relConfig = normalizeRelPath(path.relative(root, configPath));
         violations.push({
           file: relConfig,
           line: i + 1,
-          kind: 'Cargo alias dependency mutation',
+          kind: "Cargo alias dependency mutation",
           text: line.trim(),
         });
       }
@@ -293,7 +305,11 @@ export function scanCargoConfig(root, violations) {
   }
 }
 
-export function runPolicyCheck({ root = repoRoot, log = console.log, error = console.error } = {}) {
+export function runPolicyCheck({
+  root = repoRoot,
+  log = console.log,
+  error = console.error,
+} = {}) {
   const violations = [];
   scanPackageJson(root, violations);
 
@@ -314,15 +330,15 @@ export function runPolicyCheck({ root = repoRoot, log = console.log, error = con
 
   // Scan automation directories recursively
   const candidateDirs = [
-    'scripts',
-    'tools',
-    'bin',
-    'dev',
-    'ops',
-    'ci',
-    'automation',
-    'build-scripts',
-    path.join('.github', 'workflows'),
+    "scripts",
+    "tools",
+    "bin",
+    "dev",
+    "ops",
+    "ci",
+    "automation",
+    "build-scripts",
+    path.join(".github", "workflows"),
   ];
 
   for (const dir of candidateDirs) {
@@ -341,11 +357,19 @@ export function runPolicyCheck({ root = repoRoot, log = console.log, error = con
 
   // P2: Scan root-level shell, PowerShell, cmd, AND JS/TS automation files
   const ROOT_SCRIPT_EXTENSIONS = new Set([
-    '.sh', '.bash', '.zsh',
-    '.ps1', '.psm1',
-    '.cmd', '.bat',
-    '.js', '.mjs', '.cjs',
-    '.ts', '.mts', '.cts',
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".psm1",
+    ".cmd",
+    ".bat",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".mts",
+    ".cts",
   ]);
   try {
     const rootEntries = readdirSync(root, { withFileTypes: true });
@@ -362,21 +386,25 @@ export function runPolicyCheck({ root = repoRoot, log = console.log, error = con
   }
 
   if (violations.length > 0) {
-    error('cargo-update-policy: unguarded dependency mutation found:\n');
+    error("cargo-update-policy: unguarded dependency mutation found:\n");
     for (const v of violations) {
       if (v.script) {
-        error(`  file: ${v.file} (script "${v.script}")\n  kind: ${v.kind}\n  text: ${v.text}\n`);
+        error(
+          `  file: ${v.file} (script "${v.script}")\n  kind: ${v.kind}\n  text: ${v.text}\n`,
+        );
       } else {
-        error(`  file: ${v.file}:${v.line}\n  kind: ${v.kind}\n  text: ${v.text}\n`);
+        error(
+          `  file: ${v.file}:${v.line}\n  kind: ${v.kind}\n  text: ${v.text}\n`,
+        );
       }
     }
     error(
-      'Dependency-changing workflows must route through scripts/cargo-safe-update.mjs (72-hour publish-age guard).'
+      "Dependency-changing workflows must route through scripts/cargo-safe-update.mjs (72-hour publish-age guard).",
     );
     return false;
   }
 
-  log('cargo-update-policy: no unguarded cargo dependency mutation found.');
+  log("cargo-update-policy: no unguarded cargo dependency mutation found.");
   return true;
 }
 
@@ -388,7 +416,8 @@ function main() {
 }
 
 const isMainModule =
-  process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+  process.argv[1] &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMainModule) main();
 
 export { runPolicyCheck as checkCargoUpdatePolicy };

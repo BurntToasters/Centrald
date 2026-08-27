@@ -93,6 +93,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             dpkg-dev \
+            libclang-dev \
             libpam0g-dev \
             libssl-dev \
             protobuf-compiler

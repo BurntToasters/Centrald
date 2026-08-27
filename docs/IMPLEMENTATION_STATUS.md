@@ -9,7 +9,12 @@ until their gates flip with acceptance tests.
 ## Implemented in this hardening tree
 
 - Guided/non-interactive `centrald-server initial-setup` and the local
-  `centrald-server config` console.
+  `centrald-server config` console. Packaged `.deb` postinst scripts print the
+  next command (`initial-setup` / `enroll`) until that step is done. The server
+  package depends on PostgreSQL so `apt install ./centrald-server_*.deb` pulls
+  it in. Unix non-interactive setup without `CENTRALD_DATABASE_URL` uses the
+  same recommended local PostgreSQL path as the wizard default. Setup suggests
+  this host's hostname as the TLS name when it is a usable DNS name.
 - Recommended local PostgreSQL provisioning plus an advanced external-URL path.
   Managed local role/database names use the full server UUID, role and database
   comments bind them to that exact instance, setup writes non-secret recovery
@@ -35,7 +40,10 @@ until their gates flip with acceptance tests.
   file or piped standard input rather than a public command-line value.
 - Point-of-use secure reads for root private/public server material use
   no-follow opened-descriptor validation (`O_NOFOLLOW` + `fstat`) rather than
-  check-then-pathname reads. Packaged listener ports must be 1024-65535.
+  check-then-pathname reads. Packaged listener ports must be 1024-65535. Server,
+  client, and Admin install rustls `ring` as the process-level `CryptoProvider`
+  at startup so tonic `tls-ring` plus reqwest's aws-lc-rs feature cannot panic
+  packaged `run` on outbound HTTPS.
 - Client/Admin local key generation, pinned-TLS enrollment, pending identity and
   certificate activation after durable local publication, automatic renewal
   before expiry, per-profile Admin renewal locking, and fixed crash-recoverable

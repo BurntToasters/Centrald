@@ -1114,12 +1114,12 @@ fn os_version() -> String {
 
 fn system_uptime_seconds() -> u64 {
     #[cfg(target_os = "linux")]
-    if let Ok(contents) = std::fs::read_to_string("/proc/uptime") {
-        if let Some(value) = contents.split_whitespace().next() {
-            let whole_seconds = value.split_once('.').map_or(value, |(whole, _)| whole);
-            if let Ok(seconds) = whole_seconds.parse::<u64>() {
-                return seconds;
-            }
+    if let Ok(contents) = std::fs::read_to_string("/proc/uptime")
+        && let Some(value) = contents.split_whitespace().next()
+    {
+        let whole_seconds = value.split_once('.').map_or(value, |(whole, _)| whole);
+        if let Ok(seconds) = whole_seconds.parse::<u64>() {
+            return seconds;
         }
     }
     #[cfg(windows)]
@@ -1140,7 +1140,7 @@ fn memory_bytes() -> (u64, u64) {
             match fields.next() {
                 Some("MemTotal:") => total_kib = fields.next().and_then(|value| value.parse().ok()),
                 Some("MemAvailable:") => {
-                    available_kib = fields.next().and_then(|value| value.parse().ok())
+                    available_kib = fields.next().and_then(|value| value.parse().ok());
                 }
                 _ => {}
             }

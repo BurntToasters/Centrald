@@ -60,7 +60,10 @@ recovery ambiguous.
 ## Normal lifecycle
 
 ```text
+sudo apt install ./centrald-server_*.deb
 sudo centrald-server initial-setup
+# enroll CentralD Admin with the printed access key
+# optional local console for health, extra invitations, and PKI:
 sudo centrald-server config
 ```
 

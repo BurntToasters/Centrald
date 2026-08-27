@@ -260,7 +260,7 @@ pub struct ServerLock {
 /// Acquires the same exclusive lock used by the running server.
 ///
 /// The lock parent must be a root-owned, non-symlink directory. Holding the
-/// returned guard proves no correctly configured CentralD daemon can start or
+/// returned guard proves no correctly configured `CentralD` daemon can start or
 /// continue running through the destructive-reset window.
 ///
 /// # Errors
@@ -304,8 +304,8 @@ pub fn acquire_server_lock(socket_path: &Path) -> Result<ServerLock> {
         .create(true)
         .truncate(false)
         .custom_flags({
-            const O_NOFOLLOW: i32 = 0o400000;
-            const O_CLOEXEC: i32 = 0o2000000;
+            const O_NOFOLLOW: i32 = 0o400_000;
+            const O_CLOEXEC: i32 = 0o2_000_000;
             O_NOFOLLOW | O_CLOEXEC
         })
         .open(&lock_path)
@@ -331,6 +331,15 @@ pub fn acquire_server_lock(_socket_path: &std::path::Path) -> Result<ServerLock>
 }
 
 #[cfg(unix)]
+/// Serves the root-only local control socket used by `centrald-server config`.
+///
+/// Stale sockets are replaced only when they are not in use. Incoming peers
+/// must present UID 0.
+///
+/// # Errors
+///
+/// Returns an error when the socket path is unsafe, bind fails, or the listener
+/// cannot be configured.
 pub async fn serve(
     path: PathBuf,
     pool: PgPool,
@@ -392,6 +401,7 @@ pub async fn serve(
             }
         });
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]

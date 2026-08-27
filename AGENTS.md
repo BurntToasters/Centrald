@@ -63,7 +63,14 @@ trees.
 
 - A normal packaged Ubuntu setup must end with a usable server without requiring
   the operator to discover a second daemon-start command. If automatic systemd
-  activation is unavailable, print the exact recovery command.
+  activation is unavailable, print the exact recovery command. The server `.deb`
+  postinst prints `sudo centrald-server initial-setup` when
+  `/etc/centrald/server.toml` is absent; the client `.deb` prints
+  `sudo centrald-client enroll` until `current.pointer` exists.
+- After `initial-setup`, the next operator step is Admin enrollment with the
+  printed access key. `centrald-server config` remains the local console for
+  health, extra invitations, and advanced/local-only trust tasks; it is not a
+  required second command before the Admin app can be used.
 - `centrald-server config` must put common enrollment, health, and recovery tasks
   first and clearly label PKI, database, storage, listener, and destructive
   controls as advanced/local-only. Do not reduce configuration parity to achieve
@@ -74,7 +81,9 @@ trees.
   secure execution path exists. Scaffolded broker/terminal operations stay
   visibly unavailable.
 - Keep `docs/QUICKSTART.md` and `npm run check:onboarding` aligned with the
-  recommended first-run path.
+  recommended first-run path: `sudo apt install ./centrald-server_*.deb` then
+  `initial-setup`, Admin paste-enroll, then `sudo apt install
+  ./centrald-client_*.deb` and `centrald-client enroll`.
 
 ## Enrollment and Admin authentication contract
 
@@ -212,7 +221,9 @@ execution and credential saving visibly disabled.
 - `npm run qa` needs the site dependencies (`npm ci --prefix site`); CI
   (`ci.yml`, `release.yml`) and `scripts/setup.js` install them. Linux builds
   require `libpam0g-dev` (the client's `pam` crate) in the linux-builder
-  Dockerfile, `ci.yml`, and `release.yml`. In `windows-builder.Dockerfile` the
+  Dockerfile, `ci.yml`, and `release.yml`. The Linux `.deb` install smoke job
+  also needs `libclang-dev` because `centrald-client` compiles `clang-sys`.
+  In `windows-builder.Dockerfile` the
   node-dir `ENV PATH` must be set before the global `npm install -g npm@latest`.
 
 ## Update feed and channel switching
@@ -302,6 +313,10 @@ execution and credential saving visibly disabled.
   workspace setup; `scripts/bump-version.js` — lockstep version + Cargo.lock
   regen; `scripts/sign-release.js`, `scripts/generate-manifests.js`,
   `scripts/check-config.js`, `scripts/check-onboarding.js`, `scripts/qa.js`.
+- `scripts/cargo-safe-update.mjs` generates a candidate `Cargo.lock` in a
+  copied workspace until Cargo advertises a stable `--lockfile-path`. Do not
+  restore `CARGO_RESOLVER_LOCKFILE_PATH`; current stable Cargo ignores it and
+  would mutate the real lock before age approval.
 - `scripts/lib/build-config.js` and `crates/centrald-common/build.rs` mirror
   each other for channel detection/URL derivation; `scripts/tests/*.test.js`
   are the contract tests that pin these invariants.

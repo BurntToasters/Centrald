@@ -18,6 +18,7 @@ dialoguer.workspace = true
 ed25519-dalek.workspace = true
 fs2.workspace = true
 hex.workspace = true
+hostname.workspace = true
 humantime.workspace = true
 minisign.workspace = true
 pkcs8.workspace = true

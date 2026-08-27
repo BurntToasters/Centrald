@@ -152,6 +152,7 @@ fn restart_machine() -> Result<BoundedOutput> {
     }
 }
 
+#[allow(clippy::needless_return)]
 fn check_os_updates() -> Result<BoundedOutput> {
     #[cfg(target_os = "linux")]
     {
@@ -166,6 +167,7 @@ fn check_os_updates() -> Result<BoundedOutput> {
     }
 }
 
+#[allow(clippy::needless_return)]
 fn apply_os_updates() -> Result<BoundedOutput> {
     #[cfg(target_os = "linux")]
     {

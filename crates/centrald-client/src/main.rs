@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    centrald_common::https::install_rustls_crypto_provider();
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -18,6 +19,11 @@ async fn main() -> Result<()> {
         ClientCommand::Enroll(args) => {
             let path = centrald_client::enrollment::run(args, false).await?;
             println!("client enrolled; configuration: {}", path.display());
+            println!("This device should appear in CentralD Admin shortly.");
+            #[cfg(unix)]
+            println!("Use `sudo centrald-client rescue` if it stays offline.");
+            #[cfg(windows)]
+            println!("Use `centrald-client rescue` from an elevated terminal if it stays offline.");
             Ok(())
         }
         ClientCommand::Reenroll(args) => {

@@ -530,16 +530,25 @@ struct DatabaseTarget {
 ///
 /// Connection identity is taken only from the authority/path portion of the URL.
 /// Query parameters that can override host, user, password, or database are
-/// rejected because SQLx/libpq otherwise permit them to disagree with the fields
+/// rejected because `SQLx`/`libpq` otherwise permit them to disagree with the fields
 /// `CentralD` uses for ownership and destructive-operation checks. Remote TCP
 /// databases must use `sslmode=verify-full`; loopback development connections may
-/// use another explicit or default mode.
+/// use another explicit or default mode. Inherited `libpq` environment variables
+/// are refused so they cannot redirect a later `SQLx` connection.
 ///
 /// # Errors
 ///
 /// Returns an error when the URL is structurally invalid, uses an unsafe query
-/// parameter, or violates the transport-security policy.
+/// parameter, violates the transport-security policy, or ambient `PG*` variables
+/// are present.
 pub fn validate_database_url_policy(value: &str) -> Result<(), DatabaseAdminError> {
+    validate_database_url_structure(value)?;
+    reject_ambient_postgres_environment()
+}
+
+/// Validates URL structure and transport policy without inspecting process
+/// environment. Call [`validate_database_url_policy`] before connecting.
+pub(crate) fn validate_database_url_structure(value: &str) -> Result<(), DatabaseAdminError> {
     if value.contains(char::is_whitespace) {
         return Err(DatabaseAdminError::InvalidUrl);
     }
@@ -585,8 +594,6 @@ pub fn validate_database_url_policy(value: &str) -> Result<(), DatabaseAdminErro
             _ => return Err(DatabaseAdminError::InvalidUrl),
         }
     }
-
-    reject_ambient_postgres_environment()?;
 
     let host = parsed.host_str().ok_or(DatabaseAdminError::InvalidUrl)?;
     let loopback = host.eq_ignore_ascii_case("localhost")
@@ -639,6 +646,10 @@ fn reject_ambient_postgres_environment() -> Result<(), DatabaseAdminError> {
 
 fn parse_target(value: &str) -> Result<DatabaseTarget, DatabaseAdminError> {
     validate_database_url_policy(value)?;
+    database_target(value)
+}
+
+fn database_target(value: &str) -> Result<DatabaseTarget, DatabaseAdminError> {
     let mut parsed = Url::parse(value).map_err(|_| DatabaseAdminError::InvalidUrl)?;
     let database_name = parsed.path().trim_start_matches('/').to_owned();
     parsed.set_path("/postgres");
@@ -676,10 +687,19 @@ mod tests {
 
     #[test]
     fn database_target_rejects_protected_or_complex_paths() {
-        assert!(parse_target("https://db/centrald").is_err());
-        assert!(parse_target("postgresql://user:secret@127.0.0.1:5432/").is_err());
-        assert!(parse_target("postgresql://user:secret@127.0.0.1:5432/centrald%2Fother").is_err());
-        let target = parse_target("postgresql://user:secret@127.0.0.1:5432/centrald").unwrap();
+        assert!(validate_database_url_structure("https://db/centrald").is_err());
+        assert!(
+            validate_database_url_structure("postgresql://user:secret@127.0.0.1:5432/").is_err()
+        );
+        assert!(
+            validate_database_url_structure(
+                "postgresql://user:secret@127.0.0.1:5432/centrald%2Fother"
+            )
+            .is_err()
+        );
+        let url = "postgresql://user:secret@127.0.0.1:5432/centrald";
+        validate_database_url_structure(url).unwrap();
+        let target = database_target(url).unwrap();
         assert_eq!(target.database_name, "centrald");
         assert_eq!(target.maintenance_url.path(), "/postgres");
         assert!(reject_protected_database("postgres").is_err());
@@ -689,29 +709,36 @@ mod tests {
     #[test]
     fn remote_database_urls_require_verify_full_sslmode() {
         assert!(
-            validate_database_url_policy("postgresql://user:secret@db.example:5432/centrald")
+            validate_database_url_structure("postgresql://user:secret@db.example:5432/centrald")
                 .is_err()
         );
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@db.example:5432/centrald?sslmode=require"
             )
             .is_err()
         );
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@db.example:5432/centrald?sslmode=verify-full"
             )
             .is_ok()
         );
         assert!(
-            validate_database_url_policy("postgresql://user:secret@127.0.0.1:5432/centrald")
+            validate_database_url_structure("postgresql://user:secret@127.0.0.1:5432/centrald")
                 .is_ok()
         );
         assert!(
-            validate_database_url_policy("postgresql://user:secret@localhost:5432/centrald")
+            validate_database_url_structure("postgresql://user:secret@localhost:5432/centrald")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn policy_refuses_ambient_libpq_environment_before_connect() {
+        let source = include_str!("db.rs");
+        assert!(source.contains("validate_database_url_structure(value)?;"));
+        assert!(source.contains("reject_ambient_postgres_environment()"));
     }
 
     #[test]
@@ -732,30 +759,30 @@ mod tests {
     #[test]
     fn database_urls_reject_target_changing_or_unknown_query_options() {
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@127.0.0.1:5432/centrald?host=evil.example"
             )
             .is_err()
         );
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@127.0.0.1:5432/centrald?dbname=other"
             )
             .is_err()
         );
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@127.0.0.1:5432/centrald?application_name=centrald&application_name=dup"
             )
             .is_err()
         );
         assert!(
-            validate_database_url_policy(
+            validate_database_url_structure(
                 "postgresql://user:secret@127.0.0.1:5432/centrald?unexpected=1"
             )
             .is_err()
         );
-        assert!(validate_database_url_policy("postgresql://user:secret@db/centrald").is_err());
+        assert!(validate_database_url_structure("postgresql://user:secret@db/centrald").is_err());
     }
 
     #[test]

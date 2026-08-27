@@ -29,7 +29,7 @@ use crate::config_lock::{
     recover_interrupted_settings_update_locked,
 };
 use crate::db::{
-    connect_and_migrate, database_environment_contents, resolve_database_url,
+    DatabaseAdminError, connect_and_migrate, database_environment_contents, resolve_database_url,
     validate_database_url_policy, verify_owned_database,
 };
 use crate::file_security::{read_root_private_text, read_root_public_text};
@@ -2564,6 +2564,18 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
             println!("  Active clients: {}", summary.active_clients);
             println!("  Active Admins: {}", summary.active_admins);
             println!("  Pending invitations: {}", summary.pending_enrollments);
+            if summary.active_admins == 0 {
+                println!(
+                    "Next: create an Admin access key here, then paste it into CentralD Admin → Add server."
+                );
+            }
+            if summary.active_clients == 0 && summary.pending_enrollments == 0 {
+                println!(
+                    "Next: Add a client (guided), then on the device run: sudo centrald-client enroll"
+                );
+            } else if summary.pending_enrollments > 0 && summary.active_clients == 0 {
+                println!("Next: on each device run: sudo centrald-client enroll");
+            }
             match latest_release_manifest_check_error(&pool).await {
                 Ok(Some(error)) => println!(
                     "{} Last release-manifest check failed: {error}",
@@ -2861,9 +2873,15 @@ fn validate_env_name(value: &str) -> Result<(), &'static str> {
 }
 
 fn validate_database_url(value: &str) -> Result<(), String> {
-    validate_database_url_policy(value).map_err(|error| format!(
-        "{error}; use postgresql://user:password@host:5432/database and require sslmode=verify-full for non-loopback hosts"
-    ))
+    match validate_database_url_policy(value) {
+        Ok(()) => Ok(()),
+        Err(DatabaseAdminError::UnsafeEnvironment(variables)) => Err(format!(
+            "unset {variables} in this shell first; CentralD refuses inherited PostgreSQL variables so they cannot override the database URL"
+        )),
+        Err(error) => Err(format!(
+            "{error}; use postgresql://user:password@host:5432/database and require sslmode=verify-full for non-loopback hosts"
+        )),
+    }
 }
 
 fn socket_prompt(theme: &ColorfulTheme, prompt: &str, default: SocketAddr) -> Result<SocketAddr> {
@@ -2910,6 +2928,7 @@ fn display_role(role: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::validate_database_url_structure;
 
     #[test]
     fn rejects_invalid_guided_input() {
@@ -2918,7 +2937,8 @@ mod tests {
         assert!(validate_prompt_reason("\n").is_err());
         assert!(validate_database_url("https://example.test").is_err());
         assert!(
-            validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok()
+            validate_database_url_structure("postgresql://centrald:secret@127.0.0.1:5432/centrald")
+                .is_ok()
         );
         assert!(validate_env_name("CENTRALD_DATABASE_URL").is_ok());
     }

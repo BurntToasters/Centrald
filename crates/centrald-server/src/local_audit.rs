@@ -90,8 +90,8 @@ pub fn record(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        const O_NOFOLLOW: i32 = 0o400000;
-        const O_CLOEXEC: i32 = 0o2000000;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        const O_CLOEXEC: i32 = 0o2_000_000;
         options.mode(0o600).custom_flags(O_NOFOLLOW | O_CLOEXEC);
     }
     let mut file = options

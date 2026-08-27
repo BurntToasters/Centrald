@@ -36,6 +36,7 @@ const ADMIN_MAX_MESSAGE_BYTES: usize = 512 * 1024;
 #[tokio::main]
 #[allow(clippy::large_futures)]
 async fn main() -> Result<()> {
+    centrald_common::https::install_rustls_crypto_provider();
     let cli = ServerCli::parse();
     if cli.no_color {
         console::set_colors_enabled(false);
@@ -649,7 +650,7 @@ async fn try_start_packaged_service(config_path: &Path) -> String {
         .status()
     {
         Ok(status) if status.success() => {
-            let ready = tokio::time::timeout(Duration::from_secs(15), async {
+            let ready = tokio::time::timeout(Duration::from_secs(60), async {
                 loop {
                     if packaged_local_socket_reachable().await {
                         break;
@@ -662,7 +663,7 @@ async fn try_start_packaged_service(config_path: &Path) -> String {
             if ready {
                 "READY: centrald-server.service is enabled, running, and accepting local health connections. It will start automatically after reboot.".into()
             } else {
-                "INCOMPLETE: setup committed and the service is enabled, but the daemon did not become healthy within 15 seconds. Run: sudo systemctl status centrald-server --no-pager; then sudo centrald-server config and choose Health, status, and next steps.".into()
+                "INCOMPLETE: setup committed and the service is enabled, but the daemon did not become healthy within 60 seconds. Run: sudo systemctl status centrald-server --no-pager; then sudo centrald-server config and choose Health, status, and next steps.".into()
             }
         }
         Ok(status) => format!(

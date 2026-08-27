@@ -84,8 +84,8 @@ fn read_secure_bytes(
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
         // linux/fcntl.h values used by the Ubuntu Server packaging target.
-        const O_NOFOLLOW: i32 = 0o400000;
-        const O_CLOEXEC: i32 = 0o2000000;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        const O_CLOEXEC: i32 = 0o2_000_000;
 
         let file = OpenOptions::new()
             .read(true)
@@ -161,6 +161,7 @@ fn read_secure_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn rejects_relative_paths() {

@@ -201,7 +201,7 @@ impl RuntimeState {
 
     /// Removes the client stream only if it is still the registered sender.
     pub fn unregister_client_stream(&self, identity: Uuid, sender: &ClientStreamSender) {
-        let is_current = self.client_streams.lock().ok().is_some_and(|streams| {
+        let is_current = self.client_streams.lock().is_ok_and(|streams| {
             streams
                 .get(&identity)
                 .is_some_and(|existing| existing.same_channel(sender))

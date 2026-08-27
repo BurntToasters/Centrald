@@ -1067,6 +1067,8 @@ test("client invitations never use public process arguments", async () => {
   assert.match(enrollment, /stdin\(\)\.is_terminal\(\)/);
   assert.match(quickstart, /--key-file/);
   assert.match(quickstart, /--key-stdin/);
+  assert.match(quickstart, /sudo apt install \.\/centrald-server_\*\.deb/);
+  assert.match(quickstart, /sudo apt install \.\/centrald-client_\*\.deb/);
 });
 
 test("managed PostgreSQL objects require instance-bound ownership markers", async () => {
@@ -1317,8 +1319,11 @@ test("advanced PostgreSQL URLs cannot override connection identity or downgrade 
   assert.match(db, /sslmode\.as_deref\(\) != Some\("verify-full"\)/);
   assert.match(db, /parsed\.port\(\)\.is_none\(\)/);
   assert.match(db, /reject_ambient_postgres_environment/);
+  assert.match(db, /validate_database_url_structure\(value\)\?;/);
   assert.match(wizard, /validate_database_url_policy/);
   assert.match(manage, /validate_database_url_policy/);
+  assert.match(wizard, /DatabaseAdminError::UnsafeEnvironment/);
+  assert.match(manage, /DatabaseAdminError::UnsafeEnvironment/);
 });
 
 test("runtime database credentials come only from the protected instance file", async () => {
@@ -1370,6 +1375,37 @@ test("package upgrades restart only already-active CentralD services", async () 
   assert.match(packaging, /systemctl try-restart centrald-client\.service/);
   assert.doesNotMatch(packaging, /systemctl enable centrald-broker/);
   assert.match(packaging, /"coreutils"/);
+  assert.match(
+    packaging,
+    /CentralD server is installed\. Next: sudo centrald-server initial-setup/,
+  );
+  assert.match(
+    packaging,
+    /CentralD client is installed\. Next: sudo centrald-client enroll/,
+  );
+});
+
+test("CI Linux package smoke installs clang for bindgen", async () => {
+  const ci = await read(".github/workflows/ci.yml");
+  const job =
+    /linux-package-smoke:[\s\S]*?(?=\n {2}windows:|$)/.exec(ci)?.[0] ?? "";
+  assert.match(job, /libclang-dev/);
+  assert.match(job, /libpam0g-dev/);
+  const smoke = await read("scripts/ci-linux-package-smoke.js");
+  assert.match(smoke, /"apt-get",\s*"install",\s*"-y"/);
+  assert.match(smoke, /centrald-server", \["--help"\]/);
+  assert.match(smoke, /initial-setup/);
+  assert.match(smoke, /enroll-client/);
+  assert.match(smoke, /centrald-client", \["--help"\]/);
+  assert.match(smoke, /privileged-broker/);
+  assert.match(smoke, /dpkg-query", \["-W", "postgresql"\]/);
+  assert.match(smoke, /"--non-interactive"/);
+  assert.match(
+    smoke,
+    /sudo", \["test", "-f", "\/etc\/centrald\/server\.toml"\]/,
+  );
+  assert.match(smoke, /READY:/);
+  assert.match(smoke, /journalctl/);
 });
 
 test("packaged first-start systemd command has an execution deadline", async () => {
@@ -1396,7 +1432,7 @@ test("packaged services use exec startup semantics and setup waits for server re
     main,
     /UnixStream::connect\(centrald_server::DEFAULT_LOCAL_SOCKET\)/,
   );
-  assert.match(main, /Duration::from_secs\(15\)/);
+  assert.match(main, /Duration::from_secs\(60\)/);
 });
 
 test("systemd services drop ambient Linux capabilities and restrict address families", async () => {
@@ -1556,4 +1592,32 @@ test("audit findings stay closed: grant key, broker first frame, Hello, redirect
     await read("crates/centrald-server/src/db.rs"),
     /PGCHANNELBINDING/,
   );
+});
+
+test("outbound rustls uses an explicit ring CryptoProvider", async () => {
+  const [https, serverMain, clientMain, adminLib, workspace] =
+    await Promise.all([
+      read("crates/centrald-common/src/https.rs"),
+      read("crates/centrald-server/src/main.rs"),
+      read("crates/centrald-client/src/main.rs"),
+      read("apps/admin/src-tauri/src/lib.rs"),
+      read("Cargo.toml"),
+    ]);
+  assert.match(https, /fn install_rustls_crypto_provider/);
+  assert.match(https, /ring::default_provider\(\)\.install_default\(\)/);
+  assert.match(serverMain, /install_rustls_crypto_provider/);
+  assert.match(clientMain, /install_rustls_crypto_provider/);
+  assert.match(adminLib, /install_rustls_crypto_provider/);
+  assert.match(workspace, /tls-ring/);
+});
+
+test("broker ledger opens no-follow and stays root-owned outside tests", async () => {
+  const ledger = await read("crates/centrald-client/src/ledger.rs");
+  assert.match(ledger, /fn apply_unix_nofollow/);
+  assert.match(ledger, /O_NOFOLLOW \| O_CLOEXEC/);
+  assert.match(ledger, /O_DIRECTORY/);
+  assert.match(ledger, /cfg!\(test\)/);
+  assert.match(ledger, /rustix::process::geteuid\(\)\.as_raw\(\)/);
+  assert.match(ledger, /metadata\.mode\(\) & 0o022 != 0/);
+  assert.match(ledger, /append_refuses_a_symbolic_link_ledger/);
 });

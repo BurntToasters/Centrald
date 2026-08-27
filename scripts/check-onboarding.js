@@ -60,6 +60,31 @@ for (const [source, text, label] of [
     "setup incomplete when service fails to become healthy",
   ],
   [
+    read("crates/centrald-server/src/wizard.rs"),
+    "fn suggested_public_host",
+    "setup suggests this host's TLS name",
+  ],
+  [
+    read("scripts/package-linux.js"),
+    "CentralD server is installed. Next: sudo centrald-server initial-setup",
+    "server package prints first-run command",
+  ],
+  [
+    read("scripts/package-linux.js"),
+    "CentralD client is installed. Next: sudo centrald-client enroll",
+    "client package prints enroll command",
+  ],
+  [
+    readme,
+    "You do not need the local server console before the first Admin enroll",
+    "README first-run does not require config console",
+  ],
+  [
+    app,
+    "The server-local console is optional after this first enroll.",
+    "Admin empty state does not require config console",
+  ],
+  [
     client,
     'capabilities: vec!["heartbeat".into()]',
     "heartbeat-only client Hello capabilities",

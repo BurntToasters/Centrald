@@ -154,11 +154,7 @@ impl BrokerLedger {
         line.push(b'\n');
         let mut options = OpenOptions::new();
         options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        apply_unix_nofollow(&mut options, true);
         let mut file = options
             .open(&path)
             .with_context(|| format!("open consumed-grant journal {}", path.display()))?;
@@ -329,11 +325,7 @@ impl BrokerLedger {
         line.push(b'\n');
         let mut options = OpenOptions::new();
         options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        apply_unix_nofollow(&mut options, true);
         let mut file = options
             .open(&self.path)
             .with_context(|| format!("open broker ledger {}", self.path.display()))?;
@@ -349,8 +341,15 @@ impl BrokerLedger {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            if metadata.uid() != 0 {
-                bail!("broker ledger must be root-owned");
+            // Production brokers run as root. Unit tests create a private ledger
+            // owned by the unprivileged CI user, so ownership must match euid.
+            let expected_uid = if cfg!(test) {
+                rustix::process::geteuid().as_raw()
+            } else {
+                0
+            };
+            if metadata.uid() != expected_uid || metadata.mode() & 0o022 != 0 {
+                bail!("broker ledger must be a privileged, non-world-writable regular file");
             }
         }
         file.write_all(&line)
@@ -360,9 +359,8 @@ impl BrokerLedger {
         if metadata.len() == 0 {
             // First-ever record: sync the directory entry so the ledger cannot
             // vanish on power loss immediately after creation.
-            if let Some(_parent) = self.path.parent() {
-                #[cfg(unix)]
-                std::fs::File::open(_parent)?.sync_all()?;
+            if let Some(parent) = self.path.parent() {
+                sync_directory(parent)?;
             }
         }
         Ok(())
@@ -453,14 +451,48 @@ impl BrokerLedger {
             .with_context(|| format!("stage compacted broker ledger at {}", staged.display()))?;
         fs::rename(&staged, &self.path)
             .with_context(|| format!("replace compacted broker ledger {}", self.path.display()))?;
-        #[cfg(unix)]
-        fs::File::open(parent)?.sync_all()?;
+        sync_directory(parent)?;
         Ok(())
     }
 }
 
 fn record_checksum(record: &LedgerRecord) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(record)?)))
+}
+
+fn apply_unix_nofollow(options: &mut OpenOptions, create_private: bool) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        const O_CLOEXEC: i32 = 0o2_000_000;
+        if create_private {
+            options.mode(0o600);
+        }
+        options.custom_flags(O_NOFOLLOW | O_CLOEXEC);
+    }
+    #[cfg(not(unix))]
+    let _ = (options, create_private);
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        const O_CLOEXEC: i32 = 0o2_000_000;
+        const O_DIRECTORY: i32 = 0o200_000;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NOFOLLOW | O_CLOEXEC | O_DIRECTORY)
+            .open(path)
+            .with_context(|| format!("open directory {} for sync", path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync directory {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 fn recover_torn_final_record(path: &Path) -> Result<Vec<u8>> {
@@ -486,13 +518,13 @@ fn recover_torn_final_record(path: &Path) -> Result<Vec<u8>> {
     })?;
     let mut options = OpenOptions::new();
     options.write(true).truncate(true);
+    apply_unix_nofollow(&mut options, false);
     let mut file = options
         .open(path)
         .with_context(|| format!("truncate torn broker ledger tail in {}", path.display()))?;
     file.write_all(&raw[..complete_len])?;
     file.sync_all()?;
-    #[cfg(unix)]
-    fs::File::open(parent)?.sync_all()?;
+    sync_directory(parent)?;
     tracing::warn!(
         path = %path.display(),
         quarantine = %quarantine.display(),
@@ -652,5 +684,25 @@ mod tests {
                 .record_completed(job, &response(&oversized), now)
                 .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_a_symbolic_link_ledger() {
+        let root = std::env::temp_dir().join(format!("centrald-ledger-{}", Uuid::now_v7()));
+        fs::create_dir(&root).unwrap();
+        let ledger_path = root.join(LEDGER_FILE_NAME);
+        let target = root.join("elsewhere.jsonl");
+        fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &ledger_path).unwrap();
+        let ledger = BrokerLedger { path: ledger_path };
+        let now = Utc::now();
+        let job = Uuid::now_v7();
+        assert!(
+            ledger
+                .mark_executing(job, GrantOperation::RestartClientService, now)
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

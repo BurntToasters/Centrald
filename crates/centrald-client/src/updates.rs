@@ -415,6 +415,7 @@ fn verify_minisign_bytes(data: &[u8], signature_text: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::needless_return)]
 fn install_artifact(artifact: &Path, package_kind: PackageKind) -> Result<()> {
     match package_kind {
         PackageKind::Deb => {

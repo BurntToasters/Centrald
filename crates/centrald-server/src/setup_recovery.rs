@@ -75,13 +75,13 @@ pub fn acquire_setup_mutation_lock() -> Result<SetupMutationLock> {
                 parent.display()
             );
         }
-        if let Ok(metadata) = path.symlink_metadata() {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                bail!(
-                    "setup mutation lock is not a regular file: {}",
-                    path.display()
-                );
-            }
+        if let Ok(metadata) = path.symlink_metadata()
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            bail!(
+                "setup mutation lock is not a regular file: {}",
+                path.display()
+            );
         }
         let file = OpenOptions::new()
             .read(true)
@@ -89,8 +89,8 @@ pub fn acquire_setup_mutation_lock() -> Result<SetupMutationLock> {
             .create(true)
             .mode(0o600)
             .custom_flags({
-                const O_NOFOLLOW: i32 = 0o400000;
-                const O_CLOEXEC: i32 = 0o2000000;
+                const O_NOFOLLOW: i32 = 0o400_000;
+                const O_CLOEXEC: i32 = 0o2_000_000;
                 O_NOFOLLOW | O_CLOEXEC
             })
             .open(path)
@@ -690,11 +690,11 @@ fn parse_process_start_ticks(stat: &str) -> Result<u64> {
         .get(close + 1..)
         .context("Linux process stat command boundary is invalid")?
         .trim_start();
-    let start = remainder
+    let start_ticks = remainder
         .split_whitespace()
         .nth(19)
         .context("Linux process stat is missing start time")?;
-    start
+    start_ticks
         .parse::<u64>()
         .context("parse Linux process start time")
 }
@@ -702,6 +702,8 @@ fn parse_process_start_ticks(stat: &str) -> Result<u64> {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use super::*;
+
     #[cfg(target_os = "linux")]
     #[test]
     fn parses_proc_start_ticks_after_parenthesized_command() {
@@ -712,7 +714,7 @@ mod tests {
         let stat = format!("123 (centrald worker) {}", fields.join(" "));
         assert_eq!(
             parse_process_start_ticks(&stat).expect("parse start ticks"),
-            424242
+            424_242
         );
     }
 }

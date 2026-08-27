@@ -208,7 +208,7 @@ fn require_repair_privilege() -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy::needless_return)]
 fn client_service_running() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -365,6 +365,7 @@ fn check_file(name: &'static str, path: &Path, private: bool) -> RescueCheck {
     ok(name, path.display().to_string())
 }
 
+#[allow(clippy::needless_return)]
 fn service_status() -> RescueCheck {
     #[cfg(target_os = "linux")]
     {

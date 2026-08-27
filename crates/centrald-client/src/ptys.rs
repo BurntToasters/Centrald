@@ -85,7 +85,10 @@ impl PtyController {
                     // so the child pid is its process-group leader; killing the
                     // group terminates grandchildren that keep the PTY slave
                     // open (e.g. `sleep 999 &`).
-                    if let Some(process_group) = rustix::process::Pid::from_raw(pid as i32) {
+                    if let Some(process_group) = i32::try_from(pid)
+                        .ok()
+                        .and_then(rustix::process::Pid::from_raw)
+                    {
                         let _ = rustix::process::kill_process_group(
                             process_group,
                             rustix::process::Signal::KILL,
@@ -210,6 +213,7 @@ fn shell_command(spec: &PtySessionSpec) -> Result<(String, Vec<String>)> {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn resolve_shell_executable(name: &str) -> Result<String> {
     #[cfg(windows)]
     {

@@ -699,6 +699,7 @@ fn secret_or_prompt(key_file: Option<&Path>, key_stdin: bool, label: &str) -> Re
     normalize_access_key(value, label)
 }
 
+#[allow(clippy::needless_return)]
 fn read_access_key_file(path: &Path, label: &str) -> Result<SecretString> {
     #[cfg(windows)]
     {
@@ -906,7 +907,7 @@ pub fn repair_active_state_permissions() -> Result<(PathBuf, ClientConfig)> {
                 .context("load active client state through fixed-root descriptors")?;
         let layout = validate_repair_layout(&config_path, &config)?;
         secure_unix_repair_state(&layout, state_lock.path())?;
-        return Ok((config_path, config));
+        Ok((config_path, config))
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -1048,7 +1049,7 @@ fn parse_generation_path(data_dir: &Path, identity_dir: &Path) -> Result<(Uuid, 
         .context("client identity generation escaped the fixed data root")?;
     let components = relative
         .components()
-        .map(|component| component.as_os_str())
+        .map(std::path::Component::as_os_str)
         .collect::<Vec<_>>();
     if components.len() != 4 || components[0] != "identities" || components[2] != "generations" {
         bail!("client identity generation path has an invalid shape");

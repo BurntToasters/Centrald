@@ -63,7 +63,14 @@ trees.
 
 - A normal packaged Ubuntu setup must end with a usable server without requiring
   the operator to discover a second daemon-start command. If automatic systemd
-  activation is unavailable, print the exact recovery command.
+  activation is unavailable, print the exact recovery command. The server `.deb`
+  postinst prints `sudo centrald-server initial-setup` when
+  `/etc/centrald/server.toml` is absent; the client `.deb` prints
+  `sudo centrald-client enroll` until `current.pointer` exists.
+- After `initial-setup`, the next operator step is Admin enrollment with the
+  printed access key. `centrald-server config` remains the local console for
+  health, extra invitations, and advanced/local-only trust tasks; it is not a
+  required second command before the Admin app can be used.
 - `centrald-server config` must put common enrollment, health, and recovery tasks
   first and clearly label PKI, database, storage, listener, and destructive
   controls as advanced/local-only. Do not reduce configuration parity to achieve
@@ -212,7 +219,9 @@ execution and credential saving visibly disabled.
 - `npm run qa` needs the site dependencies (`npm ci --prefix site`); CI
   (`ci.yml`, `release.yml`) and `scripts/setup.js` install them. Linux builds
   require `libpam0g-dev` (the client's `pam` crate) in the linux-builder
-  Dockerfile, `ci.yml`, and `release.yml`. In `windows-builder.Dockerfile` the
+  Dockerfile, `ci.yml`, and `release.yml`. The Linux `.deb` install smoke job
+  also needs `libclang-dev` because `centrald-client` compiles `clang-sys`.
+  In `windows-builder.Dockerfile` the
   node-dir `ENV PATH` must be set before the global `npm install -g npm@latest`.
 
 ## Update feed and channel switching

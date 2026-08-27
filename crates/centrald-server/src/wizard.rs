@@ -8,7 +8,7 @@ use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::cli::SetupArgs;
-use crate::db::validate_database_url_policy;
+use crate::db::{DatabaseAdminError, validate_database_url_policy};
 use crate::manage::CreatedEnrollmentKey;
 use crate::setup::{SetupOptions, SetupSummary};
 use centrald_common::config::{SERVER_DATA_DIR, SERVER_DATABASE_ENV_FILE, SERVER_DATABASE_URL_ENV};
@@ -91,14 +91,22 @@ pub fn print_completion(
         println!("  4. Enroll CentralD Admin with the access key above.");
     } else if service_ready {
         println!("  1. Move the root recovery bundle offline.");
-        println!("  2. Enroll CentralD Admin with the access key above.");
-        println!("  3. Open guided management any time: centrald-server config");
+        println!("  2. Open CentralD Admin and paste the access key into Add server.");
+        println!(
+            "  3. Create client invitations from Admin. The local console is optional: sudo centrald-server config"
+        );
     } else {
         println!("  1. Start CentralD using the service guidance above.");
         println!("  2. Move the root recovery bundle offline.");
-        println!("  3. Enroll CentralD Admin with the access key above.");
-        println!("  4. Open guided management any time: centrald-server config");
+        println!("  3. Open CentralD Admin and paste the access key into Add server.");
+        println!(
+            "  4. Create client invitations from Admin, or later: sudo centrald-server config"
+        );
     }
+    println!();
+    println!(
+        "If this host uses a firewall, allow inbound TCP 7443, 7444, and 7445 (see docs/QUICKSTART.md)."
+    );
 }
 
 fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptions> {
@@ -107,13 +115,16 @@ fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptio
     term.write_line("")?;
     term.write_line(&style("CentralD Initial Setup").cyan().bold().to_string())?;
     term.write_line("Guided secure setup for Ubuntu Server 24.04 and newer.")?;
-    term.write_line("No existing config, key, database, or recovery file will be overwritten.")?;
+    term.write_line(
+        "Recommended answers work for a homelab. Press Enter to accept the suggestions.",
+    )?;
+    term.write_line("Advanced PostgreSQL is optional. No existing files will be overwritten.")?;
     term.write_line("")?;
 
     let instance_id = uuid::Uuid::now_v7();
     let public_host = Input::<String>::with_theme(&theme)
-        .with_prompt("TLS name clients should verify (DNS name or IP)")
-        .with_initial_text(args.public_host.unwrap_or_default())
+        .with_prompt("TLS name clients should verify (LAN DNS name or IP)")
+        .with_initial_text(suggested_public_host(args.public_host))
         .validate_with(|value: &String| validate_host(value))
         .interact_text()?;
     let public_host = canonical_host(&public_host).context("canonicalize public TLS host")?;
@@ -303,9 +314,33 @@ fn validate_name(value: &str) -> Result<(), &'static str> {
 }
 
 fn validate_database_url(value: &str) -> Result<(), String> {
-    validate_database_url_policy(value).map_err(|error| format!(
-        "{error}; use postgresql://user:password@host:5432/database and require sslmode=verify-full for non-loopback hosts"
-    ))
+    match validate_database_url_policy(value) {
+        Ok(()) => Ok(()),
+        Err(DatabaseAdminError::UnsafeEnvironment(variables)) => Err(format!(
+            "unset {variables} in this shell first; CentralD refuses inherited PostgreSQL variables so they cannot override the database URL"
+        )),
+        Err(error) => Err(format!(
+            "{error}; use postgresql://user:password@host:5432/database and require sslmode=verify-full for non-loopback hosts"
+        )),
+    }
+}
+
+fn suggested_public_host(provided: Option<String>) -> String {
+    if let Some(value) = provided.filter(|value| !value.trim().is_empty()) {
+        return value;
+    }
+    hostname::get()
+        .ok()
+        .and_then(|value| value.into_string().ok())
+        .map(|value| value.trim().to_owned())
+        .and_then(|value| canonical_host(&value).ok())
+        .filter(|value| {
+            !matches!(
+                value.as_str(),
+                "localhost" | "localhost.localdomain" | "localhost4" | "localhost6"
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn default_data_dir() -> PathBuf {
@@ -319,6 +354,7 @@ fn default_recovery_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::validate_database_url_structure;
 
     #[test]
     fn validators_reject_urls_in_host_and_non_postgres_database() {
@@ -326,9 +362,18 @@ mod tests {
         assert!(validate_host("centrald.example").is_ok());
         assert!(validate_database_url("https://centrald.example").is_err());
         assert!(
-            validate_database_url("postgresql://centrald:secret@127.0.0.1:5432/centrald").is_ok()
+            validate_database_url_structure("postgresql://centrald:secret@127.0.0.1:5432/centrald")
+                .is_ok()
         );
         assert!(validate_name("").is_err());
+        assert_eq!(
+            suggested_public_host(Some("centrald.home.arpa".into())),
+            "centrald.home.arpa"
+        );
+        assert_eq!(
+            suggested_public_host(Some(String::new())),
+            suggested_public_host(None)
+        );
     }
 
     #[test]

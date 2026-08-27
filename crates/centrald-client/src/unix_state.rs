@@ -42,6 +42,7 @@ struct StateHandles {
 /// Reads the authoritative active configuration through fixed-root, no-follow
 /// descriptors. This is used by privileged repair so an untrusted pathname is
 /// never opened as root after a separate validation step.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub(crate) fn load_active_configuration(
     data_dir: &Path,
     service_ids: (u32, u32),
@@ -68,6 +69,7 @@ pub(crate) fn load_active_configuration(
 /// Creates and publishes one enrollment generation entirely relative to open,
 /// no-follow directory descriptors. The configuration file is created last,
 /// after every credential file and containing directory has been synchronized.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_enrollment_generation(
     data_dir: &Path,
     identity_id: Uuid,
@@ -301,6 +303,7 @@ pub(crate) fn secure_lock(lock_path: &Path, service_ids: (u32, u32)) -> Result<(
     )
 }
 
+#[allow(clippy::similar_names)]
 fn open_state(data_dir: &Path, service_ids: (u32, u32)) -> Result<StateHandles> {
     if data_dir != Path::new(DATA_ROOT) {
         bail!("Unix client state must use the fixed packaged data root");
@@ -563,6 +566,7 @@ fn remove_at_if_present(parent: &OwnedFd, name: &str, flags: AtFlags) -> Result<
     }
 }
 
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn validate_configuration_filename(filename: &str) -> Result<()> {
     let pointer = matches!(
         filename,

@@ -1317,8 +1317,11 @@ test("advanced PostgreSQL URLs cannot override connection identity or downgrade 
   assert.match(db, /sslmode\.as_deref\(\) != Some\("verify-full"\)/);
   assert.match(db, /parsed\.port\(\)\.is_none\(\)/);
   assert.match(db, /reject_ambient_postgres_environment/);
+  assert.match(db, /validate_database_url_structure\(value\)\?;/);
   assert.match(wizard, /validate_database_url_policy/);
   assert.match(manage, /validate_database_url_policy/);
+  assert.match(wizard, /DatabaseAdminError::UnsafeEnvironment/);
+  assert.match(manage, /DatabaseAdminError::UnsafeEnvironment/);
 });
 
 test("runtime database credentials come only from the protected instance file", async () => {
@@ -1370,6 +1373,22 @@ test("package upgrades restart only already-active CentralD services", async () 
   assert.match(packaging, /systemctl try-restart centrald-client\.service/);
   assert.doesNotMatch(packaging, /systemctl enable centrald-broker/);
   assert.match(packaging, /"coreutils"/);
+  assert.match(
+    packaging,
+    /CentralD server is installed\. Next: sudo centrald-server initial-setup/,
+  );
+  assert.match(
+    packaging,
+    /CentralD client is installed\. Next: sudo centrald-client enroll/,
+  );
+});
+
+test("CI Linux package smoke installs clang for bindgen", async () => {
+  const ci = await read(".github/workflows/ci.yml");
+  const job =
+    /linux-package-smoke:[\s\S]*?(?=\n {2}windows:|$)/.exec(ci)?.[0] ?? "";
+  assert.match(job, /libclang-dev/);
+  assert.match(job, /libpam0g-dev/);
 });
 
 test("packaged first-start systemd command has an execution deadline", async () => {
@@ -1556,4 +1575,15 @@ test("audit findings stay closed: grant key, broker first frame, Hello, redirect
     await read("crates/centrald-server/src/db.rs"),
     /PGCHANNELBINDING/,
   );
+});
+
+test("broker ledger opens no-follow and stays root-owned outside tests", async () => {
+  const ledger = await read("crates/centrald-client/src/ledger.rs");
+  assert.match(ledger, /fn apply_unix_nofollow/);
+  assert.match(ledger, /O_NOFOLLOW \| O_CLOEXEC/);
+  assert.match(ledger, /O_DIRECTORY/);
+  assert.match(ledger, /cfg!\(test\)/);
+  assert.match(ledger, /rustix::process::geteuid\(\)\.as_raw\(\)/);
+  assert.match(ledger, /metadata\.mode\(\) & 0o022 != 0/);
+  assert.match(ledger, /append_refuses_a_symbolic_link_ledger/);
 });

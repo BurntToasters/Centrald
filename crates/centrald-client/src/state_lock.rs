@@ -63,6 +63,7 @@ impl Drop for ClientStateLock {
 /// On Unix the lock inode lives directly below root-owned `/var/lib`, outside
 /// the service-writable client state tree.
 #[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn state_lock_path() -> Result<PathBuf> {
     Ok(PathBuf::from("/var/lib/centrald-client.lock"))
 }

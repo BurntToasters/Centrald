@@ -31,18 +31,21 @@ server directly to the public Internet.
 For the normal packaged Ubuntu Server install, the entire first-run path is:
 
 ```text
+sudo apt install ./centrald-server_*.deb
 sudo centrald-server initial-setup
-sudo centrald-server config
+# paste the one-time Admin access key into CentralD Admin → Add server
 # on each managed Linux device
+sudo apt install ./centrald-client_*.deb
 sudo centrald-client enroll
 ```
 
 `initial-setup` creates the database, PKI, and first Admin access key. On a
 normal systemd package installation it also enables and starts
-`centrald-server.service`. The TUI puts routine enrollment and health tasks
-first; network, database, PKI, and storage controls remain available under
-clearly marked advanced menus. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md)
-for the novice walkthrough.
+`centrald-server.service`. You do not need the local server console before the
+first Admin enroll; create later client invitations from Admin. Use
+`sudo centrald-server config` for health, extra invitations, and advanced
+local-only trust tasks. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the
+novice walkthrough.
 
 ## End-to-end setup
 

@@ -657,10 +657,10 @@ export function App() {
             <p className="eyebrow">One-paste onboarding</p>
             <h2>No server profile</h2>
             <p>
-              After <code>centrald-server initial-setup</code> (or{" "}
-              <code>centrald-server config</code>), paste the one-time Admin
-              access key here. CentralD establishes trust and generates the
-              Admin certificate locally.
+              After <code>centrald-server initial-setup</code>, paste the
+              one-time Admin access key here. CentralD establishes trust and
+              generates the Admin certificate locally. The server-local console
+              is optional after this first enroll.
             </p>
             <button
               className="button primary"
@@ -1025,8 +1025,8 @@ function GettingStarted() {
         <div>
           <strong>1. Add this server</strong>
           <span>
-            Paste the Admin access key from <code>initial-setup</code> or{" "}
-            <code>centrald-server config</code> into Add server.
+            Paste the Admin access key from <code>initial-setup</code> into Add
+            server. Extra Admin keys stay server-local.
           </span>
         </div>
         <div>

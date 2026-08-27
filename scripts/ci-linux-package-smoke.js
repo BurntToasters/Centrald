@@ -7,7 +7,9 @@ import { run } from "./command.js";
 /**
  * Builds Linux server/client binaries, packs .deb files, installs them, and
  * verifies unit files and binaries landed with the expected hardening markers.
- * Intended for CI on Ubuntu runners (requires dpkg).
+ * Intended for CI on Ubuntu runners (requires apt/dpkg). The install step
+ * uses `apt-get install` on the built .deb files so PostgreSQL is pulled in
+ * the same way as `sudo apt install ./centrald-server_*.deb`.
  */
 const root = process.cwd();
 const targetDir = path.join(root, "target", "debug");
@@ -47,7 +49,7 @@ for (const artifact of [serverDeb, clientDeb]) {
   }
 }
 
-run("sudo", ["dpkg", "-i", serverDeb, clientDeb]);
+run("sudo", ["apt-get", "install", "-y", serverDeb, clientDeb]);
 
 const requiredFiles = [
   "/usr/bin/centrald-server",

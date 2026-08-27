@@ -1390,6 +1390,7 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   assert.match(job, /libclang-dev/);
   assert.match(job, /libpam0g-dev/);
   const smoke = await read("scripts/ci-linux-package-smoke.js");
+  assert.match(smoke, /\["apt-get", "install", "-y"/);
   assert.match(smoke, /centrald-server", \["--help"\]/);
   assert.match(smoke, /initial-setup/);
   assert.match(smoke, /enroll-client/);

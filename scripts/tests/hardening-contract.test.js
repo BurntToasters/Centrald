@@ -1400,7 +1400,10 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   assert.match(smoke, /privileged-broker/);
   assert.match(smoke, /dpkg-query", \["-W", "postgresql"\]/);
   assert.match(smoke, /"--non-interactive"/);
-  assert.match(smoke, /sudo", \["test", "-f", "\/etc\/centrald\/server\.toml"\]/);
+  assert.match(
+    smoke,
+    /sudo", \["test", "-f", "\/etc\/centrald\/server\.toml"\]/,
+  );
   assert.match(smoke, /READY:/);
   assert.match(smoke, /journalctl/);
 });

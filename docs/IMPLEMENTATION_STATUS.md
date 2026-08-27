@@ -41,6 +41,9 @@ until their gates flip with acceptance tests.
 - Point-of-use secure reads for root private/public server material use
   no-follow opened-descriptor validation (`O_NOFOLLOW` + `fstat`) rather than
   check-then-pathname reads. Packaged listener ports must be 1024-65535.
+  Server, client, and Admin install rustls `ring` as the process-level
+  `CryptoProvider` at startup so tonic `tls-ring` plus reqwest's aws-lc-rs
+  feature cannot panic packaged `run` on outbound HTTPS.
 - Client/Admin local key generation, pinned-TLS enrollment, pending identity and
   certificate activation after durable local publication, automatic renewal
   before expiry, per-profile Admin renewal locking, and fixed crash-recoverable

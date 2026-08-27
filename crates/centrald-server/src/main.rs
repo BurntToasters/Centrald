@@ -36,6 +36,7 @@ const ADMIN_MAX_MESSAGE_BYTES: usize = 512 * 1024;
 #[tokio::main]
 #[allow(clippy::large_futures)]
 async fn main() -> Result<()> {
+    centrald_common::https::install_rustls_crypto_provider();
     let cli = ServerCli::parse();
     if cli.no_color {
         console::set_colors_enabled(false);

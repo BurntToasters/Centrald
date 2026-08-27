@@ -30,6 +30,7 @@ fn runtime_info() -> RuntimeInfo {
 /// Returns a Tauri runtime error if application initialization or the window
 /// event loop cannot start.
 pub fn run() -> tauri::Result<()> {
+    centrald_common::https::install_rustls_crypto_provider();
     tauri::Builder::default()
         .manage(shell::ShellSessions::default())
         .setup(|app| {

@@ -71,6 +71,11 @@ for (const [source, text, label] of [
   [serverMain, "READY:", "setup success only when daemon is healthy"],
   [
     serverMain,
+    "install_rustls_crypto_provider",
+    "server installs rustls crypto provider before listeners",
+  ],
+  [
+    serverMain,
     "INCOMPLETE:",
     "setup incomplete when service fails to become healthy",
   ],

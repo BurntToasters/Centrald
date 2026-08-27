@@ -774,6 +774,7 @@ dependencies = [
  "fs2",
  "hex",
  "rand 0.9.5",
+ "rustls",
  "secrecy",
  "semver",
  "serde",

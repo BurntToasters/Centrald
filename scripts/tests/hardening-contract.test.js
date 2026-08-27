@@ -1594,6 +1594,23 @@ test("audit findings stay closed: grant key, broker first frame, Hello, redirect
   );
 });
 
+test("outbound rustls uses an explicit ring CryptoProvider", async () => {
+  const [https, serverMain, clientMain, adminLib, workspace] =
+    await Promise.all([
+      read("crates/centrald-common/src/https.rs"),
+      read("crates/centrald-server/src/main.rs"),
+      read("crates/centrald-client/src/main.rs"),
+      read("apps/admin/src-tauri/src/lib.rs"),
+      read("Cargo.toml"),
+    ]);
+  assert.match(https, /fn install_rustls_crypto_provider/);
+  assert.match(https, /ring::default_provider\(\)\.install_default\(\)/);
+  assert.match(serverMain, /install_rustls_crypto_provider/);
+  assert.match(clientMain, /install_rustls_crypto_provider/);
+  assert.match(adminLib, /install_rustls_crypto_provider/);
+  assert.match(workspace, /tls-ring/);
+});
+
 test("broker ledger opens no-follow and stays root-owned outside tests", async () => {
   const ledger = await read("crates/centrald-client/src/ledger.rs");
   assert.match(ledger, /fn apply_unix_nofollow/);

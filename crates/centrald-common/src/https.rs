@@ -1,5 +1,15 @@
 use url::{Host, Url};
 
+/// Selects the process-level rustls `CryptoProvider`.
+///
+/// `tonic` is built with `tls-ring` while reqwest's `rustls` feature also
+/// enables `aws-lc-rs`. rustls 0.23 panics on outbound HTTPS when both providers
+/// are linked and none is installed. Ring matches the listener stack and does
+/// not require executable memory, which packaged systemd units deny.
+pub fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Returns an error when `next` is not HTTPS or names a non-public IP literal.
 ///
 /// Cross-origin HTTPS redirects to public hostnames stay allowed (GitHub
@@ -75,6 +85,8 @@ mod tests {
 
     #[test]
     fn allows_public_https_hosts() {
+        install_rustls_crypto_provider();
+        install_rustls_crypto_provider();
         assert!(https_redirect_is_allowed(&Url::parse("https://github.com/x").unwrap()).is_ok());
         assert!(
             https_redirect_is_allowed(

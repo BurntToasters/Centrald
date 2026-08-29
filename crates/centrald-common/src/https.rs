@@ -10,16 +10,18 @@ pub fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Returns an error when `next` is not HTTPS or names a non-public IP literal.
+/// Returns an error when `next` is not HTTPS or names a non-public IP.
 ///
 /// Cross-origin HTTPS redirects to public hostnames stay allowed (GitHub
 /// Releases uses them). Literal loopback, link-local, and RFC1918/ULA addresses
 /// are refused so an open-redirecting feed cannot SSRF internal HTTPS.
+/// Hostnames are resolved and **every** returned address is checked, including
+/// IPv4-mapped IPv6; resolution failure or an empty answer fails closed.
 ///
 /// # Errors
 ///
 /// Returns a static reason when the scheme is not HTTPS or the host is a
-/// non-public IP literal.
+/// non-public IP literal or resolves to one.
 pub fn https_redirect_is_allowed(next: &Url) -> Result<(), &'static str> {
     if next.scheme() != "https" {
         return Err("refusing non-HTTPS redirect");
@@ -32,50 +34,50 @@ pub fn https_redirect_is_allowed(next: &Url) -> Result<(), &'static str> {
 
 fn host_is_non_public_literal(url: &Url) -> bool {
     match url.host() {
-        Some(Host::Ipv4(ip)) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-        }
-        Some(Host::Ipv6(ip)) => {
-            ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_unspecified()
-        }
+        Some(Host::Ipv4(ip)) => ipv4_is_non_public(ip),
+        Some(Host::Ipv6(ip)) => ip_is_non_public(std::net::IpAddr::V6(ip)),
         Some(Host::Domain(domain)) => {
             let port = url.port_or_known_default().unwrap_or(443);
-            if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(domain, port)) {
-                #[allow(clippy::collapsible_if)]
-                if let Some(ip) = addrs.next().map(|addr| addr.ip()) {
-                    if ip.is_loopback() || ip.is_unspecified() {
-                        return true;
-                    }
-                    match ip {
-                        std::net::IpAddr::V4(ipv4) => {
-                            if ipv4.is_private()
-                                || ipv4.is_link_local()
-                                || ipv4.is_broadcast()
-                                || ipv4.is_documentation()
-                            {
-                                return true;
-                            }
-                        }
-                        std::net::IpAddr::V6(ipv6) => {
-                            if ipv6.is_unique_local() || ipv6.is_unicast_link_local() {
-                                return true;
-                            }
+            match std::net::ToSocketAddrs::to_socket_addrs(&(domain, port)) {
+                Ok(addrs) => {
+                    let mut saw_address = false;
+                    for addr in addrs {
+                        saw_address = true;
+                        if ip_is_non_public(addr.ip()) {
+                            return true;
                         }
                     }
+                    !saw_address
                 }
+                Err(_) => true,
             }
-            false
         }
         None => true,
     }
+}
+
+fn ip_is_non_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => ipv4_is_non_public(ipv4),
+        std::net::IpAddr::V6(ipv6) => {
+            if let Some(mapped) = ipv6.to_ipv4_mapped() {
+                return ipv4_is_non_public(mapped);
+            }
+            ipv6.is_loopback()
+                || ipv6.is_unique_local()
+                || ipv6.is_unicast_link_local()
+                || ipv6.is_unspecified()
+        }
+    }
+}
+
+fn ipv4_is_non_public(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
 }
 
 #[cfg(test)]
@@ -108,5 +110,26 @@ mod tests {
                 .is_err()
         );
         assert!(https_redirect_is_allowed(&Url::parse("https://192.0.2.1/x").unwrap()).is_err());
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:127.0.0.1]/x").unwrap())
+                .is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:10.0.0.1]/x").unwrap()).is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:169.254.169.254]/x").unwrap())
+                .is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:192.0.2.1]/x").unwrap())
+                .is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(
+                &Url::parse("https://this-name-must-not-resolve.invalid/x").unwrap()
+            )
+            .is_err()
+        );
     }
 }

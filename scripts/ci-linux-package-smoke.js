@@ -81,6 +81,8 @@ const requiredFiles = [
   "/lib/systemd/system/centrald-server.service",
   "/lib/systemd/system/centrald-client.service",
   "/lib/systemd/system/centrald-broker.service",
+  "/usr/lib/tmpfiles.d/centrald-server.conf",
+  "/usr/lib/tmpfiles.d/centrald-client.conf",
 ];
 for (const file of requiredFiles) {
   if (!fs.existsSync(file)) {
@@ -92,17 +94,25 @@ const clientUnit = fs.readFileSync(
   "/lib/systemd/system/centrald-client.service",
   "utf8",
 );
-if (!clientUnit.includes("RuntimeDirectory=centrald")) {
-  throw new Error("client unit missing RuntimeDirectory=centrald");
+if (clientUnit.includes("RuntimeDirectory=centrald")) {
+  throw new Error(
+    "client unit must not own shared /run/centrald via RuntimeDirectory",
+  );
 }
-if (!clientUnit.includes("RuntimeDirectoryMode=0755")) {
-  throw new Error("client unit missing RuntimeDirectoryMode=0755");
+if (
+  !clientUnit.includes("ReadWritePaths=") ||
+  !clientUnit.includes("/run/centrald")
+) {
+  throw new Error("client unit missing ReadWritePaths=/run/centrald");
 }
 
 const serverUnit = fs.readFileSync(
   "/lib/systemd/system/centrald-server.service",
   "utf8",
 );
+if (!serverUnit.includes("RuntimeDirectory=centrald")) {
+  throw new Error("server unit missing RuntimeDirectory=centrald");
+}
 if (!/^User=root$/m.test(serverUnit)) {
   throw new Error("server unit must run as root in this release");
 }

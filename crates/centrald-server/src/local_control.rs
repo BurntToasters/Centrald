@@ -283,6 +283,9 @@ pub fn acquire_server_lock(socket_path: &Path) -> Result<ServerLock> {
         if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != 0 {
             bail!("local control socket parent must be a root-owned real directory");
         }
+        if metadata.mode() & 0o022 != 0 {
+            bail!("local control socket parent must not be group- or world-writable");
+        }
     } else {
         std::fs::create_dir(parent)
             .with_context(|| format!("create local socket directory {}", parent.display()))?;

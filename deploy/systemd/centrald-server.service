@@ -13,9 +13,9 @@ ExecStart=/usr/bin/centrald-server --config /etc/centrald/server.toml run
 Restart=on-failure
 RestartSec=5s
 RuntimeDirectory=centrald
-# /run/centrald is shared with the broker and the unprivileged client daemon;
-# the server socket itself is mode 0600, so the world-readable directory does
-# not expose it.
+# /run/centrald is shared with the broker and the unprivileged client daemon
+# (tmpfiles.d also creates it as root:root 0755). The server socket itself is
+# mode 0600, so the world-readable directory does not expose it.
 RuntimeDirectoryMode=0755
 UMask=0077
 NoNewPrivileges=true

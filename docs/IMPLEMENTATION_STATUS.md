@@ -43,7 +43,11 @@ until their gates flip with acceptance tests.
   check-then-pathname reads. Packaged listener ports must be 1024-65535. Server,
   client, and Admin install rustls `ring` as the process-level `CryptoProvider`
   at startup so tonic `tls-ring` plus reqwest's aws-lc-rs feature cannot panic
-  packaged `run` on outbound HTTPS.
+  packaged `run` on outbound HTTPS. HTTPS redirect policy also refuses
+  IPv4-mapped IPv6 literals and fails closed when a redirect hostname is
+  unresolvable or any resolved address is non-public. Packaged `/run/centrald`
+  is created as `root:root` `0755` by `tmpfiles.d`; the unprivileged client unit
+  does not own that directory through `RuntimeDirectory=`.
 - Client/Admin local key generation, pinned-TLS enrollment, pending identity and
   certificate activation after durable local publication, automatic renewal
   before expiry, per-profile Admin renewal locking, and fixed crash-recoverable
@@ -87,16 +91,17 @@ until their gates flip with acceptance tests.
 - Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
   AppImage/NSIS build paths, locked dependencies, immutable version publishing,
   manifests, Tauri signatures, and Minisign metadata.
-- One-command release orchestration: `npm run release` builds every platform a
-  Windows or Linux host can produce (Windows hosts build Windows targets with
-  the host toolchain and Linux targets in Docker; `--all-docker` opts into the
-  Docker Windows-engine path), signs the Linux AppImage and Windows NSIS
-  installers on the host with the Tauri signer, and with
+- One-command release orchestration: `npm run release` builds every platform the
+  Windows release host can produce (Windows targets with the host toolchain and
+  Linux targets in Docker; `--all-docker` opts into the Docker Windows-engine
+  path). Linux hosts fail closed; use `npm run build:linux:x64:native` only for
+  disposable VM-test packages. The flow signs the Linux AppImage and Windows
+  NSIS installers on the host with the Tauri signer, and with
   `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<version>` tag and
   publishes. The host and both builder images refresh to the latest stable Rust
   (`rustup update stable`). A `release:bump` helper keeps `package.json`, the
-  workspace `Cargo.toml`, and `tauri.conf.json` in lockstep; `.env.example`
-  documents all release secrets.
+  workspace `Cargo.toml`, `tauri.conf.json`, and `Cargo.lock` in lockstep;
+  `.env.example` documents all release secrets.
 
 ## Deliberately gated
 

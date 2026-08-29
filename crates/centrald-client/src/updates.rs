@@ -618,6 +618,9 @@ fn is_windows_device_name(name: &str) -> bool {
         || stem == "COM7"
         || stem == "COM8"
         || stem == "COM9"
+        || stem == "COM\u{00B9}"
+        || stem == "COM\u{00B2}"
+        || stem == "COM\u{00B3}"
         || stem == "LPT1"
         || stem == "LPT2"
         || stem == "LPT3"
@@ -627,6 +630,9 @@ fn is_windows_device_name(name: &str) -> bool {
         || stem == "LPT7"
         || stem == "LPT8"
         || stem == "LPT9"
+        || stem == "LPT\u{00B9}"
+        || stem == "LPT\u{00B2}"
+        || stem == "LPT\u{00B3}"
 }
 
 fn staging_dir() -> Result<PathBuf> {
@@ -770,6 +776,8 @@ mod tests {
             "file.txt:$DATA",
             "foo/CON.txt",
             "CON",
+            "COM\u{00B9}",
+            "LPT\u{00B2}.txt",
             "dir/file ",
             "dir/file.",
             "",

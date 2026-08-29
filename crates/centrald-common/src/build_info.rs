@@ -67,11 +67,12 @@ pub fn manifest_url_for_channel(channel: &str) -> String {
         return String::new();
     }
     let repo = REPO_URL.trim_end_matches('/');
-    if let Some(rest) = repo.strip_prefix("https://github.com/") {
+    if let Some((owner, repository)) = github_owner_repository(repo) {
         if channel == "stable" {
-            return format!("{repo}/releases/latest/download/{RELEASE_MANIFEST}");
+            return format!(
+                "https://github.com/{owner}/{repository}/releases/latest/download/{RELEASE_MANIFEST}"
+            );
         }
-        let (owner, repository) = rest.split_once('/').unwrap_or(("", rest));
         return format!(
             "https://raw.githubusercontent.com/{owner}/{repository}/centrald-channels/channels/{channel}/latest/{RELEASE_MANIFEST}"
         );
@@ -81,4 +82,17 @@ pub fn manifest_url_for_channel(channel: &str) -> String {
     } else {
         format!("{repo}/{channel}/latest/{RELEASE_MANIFEST}")
     }
+}
+
+fn github_owner_repository(repo_url: &str) -> Option<(&str, &str)> {
+    let rest = repo_url.strip_prefix("https://")?;
+    if rest.len() < 11 || !rest[..11].eq_ignore_ascii_case("github.com/") {
+        return None;
+    }
+    let repository = &rest[11..];
+    let (owner, name) = repository.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((owner, name))
 }

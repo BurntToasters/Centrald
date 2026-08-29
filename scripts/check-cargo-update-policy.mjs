@@ -65,9 +65,9 @@ export const EXCLUDED_FILES = new Set([
   "scripts/cargo-safe-update.test.mjs",
   "scripts/check-cargo-update-policy.mjs",
   "scripts/check-cargo-update-policy.test.mjs",
-  // bump-version.js calls cargo generate-lockfile then runs validateCandidate()
-  // from cargo-safe-update.mjs before accepting any newly selected packages.
-  // It is approved automation with its own internal 72-hour policy enforcement.
+  // bump-version.js rewrites workspace package versions then runs
+  // `cargo update --workspace --offline` so Cargo.lock matches without
+  // re-resolving registry crates (generate-lockfile would pull young versions).
   "scripts/bump-version.js",
 ]);
 

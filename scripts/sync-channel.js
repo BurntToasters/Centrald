@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { commandExists, run } from "./command.js";
 import { loadBuildConfig } from "./lib/build-config.js";
+import { assertManifestChannel } from "./lib/channel-manifest.js";
 
 // Uploads the signed channel manifests to the S3-compatible CDN bucket
 // (DigitalOcean Spaces or any S3 endpoint) so binaries that bake
@@ -18,8 +20,8 @@ import { loadBuildConfig } from "./lib/build-config.js";
 //   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (read by the aws CLI)
 
 const root = process.cwd();
-const args = process.argv.slice(2);
-const channel = parseChannelArgument(args);
+const options = parseArguments(process.argv.slice(2));
+const channel = options.channel;
 const config = loadBuildConfig(root, { releaseChannel: channel });
 const releaseChannel = channel || config.releaseChannel;
 if (!releaseChannel) {
@@ -57,13 +59,26 @@ if (!commandExists("aws", ["--version"])) {
     "The aws CLI is required for CDN sync. Install it with: winget install Amazon.AWSCli",
   );
 }
+if (!config.minisignPublicKey) {
+  throw new Error(
+    "centrald.config must contain MINISIGN_PUBLIC_KEY before CDN sync.",
+  );
+}
+if (!commandExists("minisign", ["-v"])) {
+  throw new Error(
+    "minisign is required to verify channel manifests before CDN sync.",
+  );
+}
 
+const sourceDirectory = options.fromDir
+  ? path.resolve(root, options.fromDir)
+  : path.join(root, "release");
 const files = [
   config.releaseManifest,
   `${config.releaseManifest}.minisig`,
   config.tauriUpdateManifest,
   `${config.tauriUpdateManifest}.minisig`,
-].map((name) => path.join(root, "release", name));
+].map((name) => path.join(sourceDirectory, name));
 for (const file of files) {
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
     throw new Error(`Missing release manifest file ${file}`);
@@ -72,6 +87,12 @@ for (const file of files) {
     throw new Error(`Refusing symbolic-link release manifest ${file}`);
   }
 }
+
+verifyManifestSignatures(files);
+assertManifestChannel(
+  fs.readFileSync(path.join(sourceDirectory, config.releaseManifest), "utf8"),
+  releaseChannel,
+);
 
 console.log(
   `Syncing ${releaseChannel} channel manifests to s3://${bucket}/${releaseChannel}/...`,
@@ -94,14 +115,41 @@ console.log(
   `Synced ${files.length} ${releaseChannel} channel manifests to ${config.cdnBaseUrl}/${releaseChannel}/`,
 );
 
-function parseChannelArgument(args) {
+function parseArguments(args) {
+  const result = { channel: "", fromDir: "" };
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== "--channel") continue;
-    const value = args[index + 1];
-    if (!value || value.startsWith("--")) {
-      throw new Error("--channel requires a value");
+    const argument = args[index];
+    if (argument === "--channel") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--channel requires a value");
+      }
+      if (result.channel)
+        throw new Error("--channel may be provided only once");
+      result.channel = value;
+    } else if (argument === "--from-dir") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--from-dir requires a value");
+      }
+      if (result.fromDir)
+        throw new Error("--from-dir may be provided only once");
+      result.fromDir = value;
+    } else {
+      throw new Error(`Unknown argument ${argument}`);
     }
-    return value;
   }
-  return "";
+  return result;
+}
+
+function verifyManifestSignatures(allFiles) {
+  for (const file of allFiles) {
+    if (file.endsWith(".minisig")) continue;
+    const signature = `${file}.minisig`;
+    execFileSync(
+      "minisign",
+      ["-V", "-P", config.minisignPublicKey, "-m", file, "-x", signature],
+      { stdio: "inherit" },
+    );
+  }
 }

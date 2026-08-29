@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
 import { parseSemver } from "./lib/release-metadata.js";
-import { selectedPackages, validateCandidate } from "./cargo-safe-update.mjs";
+import { selectedPackages } from "./cargo-safe-update.mjs";
 
 const root = process.cwd();
 const candidate = process.argv[2];
@@ -25,6 +25,7 @@ function readSelectedCargoPackages() {
   const metadata = JSON.parse(
     execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], {
       encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
     }),
   );
@@ -83,6 +84,12 @@ packageJson.version = nextVersion;
 tauri.version = nextVersion;
 const nextCargo = cargo.replace(workspacePackageRegex, `$1"${nextVersion}"`);
 
+// Capture locked metadata before rewriting Cargo.toml. `cargo metadata
+// --locked` fails once the workspace version no longer matches Cargo.lock.
+const lockPath = path.join(root, "Cargo.lock");
+const originalLock = fs.existsSync(lockPath) ? fs.readFileSync(lockPath) : null;
+const baseline = originalLock ? readSelectedCargoPackages() : null;
+
 fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`, {
   encoding: "utf8",
   mode: 0o644,
@@ -96,20 +103,20 @@ fs.writeFileSync(tauriPath, `${JSON.stringify(tauri, null, 2)}\n`, {
 // Cargo.lock pins every workspace member's version; a stale lock breaks all
 // --locked builds (CI and the release flow) until the next lock update. Skip
 // trees without a lockfile (e.g. temp-dir tests); the real repo always has one.
-const lockPath = path.join(root, "Cargo.lock");
-if (fs.existsSync(lockPath)) {
-  const originalLock = fs.readFileSync(lockPath);
+if (baseline && originalLock) {
   try {
-    // generate-lockfile re-resolves the graph, so any newly selected registry
-    // version must pass the 72-hour publish-age policy before it is accepted.
-    const baseline = readSelectedCargoPackages();
-    execFileSync("cargo", ["generate-lockfile"], {
+    // Rewrite only workspace package versions in Cargo.lock. A full lock
+    // regeneration re-resolves the graph and can pull crates younger than the
+    // 72-hour policy.
+    execFileSync("cargo", ["update", "--workspace", "--offline"], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    await validateCandidate(baseline, readSelectedCargoPackages(), {
-      allowYoung: new Set(),
-      allowGit: new Set(),
+    execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
     });
   } catch (error) {
     fs.writeFileSync(lockPath, originalLock, { encoding: "utf8", mode: 0o644 });
@@ -126,7 +133,7 @@ if (fs.existsSync(lockPath)) {
       mode: 0o644,
     });
     throw new Error(
-      "Cargo.lock failed policy validation; version files and the lockfile were restored.",
+      "Cargo.lock could not be updated for the new workspace version; version files and the lockfile were restored.",
       { cause: error },
     );
   }

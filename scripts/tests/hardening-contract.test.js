@@ -160,6 +160,8 @@ test("terminal transport never falls back to an arbitrary command runner", async
   assert.match(broker, /MAX_CONCURRENT_SESSIONS/);
   assert.match(broker, /session output bound reached/);
   assert.match(broker, /session idle timeout reached/);
+  assert.match(broker, /account_password_base64", &"\[REDACTED\]"/);
+  assert.match(broker, /data_base64", &"\[REDACTED\]"/);
   assert.doesNotMatch(services, /Command::new\([^)]*sh/);
   const app = await read("apps/admin/src/App.tsx");
   assert.match(app, /const TERMINAL_FEATURE_AVAILABLE = false/);
@@ -500,10 +502,20 @@ test("one-command release builds every host platform, tags, and publishes only w
     pkg.scripts["build:all:container"],
     "node --env-file-if-exists=.env scripts/build.js --target all --container",
   );
-  // The version tag is created and pushed only when publishing is explicitly
-  // requested; a plain run stops after verification.
+  // The version tag is created and pushed only after a complete local verify,
+  // and only when publishing is explicitly requested.
   assert.match(release, /createAndPushVersionTag/);
+  assert.match(release, /requireCompleteReleaseHost/);
+  assert.match(release, /envWithoutReleaseSecrets/);
+  assert.match(
+    release,
+    /config\.cdnBaseUrl && !process\.env\.CENTRALD_S3_ENDPOINT/,
+  );
   assert.match(release, /CENTRALD_RELEASE_PUBLISH === "YES"/);
+  assert.match(
+    release,
+    /verify\(\);\n {2}if \(process\.env\.CENTRALD_RELEASE_PUBLISH === "YES"\)/,
+  );
   assert.match(release, /git", \["tag", expectedTag\]/);
   assert.match(release, /git", \["push", "origin", expectedTag\]/);
   assert.match(release, /refusing to move it/);
@@ -635,15 +647,23 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
 });
 
 test("channels are baked per build and CDN manifests are mirrored to S3 after publish", async () => {
-  const [buildConfig, release, sync, build, envExample, buildRust] =
-    await Promise.all([
-      read("scripts/lib/build-config.js"),
-      read("scripts/release.js"),
-      read("scripts/sync-channel.js"),
-      read("scripts/build.js"),
-      read(".env.example"),
-      read("crates/centrald-common/build.rs"),
-    ]);
+  const [
+    buildConfig,
+    release,
+    sync,
+    build,
+    envExample,
+    buildRust,
+    releaseWorkflow,
+  ] = await Promise.all([
+    read("scripts/lib/build-config.js"),
+    read("scripts/release.js"),
+    read("scripts/sync-channel.js"),
+    read("scripts/build.js"),
+    read(".env.example"),
+    read("crates/centrald-common/build.rs"),
+    read(".github/workflows/release.yml"),
+  ]);
   // A single tree builds any channel: --channel on build/release and the
   // CENTRALD_RELEASE_CHANNEL env override beat the tracked config in both the
   // JS tooling and the Rust build script that bakes values into binaries.
@@ -680,15 +700,29 @@ test("channels are baked per build and CDN manifests are mirrored to S3 after pu
   // The S3 sync mirrors the signed manifests (not artifacts) and is the
   // automatic last publish step when the CDN is configured.
   assert.match(release, /syncChannelToCdn/);
-  assert.match(release, /if \(config\.cdnBaseUrl\) syncChannelToCdn\(\);/);
+  assert.match(release, /if \(config\.cdnBaseUrl\) syncChannelToCdn/);
+  assert.match(release, /materializeChannelEntries/);
+  assert.match(
+    release,
+    /refusing to finish publish without mirroring signed channel manifests/,
+  );
+  assert.doesNotMatch(release, /skipping the S3 mirror/);
   assert.match(sync, /CENTRALD_S3_ENDPOINT/);
   assert.match(sync, /CENTRALD_S3_BUCKET/);
   assert.match(sync, /s3",\n\s+"cp"/);
   assert.match(sync, /minisig/);
+  assert.match(sync, /--from-dir/);
+  assert.match(sync, /assertManifestChannel/);
+  assert.match(sync, /lib\/channel-manifest\.js/);
   assert.match(sync, /Amazon\.AWSCli/);
   assert.match(sync, /Refusing symbolic-link release manifest/);
   assert.match(envExample, /CENTRALD_S3_ENDPOINT/);
   assert.match(envExample, /updated\.centrald\.dev/);
+  assert.match(envExample, /# CENTRALD_MINISIGN_UNPROTECTED_KEY=YES/);
+  assert.doesNotMatch(envExample, /^CENTRALD_MINISIGN_UNPROTECTED_KEY=YES$/m);
+  assert.match(releaseWorkflow, /secrets\.CENTRALD_S3_ENDPOINT/);
+  assert.match(releaseWorkflow, /secrets\.CENTRALD_S3_BUCKET/);
+  assert.match(releaseWorkflow, /awscli/);
   // Manifests are mirrored, but artifacts stay on immutable GitHub tag URLs.
   assert.doesNotMatch(sync, /release\/artifacts/);
 });
@@ -1383,6 +1417,14 @@ test("package upgrades restart only already-active CentralD services", async () 
     packaging,
     /CentralD client is installed\. Next: sudo centrald-client enroll/,
   );
+  assert.match(packaging, /extraFiles/);
+  assert.match(packaging, /usr\/lib\/tmpfiles\.d\/centrald-server\.conf/);
+  assert.match(packaging, /usr\/lib\/tmpfiles\.d\/centrald-client\.conf/);
+  assert.match(packaging, /systemd-tmpfiles --create/);
+  assert.doesNotMatch(
+    packaging,
+    /systemd-tmpfiles --create \/usr\/lib\/tmpfiles\.d\/centrald-(?:server|client)\.conf \|\| true/,
+  );
 });
 
 test("CI Linux package smoke installs clang for bindgen", async () => {
@@ -1406,6 +1448,12 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   );
   assert.match(smoke, /READY:/);
   assert.match(smoke, /journalctl/);
+  assert.match(smoke, /tmpfiles\.d\/centrald-server\.conf/);
+  assert.match(smoke, /tmpfiles\.d\/centrald-client\.conf/);
+  assert.match(
+    smoke,
+    /client unit must not own shared \/run\/centrald via RuntimeDirectory/,
+  );
 });
 
 test("packaged first-start systemd command has an execution deadline", async () => {
@@ -1417,16 +1465,27 @@ test("packaged first-start systemd command has an execution deadline", async () 
 });
 
 test("packaged services use exec startup semantics and setup waits for server readiness", async () => {
-  const [main, serverUnit, clientUnit] = await Promise.all([
+  const [main, serverUnit, clientUnit, gitignore] = await Promise.all([
     read("crates/centrald-server/src/main.rs"),
     read("deploy/systemd/centrald-server.service"),
     read("deploy/systemd/centrald-client.service"),
+    read(".gitignore"),
   ]);
   assert.match(serverUnit, /Type=exec/);
   assert.match(clientUnit, /Type=exec/);
-  assert.match(clientUnit, /RuntimeDirectory=centrald/);
-  assert.match(clientUnit, /RuntimeDirectoryMode=0755/);
+  assert.match(serverUnit, /RuntimeDirectory=centrald/);
+  assert.match(serverUnit, /RuntimeDirectoryMode=0755/);
+  assert.doesNotMatch(clientUnit, /RuntimeDirectory=centrald/);
   assert.match(clientUnit, /ReadWritePaths=.*\/run\/centrald/);
+  assert.match(
+    await read("deploy/tmpfiles.d/centrald-client.conf"),
+    /d \/run\/centrald 0755 root root -/,
+  );
+  assert.match(
+    await read("deploy/tmpfiles.d/centrald-server.conf"),
+    /d \/run\/centrald 0755 root root -/,
+  );
+  assert.match(gitignore, /linux-schema\.json/);
   assert.match(main, /async fn try_start_packaged_service/);
   assert.match(
     main,
@@ -1578,6 +1637,7 @@ test("audit findings stay closed: grant key, broker first frame, Hello, redirect
   assert.match(auditExport, /first_sequence/);
   assert.match(localAudit, /O_NOFOLLOW/);
   assert.match(localControl, /from_mode\(0o755\)/);
+  assert.match(localControl, /metadata.mode\(\) & 0o022 != 0/);
   assert.doesNotMatch(
     localControl,
     /set_permissions\(parent, std::fs::Permissions::from_mode\(0o700\)\)/,
@@ -1605,6 +1665,10 @@ test("outbound rustls uses an explicit ring CryptoProvider", async () => {
     ]);
   assert.match(https, /fn install_rustls_crypto_provider/);
   assert.match(https, /ring::default_provider\(\)\.install_default\(\)/);
+  assert.match(https, /to_ipv4_mapped\(\)/);
+  assert.match(https, /ToSocketAddrs::to_socket_addrs/);
+  assert.doesNotMatch(https, /addrs\.next\(\)/);
+  assert.match(https, /this-name-must-not-resolve\.invalid/);
   assert.match(serverMain, /install_rustls_crypto_provider/);
   assert.match(clientMain, /install_rustls_crypto_provider/);
   assert.match(adminLib, /install_rustls_crypto_provider/);

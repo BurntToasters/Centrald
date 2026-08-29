@@ -37,7 +37,7 @@ pub const MAX_CONCURRENT_SESSIONS: usize = 8;
 const MAX_SESSION_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SESSION_OUTPUT_BYTES: u64 = 1024 * 1024 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 // The open frame carries a full signed grant; everything else is small.
 #[allow(clippy::large_enum_variant)]
@@ -69,6 +69,50 @@ pub enum SessionWireFrame {
         reason: String,
         exit_code: i32,
     },
+}
+
+impl std::fmt::Debug for SessionWireFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open {
+                account_user,
+                columns,
+                rows,
+                save_credentials,
+                ..
+            } => f
+                .debug_struct("Open")
+                .field("account_user", account_user)
+                .field("account_password_base64", &"[REDACTED]")
+                .field("columns", columns)
+                .field("rows", rows)
+                .field("save_credentials", save_credentials)
+                .finish_non_exhaustive(),
+            Self::Opened {
+                session_id,
+                warning,
+            } => f
+                .debug_struct("Opened")
+                .field("session_id", session_id)
+                .field("warning", warning)
+                .finish(),
+            Self::Error { message } => f.debug_struct("Error").field("message", message).finish(),
+            Self::Data { .. } => f
+                .debug_struct("Data")
+                .field("data_base64", &"[REDACTED]")
+                .finish(),
+            Self::Resize { columns, rows } => f
+                .debug_struct("Resize")
+                .field("columns", columns)
+                .field("rows", rows)
+                .finish(),
+            Self::Close { reason, exit_code } => f
+                .debug_struct("Close")
+                .field("reason", reason)
+                .field("exit_code", exit_code)
+                .finish(),
+        }
+    }
 }
 
 /// Parameters bound to the shell grant by the server.

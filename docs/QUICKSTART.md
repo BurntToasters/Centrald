@@ -66,6 +66,16 @@ installation it also enables and starts `centrald-server.service`.
 Move the offline-root recovery PEM off the server after setup. Keep the one-time
 Admin access key only long enough to enroll the Admin app.
 
+The Admin Linux AppImage needs a graphical session and FUSE 2:
+
+```text
+sudo apt install libfuse2t64
+chmod +x centrald-admin_*.AppImage
+./centrald-admin_*.AppImage
+```
+
+`--appimage-extract-and-run` is a diagnostic fallback when FUSE is unavailable.
+
 If setup says the service was not started, run:
 
 ```text
@@ -125,8 +135,13 @@ only the network destination. Successful Linux enrollment enables and starts the
 client service automatically.
 
 On Windows, install from an elevated PowerShell session and follow the
-installer's final next-step message, then run `centrald-client enroll` from an
-elevated terminal when the machine is not yet enrolled.
+installer's final next-step message. The installer does not add CentralD to
+`PATH`; enroll with the quoted install path when the machine is not yet
+enrolled:
+
+```text
+& "C:\Program Files\CentralD\centrald-client.exe" enroll
+```
 
 For unattended enrollment, keep the invitation out of process arguments and
 shell history. Put it in a private file and run:

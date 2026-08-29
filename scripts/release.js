@@ -53,6 +53,7 @@ if (action === "publish") publish();
 if (action === "publish-channel") publishChannelOnly();
 if (action === "sync-channel") syncChannelToCdn();
 if (action === "all") {
+  requireCompleteReleaseHost();
   prepare();
   buildAllPlatforms();
   assembleArtifacts();
@@ -63,13 +64,14 @@ if (action === "all") {
   signReleaseArtifacts();
   generateManifests();
   signReleaseArtifacts();
+  // Verify the complete signed set before creating an immutable version tag.
+  verify();
   if (process.env.CENTRALD_RELEASE_PUBLISH === "YES") {
     requirePublishEnvironment();
     createAndPushVersionTag();
     // publish() runs its own full verification before uploading.
     publish();
   } else {
-    verify();
     console.log(
       "Release artifacts are built and verified. Publishing was skipped: set CENTRALD_RELEASE_PUBLISH=YES in .env to create the version tag and publish.",
     );
@@ -104,9 +106,33 @@ function parseReleaseArguments(args) {
   return result;
 }
 
+const RELEASE_SECRET_ENV = [
+  "TAURI_SIGNING_PRIVATE_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+  "MINISIGN_SECRET_KEY_FILE",
+  "MINISIGN_SECRET_KEY_B64",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "GH_TOKEN",
+];
+
+function envWithoutReleaseSecrets() {
+  const env = { ...process.env };
+  for (const key of RELEASE_SECRET_ENV) delete env[key];
+  return env;
+}
+
+function requireCompleteReleaseHost() {
+  if (process.platform === "win32") return;
+  throw new Error(
+    "A complete CentralD release (Linux plus Windows x64/ARM64) must be built on the Windows release host. This Linux host can produce VM-test packages with `npm run build:linux:x64:native`; do not set CENTRALD_RELEASE_PUBLISH=YES here.",
+  );
+}
+
 function prepare() {
-  run("npm", ["ci"]);
-  run("npm", ["ci", "--prefix", "site"]);
+  const installEnv = envWithoutReleaseSecrets();
+  run("npm", ["ci"], { env: installEnv });
+  run("npm", ["ci", "--prefix", "site"], { env: installEnv });
   requireCleanTree();
   verifyVersionSync();
   verifyOrigin();
@@ -347,7 +373,8 @@ function publish() {
   if (config.releaseChannel !== "stable" || config.cdnBaseUrl) {
     publishMutableChannelManifests(config.releaseChannel);
   }
-  if (config.cdnBaseUrl) syncChannelToCdn();
+  if (config.cdnBaseUrl)
+    syncChannelToCdn(localChannelEntries(config.releaseChannel));
   console.log(`Published CentralD v${version}.`);
 }
 
@@ -368,7 +395,7 @@ function publishChannelOnly() {
     config.releaseChannel,
   );
   publishMutableChannelManifests(config.releaseChannel, entries);
-  if (config.cdnBaseUrl) syncChannelToCdn();
+  if (config.cdnBaseUrl) syncChannelToCdn(entries);
   console.log(
     `Published CentralD ${config.releaseChannel} channel manifests for v${version}.`,
   );
@@ -378,20 +405,38 @@ function publishChannelOnly() {
 /// bucket so binaries that bake `<CDN_BASE_URL>/<channel>` resolve their
 /// update pointers. This mirrors the GitHub channel branch (the source of
 /// truth) and is the automatic last publish step when CDN_BASE_URL is set.
-function syncChannelToCdn() {
+function syncChannelToCdn(suppliedEntries) {
   verifyVersionSync();
   if (!process.env.CENTRALD_S3_ENDPOINT?.trim()) {
-    console.warn(
-      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; " +
-        "skipping the S3 mirror. Configure the S3 environment (.env) and run " +
-        "`npm run release:sync-channel` to mirror the signed channel manifests.",
+    throw new Error(
+      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; refusing to finish publish without mirroring signed channel manifests. Set CENTRALD_S3_ENDPOINT, CENTRALD_S3_BUCKET, and AWS credentials in .env.",
     );
-    return;
   }
-  run("node", [
-    "scripts/sync-channel.js",
-    ...(channel ? ["--channel", channel] : []),
-  ]);
+  const entries = suppliedEntries ?? localChannelEntries(config.releaseChannel);
+  const temporaryRelative = `release/.cdn-sync-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
+  const temporaryDirectory = ensureGeneratedDirectory(root, temporaryRelative);
+  try {
+    materializeChannelEntries(entries, temporaryDirectory);
+    run("node", [
+      "scripts/sync-channel.js",
+      "--from-dir",
+      temporaryDirectory,
+      ...(channel ? ["--channel", channel] : []),
+    ]);
+  } finally {
+    cleanGeneratedDirectory(root, temporaryRelative);
+  }
+}
+
+function materializeChannelEntries(entries, directory) {
+  for (const entry of entries) {
+    const name = path.basename(entry.remotePath);
+    const destination = path.join(directory, name);
+    if (fs.existsSync(destination)) {
+      throw new Error(`Duplicate materialized channel file ${name}`);
+    }
+    fs.writeFileSync(destination, entry.content, { flag: "wx", mode: 0o600 });
+  }
 }
 
 function requirePublishEnvironment() {
@@ -407,6 +452,11 @@ function requirePublishEnvironment() {
   }
   if (!commandExists("gh")) {
     throw new Error("GitHub CLI (gh) is required for publishing.");
+  }
+  if (config.cdnBaseUrl && !process.env.CENTRALD_S3_ENDPOINT?.trim()) {
+    throw new Error(
+      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; refusing to finish publish without mirroring signed channel manifests. Set CENTRALD_S3_ENDPOINT, CENTRALD_S3_BUCKET, and AWS credentials in .env.",
+    );
   }
 }
 

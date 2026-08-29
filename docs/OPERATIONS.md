@@ -19,12 +19,17 @@ Default packaged listeners (all unprivileged ports 1024–65535):
 | 7444 | Client mTLS    |
 | 7445 | Admin mTLS     |
 
-Open those three TCP ports inbound on the **server** only. Clients and Admin are
-outbound-only. Example:
+`centrald-server initial-setup` opens those TCP ports (or whatever non-loopback
+listeners you later persist) with UFW, allows SSH first (`OpenSSH`, falling back
+to `22/tcp`), and enables UFW unless `CI` or `CENTRALD_SKIP_FIREWALL_ENABLE` is
+set. Enabling UFW uses Ubuntu's default deny-incoming policy; other host
+services need their own allow rules. PostgreSQL stays on `127.0.0.1:5432` and is
+never opened. Set `CENTRALD_SKIP_FIREWALL=1` to leave the host firewall
+untouched. Changing listeners in `centrald-server config` re-applies the current
+ports; use Refresh host firewall (UFW) to retry. Hypervisor and cloud security
+groups are independent of UFW.
 
-```text
-sudo ufw allow 7443/tcp && sudo ufw allow 7444/tcp && sudo ufw allow 7445/tcp
-```
+Clients and Admin are outbound-only.
 
 ## Clock / NTP
 
@@ -68,10 +73,11 @@ sudo centrald-server config
 ```
 
 On a packaged Ubuntu Server installation, `initial-setup` enables and starts
-`centrald-server.service` automatically after committing setup. Set
-`CENTRALD_SKIP_SERVICE_START=1` only for image-building or another deliberate
-advanced workflow; source/container installs print the exact manual start
-action.
+`centrald-server.service` automatically after committing setup and configures
+UFW for the LAN listeners. Set `CENTRALD_SKIP_SERVICE_START=1` only for
+image-building or another deliberate advanced workflow; source/container
+installs print the exact manual start action. Set `CENTRALD_SKIP_FIREWALL=1`
+when the host firewall is managed elsewhere.
 
 Recommended local PostgreSQL setup refuses a non-empty `/var/lib/centrald`
 directory, then writes a root-only, non-secret recovery journal there before the

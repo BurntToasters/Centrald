@@ -33,6 +33,7 @@ use crate::db::{
     validate_database_url_policy, verify_owned_database,
 };
 use crate::file_security::{read_root_private_text, read_root_public_text};
+use crate::firewall;
 use crate::local_audit;
 use crate::local_control::LocalControlClient;
 
@@ -164,6 +165,7 @@ enum MenuAction {
     ExportTrust,
     ExportAudit,
     Diagnostics,
+    RefreshFirewall,
     Exit,
 }
 
@@ -215,6 +217,7 @@ pub async fn run(config_path: &Path) -> Result<()> {
             MenuAction::ExportTrust => export_trust(&config, &theme),
             MenuAction::ExportAudit => export_audit_guided(config_path).await,
             MenuAction::Diagnostics => diagnostics(config_path, &config).await,
+            MenuAction::RefreshFirewall => refresh_host_firewall(&config),
             MenuAction::Exit => unreachable!(),
         };
         if let Err(error) = result {
@@ -333,6 +336,7 @@ fn select_action(theme: &ColorfulTheme) -> Result<MenuAction> {
         "Add a client (guided)",
         "Client invitations (list or revoke)",
         "Health, status, and next steps",
+        "Refresh host firewall (UFW)",
         "Create an Admin access key",
         "List clients",
         "List Admins",
@@ -350,6 +354,7 @@ fn select_action(theme: &ColorfulTheme) -> Result<MenuAction> {
         MenuAction::EnrollClient,
         MenuAction::ManageClientInvitations,
         MenuAction::Diagnostics,
+        MenuAction::RefreshFirewall,
         MenuAction::EnrollAdmin,
         MenuAction::ListClients,
         MenuAction::ListAdmins,
@@ -822,6 +827,8 @@ fn configure_network(
     } else {
         rotate_server_identity_and_save(config_path, config, replacement)?;
     }
+    println!();
+    firewall::apply_for_server(config).print();
     Ok(())
 }
 
@@ -2545,6 +2552,20 @@ async fn export_audit_guided(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn refresh_host_firewall(config: &ServerConfig) -> Result<()> {
+    println!();
+    println!("{}", style("Refresh host firewall (UFW)").cyan().bold());
+    println!(
+        "This allows the current enrollment, client, and Admin TCP ports and SSH, then enables UFW unless CI or CENTRALD_SKIP_FIREWALL_ENABLE is set."
+    );
+    let report = firewall::apply_for_server(config);
+    report.print();
+    if let firewall::FirewallApplyReport::Failed { detail } = report {
+        bail!("{detail}");
+    }
+    Ok(())
+}
+
 async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
     println!();
     println!("{}", style("Health, status, and next steps").cyan().bold());
@@ -2626,6 +2647,8 @@ async fn diagnostics(config_path: &Path, config: &ServerConfig) -> Result<()> {
             println!("Next step: sudo systemctl enable --now centrald-server.service");
         }
     }
+
+    println!("{}", firewall::describe_status(config));
 
     let raw = std::fs::read(config_path)?;
     let persisted_revision = hex::encode(Sha256::digest(&raw));

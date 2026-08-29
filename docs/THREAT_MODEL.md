@@ -12,7 +12,9 @@
 
 ## Assumed environment
 
-- The server is operated by a trusted root user on Ubuntu Server.
+- The server is operated by a trusted root user on Ubuntu Server. Packaged
+  first-run enables UFW for the CentralD listeners after allowing SSH;
+  hypervisor and cloud filters remain operator-owned.
 - Client/Admin invitations are delivered over a trusted out-of-band channel.
 - LAN/VPN peers are not automatically trusted; an attacker may observe, block,
   replay, redirect, or modify network traffic.

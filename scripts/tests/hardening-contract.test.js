@@ -1409,6 +1409,7 @@ test("package upgrades restart only already-active CentralD services", async () 
   assert.match(packaging, /systemctl try-restart centrald-client\.service/);
   assert.doesNotMatch(packaging, /systemctl enable centrald-broker/);
   assert.match(packaging, /"coreutils"/);
+  assert.match(packaging, /"ufw"/);
   assert.match(
     packaging,
     /CentralD server is installed\. Next: sudo centrald-server initial-setup/,
@@ -1442,6 +1443,8 @@ test("CI Linux package smoke installs clang for bindgen", async () => {
   assert.match(smoke, /privileged-broker/);
   assert.match(smoke, /dpkg-query", \["-W", "postgresql"\]/);
   assert.match(smoke, /"--non-interactive"/);
+  assert.match(smoke, /CENTRALD_SKIP_FIREWALL_ENABLE=1/);
+  assert.match(smoke, /Firewall:/);
   assert.match(
     smoke,
     /sudo", \["test", "-f", "\/etc\/centrald\/server\.toml"\]/,
@@ -1492,6 +1495,32 @@ test("packaged services use exec startup semantics and setup waits for server re
     /UnixStream::connect\(centrald_server::DEFAULT_LOCAL_SOCKET\)/,
   );
   assert.match(main, /Duration::from_secs\(60\)/);
+});
+
+test("packaged setup applies UFW with fixed paths and SSH-before-enable", async () => {
+  const [firewall, packaging, main, manage, smoke] = await Promise.all([
+    read("crates/centrald-server/src/firewall.rs"),
+    read("scripts/package-linux.js"),
+    read("crates/centrald-server/src/main.rs"),
+    read("crates/centrald-server/src/manage.rs"),
+    read("scripts/ci-linux-package-smoke.js"),
+  ]);
+  assert.match(firewall, /const UFW: &str = "\/usr\/sbin\/ufw"/);
+  assert.match(firewall, /const TIMEOUT: &str = "\/usr\/bin\/timeout"/);
+  assert.match(firewall, /\.env_clear\(\)/);
+  assert.match(firewall, /allow", "OpenSSH"/);
+  assert.match(firewall, /"--force", "enable"/);
+  assert.match(firewall, /CENTRALD_SKIP_FIREWALL/);
+  assert.match(firewall, /CENTRALD_SKIP_FIREWALL_ENABLE/);
+  assert.match(firewall, /var_os\("CI"\)/);
+  assert.doesNotMatch(firewall, /sh -c/);
+  assert.doesNotMatch(firewall, /Command::new\("ufw"\)/);
+  assert.match(packaging, /"ufw"/);
+  assert.match(main, /firewall::apply_for_server/);
+  assert.match(manage, /Refresh host firewall \(UFW\)/);
+  assert.match(manage, /firewall::apply_for_server\(config\)/);
+  assert.match(smoke, /CENTRALD_SKIP_FIREWALL_ENABLE=1/);
+  assert.match(smoke, /Firewall:/);
 });
 
 test("systemd services drop ambient Linux capabilities and restrict address families", async () => {

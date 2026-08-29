@@ -36,11 +36,14 @@ without DNS, enter the server's LAN IPv4 address (for example `192.168.1.20`).
 That value is baked into the invitation and certificates. A later connection
 override only changes where TCP goes; TLS still verifies the invitation name.
 
-Ubuntu 24.04 Server typically ships with **ufw inactive**. If you never enable
-it, QUICKSTART `ufw allow` commands are optional. If you _do_ enable ufw, open
-7443–7445 **before** `ufw enable`, and keep SSH allowed. Also check the
-hypervisor or cloud security group; it is independent of ufw. Do not expose
-PostgreSQL (`5432`) to other VMs — CentralD uses `127.0.0.1` on the server.
+Ubuntu 24.04 Server typically ships with **ufw inactive**.
+`centrald-server initial-setup` installs the needed UFW rules for the actual
+listener ports (defaults 7443–7445), allows SSH first, and enables UFW. Set
+`CENTRALD_SKIP_FIREWALL=1` only when you manage the host firewall yourself, or
+`CENTRALD_SKIP_FIREWALL_ENABLE=1` (also implied by `CI`) to install rules
+without enabling UFW. Hypervisor or cloud security groups are independent of
+ufw. Do not expose PostgreSQL (`5432`) to other VMs — CentralD uses `127.0.0.1`
+on the server.
 
 apt on 24.04 pulls **PostgreSQL 16** for the `postgresql` dependency.
 
@@ -61,7 +64,8 @@ sudo timedatectl set-ntp true
 Enrollment invitations and certificates use wall-clock expiry. Large clock skew
 looks like an expired invitation even when the token was just created.
 
-On the **server**, allow inbound TCP for the three TLS listeners (defaults):
+On the **server**, inbound TCP for the three TLS listeners (defaults below) is
+opened by `initial-setup`. Clients and Admin only make outbound connections.
 
 | Port | Listener                              |
 | ---- | ------------------------------------- |
@@ -69,18 +73,14 @@ On the **server**, allow inbound TCP for the three TLS listeners (defaults):
 | 7444 | Client mTLS                           |
 | 7445 | Admin mTLS                            |
 
-Example with `ufw` (adjust if you changed listeners in
-`centrald-server config`):
+If you skipped automatic UFW (`CENTRALD_SKIP_FIREWALL`) or use a different host
+firewall, allow those TCP ports plus SSH before enabling the firewall.
+Hypervisor and cloud security groups still need the same ports. Keep clients on
+the same LAN or VPN as the server.
 
-```text
-sudo ufw allow 7443/tcp
-sudo ufw allow 7444/tcp
-sudo ufw allow 7445/tcp
-sudo ufw reload
-```
-
-**Clients and Admin** only make outbound connections; they do not need inbound
-CentralD ports. Keep them on the same LAN or VPN as the server.
+A later listener change in `sudo centrald-server config` re-applies the UFW
+allows for the new ports. `Refresh host firewall (UFW)` repeats that without
+changing configuration.
 
 ## 1. Initialize the Ubuntu server
 
@@ -100,7 +100,8 @@ PostgreSQL setup mode, offline-root recovery location, and first Admin name
 follow. Accept the recommended local PostgreSQL option unless you already run a
 dedicated database. It creates the dedicated database, PKI, server identity, and
 one-time Admin access key. On a packaged systemd installation it also enables
-and starts `centrald-server.service`.
+and starts `centrald-server.service`, and on Ubuntu it configures UFW for the
+listener ports after allowing SSH.
 
 Move the offline-root recovery PEM off the server after setup. Keep the one-time
 Admin access key only long enough to enroll the Admin app.

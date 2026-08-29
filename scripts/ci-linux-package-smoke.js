@@ -8,10 +8,12 @@ import { run } from "./command.js";
  * Builds Linux server/client binaries, packs .deb files, installs them, and
  * verifies unit files and binaries landed with the expected hardening markers.
  * Intended for CI on Ubuntu runners (requires apt/dpkg). The install step
- * uses `apt-get install` on the built .deb files so PostgreSQL is pulled in
- * the same way as `sudo apt install ./centrald-server_*.deb`. After install it
- * runs non-interactive `initial-setup` with the recommended local PostgreSQL
- * path so the packaged first-run becomes a usable server.
+ * uses `apt-get install` on the built .deb files so PostgreSQL and UFW are
+ * pulled in the same way as `sudo apt install ./centrald-server_*.deb`. After
+ * install it runs non-interactive `initial-setup` with the recommended local
+ * PostgreSQL path so the packaged first-run becomes a usable server. UFW rules
+ * are installed but not enabled (`CENTRALD_SKIP_FIREWALL_ENABLE=1`) so the
+ * runner is not locked down.
  */
 const root = process.cwd();
 const targetDir = path.join(root, "target", "debug");
@@ -189,6 +191,7 @@ const setupLog = runCaptured("sudo", [
   "PGPASSWORD",
   "-u",
   "PGSERVICE",
+  "CENTRALD_SKIP_FIREWALL_ENABLE=1",
   "centrald-server",
   "initial-setup",
   "--non-interactive",
@@ -206,6 +209,14 @@ if (!setupLog.includes("Initial Admin access key")) {
 if (!setupLog.includes("Paste this single key into CentralD Admin")) {
   throw new Error(
     "initial-setup did not tell the operator to enroll Admin next",
+  );
+}
+if (!setupLog.includes("Firewall:")) {
+  throw new Error(`initial-setup did not report UFW setup:\n${setupLog}`);
+}
+if (!setupLog.includes("7443")) {
+  throw new Error(
+    `initial-setup firewall report omitted the enrollment port:\n${setupLog}`,
   );
 }
 if (!setupLog.includes("READY:")) {

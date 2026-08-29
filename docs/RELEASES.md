@@ -57,12 +57,14 @@ npm run setup:docker
 It installs Docker Desktop through winget when missing, starts it, verifies the
 Linux/WSL engine, and pre-pulls the Linux builder base images. Windows artifacts
 build with the host MSVC toolchain by default, so normal setup does not require
-the Windows `Containers` feature or an engine switch. Add `--yes` to also
-upgrade npm when it is older than the required 12.0.1, `--build-images` to warm
-the Linux builder image, or `--skip-images` to skip pulls. `--all-docker` opts
-into Windows-container setup: it enables/checks the Windows `Containers`
-feature, verifies both engine modes, and includes the Windows base/builder
-image. A reboot may be required once.
+the Windows `Containers` feature or an engine switch. Native Windows builds
+still need Visual Studio Build Tools with the MSVC v143 toolset for both x64 and
+ARM64 plus the Windows SDK; `setup:docker` does not install those. Add `--yes`
+to also upgrade npm when it is older than the required 12.0.1, `--build-images`
+to warm the Linux builder image, or `--skip-images` to skip pulls.
+`--all-docker` opts into Windows-container setup: it enables/checks the Windows
+`Containers` feature, verifies both engine modes, and includes the Windows
+base/builder image. A reboot may be required once.
 
 ## npm supply-chain policy
 
@@ -109,7 +111,10 @@ minisign -G -s ~/.config/centrald/minisign.key -p ~/.config/centrald/minisign.pu
 ```
 
 The public key (`RW...`) goes into `centrald.config` as `MINISIGN_PUBLIC_KEY`;
-the private key path goes into `.env` as `MINISIGN_SECRET_KEY_FILE`.
+the private key path goes into `.env` as `MINISIGN_SECRET_KEY_FILE`. Leave
+`CENTRALD_MINISIGN_UNPROTECTED_KEY` commented unless you are signing with an
+ephemeral unprotected CI key; copying `.env.example` must not enable Minisign
+`-W`.
 
 ## Artifact layout
 
@@ -156,9 +161,10 @@ already exists on `origin`, and refuses to touch a tree whose version fields
 disagree. A stale `Cargo.lock` is regenerated so `--locked` builds keep working.
 
 One command builds every platform the current host can produce, assembles the
-artifacts, signs them, generates the manifests, verifies everything, and - when
-`.env` sets both release gates to exactly `YES` - creates and pushes the
-`v<package-version>` tag, uploads the release, and publishes channel manifests:
+artifacts, signs them, generates the manifests, and verifies the complete signed
+set **before** creating an immutable `v<package-version>` tag. When `.env` sets
+both release gates to exactly `YES`, it then pushes that tag, uploads the
+release, and publishes channel manifests:
 
 ```text
 npm run release
@@ -184,7 +190,10 @@ npm run release -- --all-docker
 ```
 
 A Linux host builds the Linux x64 artifacts natively; it cannot build the
-Windows artifacts.
+Windows artifacts. `npm run release` therefore fails closed on Linux: a complete
+signed release (all seven canonical artifacts) must be produced on the Windows
+release host. Use `npm run build:linux:x64:native` on Linux only for disposable
+VM-test packages.
 
 Both container images and the host refresh to the latest stable Rust before
 building, matching the `stable` channel in `rust-toolchain.toml`:

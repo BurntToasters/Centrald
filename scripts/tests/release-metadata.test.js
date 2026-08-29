@@ -170,6 +170,25 @@ test("version bump updates package.json, Cargo.toml, and tauri.conf.json in lock
   }
 });
 
+test("version bump captures locked Cargo metadata before rewriting Cargo.toml", async () => {
+  const bumper = await readFile(
+    fileURLToPath(new URL("../bump-version.js", import.meta.url)),
+    "utf8",
+  );
+  const baseline = bumper.indexOf(
+    "const baseline = originalLock ? readSelectedCargoPackages() : null;",
+  );
+  const cargoWrite = bumper.indexOf("fs.writeFileSync(cargoPath, nextCargo");
+  assert.ok(baseline > 0, "bump-version must capture locked metadata");
+  assert.ok(
+    cargoWrite > baseline,
+    "cargo metadata --locked must run before Cargo.toml is rewritten",
+  );
+  assert.match(bumper, /maxBuffer: 64 \* 1024 \* 1024/);
+  assert.match(bumper, /update", "--workspace", "--offline"/);
+  assert.doesNotMatch(bumper, /generate-lockfile/);
+});
+
 test("version bump rejects invalid versions and unknown current versions", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "centrald-bump-reject-"));
   try {

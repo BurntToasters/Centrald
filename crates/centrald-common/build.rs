@@ -151,22 +151,10 @@ fn value(values: &BTreeMap<String, String>, key: &str, default: &str) -> String 
 
 fn default_update_base(repo_url: &str, release_channel: &str) -> String {
     let repo_url = repo_url.trim_end_matches('/');
-    if is_github(repo_url) {
+    if let Some((owner, repository)) = github_owner_repository(repo_url) {
         if release_channel == "stable" {
-            format!("{repo_url}/releases/latest/download")
+            format!("https://github.com/{owner}/{repository}/releases/latest/download")
         } else {
-            let repository = repo_url
-                .strip_prefix("https://github.com/")
-                .unwrap_or_else(|| {
-                    panic!("GitHub REPO_URL must use https://github.com/owner/repository")
-                });
-            let mut pieces = repository.split('/');
-            let owner = pieces.next().unwrap_or_default();
-            let repository = pieces.next().unwrap_or_default();
-            assert!(
-                !owner.is_empty() && !repository.is_empty() && pieces.next().is_none(),
-                "GitHub REPO_URL must contain exactly owner/repository"
-            );
             format!(
                 "https://raw.githubusercontent.com/{owner}/{repository}/centrald-channels/channels/{release_channel}/latest"
             )
@@ -188,9 +176,20 @@ fn default_artifact_template(repo_url: &str) -> String {
 }
 
 fn is_github(value: &str) -> bool {
-    value
-        .strip_prefix("https://")
-        .is_some_and(|rest| rest.to_ascii_lowercase().starts_with("github.com/"))
+    github_owner_repository(value.trim_end_matches('/')).is_some()
+}
+
+fn github_owner_repository(repo_url: &str) -> Option<(&str, &str)> {
+    let rest = repo_url.strip_prefix("https://")?;
+    if rest.len() < 11 || !rest[..11].eq_ignore_ascii_case("github.com/") {
+        return None;
+    }
+    let repository = &rest[11..];
+    let (owner, name) = repository.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some((owner, name))
 }
 
 fn validate_https_base(value: &str, key: &str) {

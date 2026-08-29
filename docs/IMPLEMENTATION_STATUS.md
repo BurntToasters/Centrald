@@ -43,7 +43,10 @@ until their gates flip with acceptance tests.
   check-then-pathname reads. Packaged listener ports must be 1024-65535. Server,
   client, and Admin install rustls `ring` as the process-level `CryptoProvider`
   at startup so tonic `tls-ring` plus reqwest's aws-lc-rs feature cannot panic
-  packaged `run` on outbound HTTPS.
+  packaged `run` on outbound HTTPS. HTTPS redirect policy also refuses
+  IPv4-mapped IPv6 literals. Packaged `/run/centrald` is created as `root:root`
+  `0755` by `tmpfiles.d`; the unprivileged client unit does not own that
+  directory through `RuntimeDirectory=`.
 - Client/Admin local key generation, pinned-TLS enrollment, pending identity and
   certificate activation after durable local publication, automatic renewal
   before expiry, per-profile Admin renewal locking, and fixed crash-recoverable

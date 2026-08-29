@@ -109,7 +109,11 @@ the server-local console may create, rotate, or revoke Admin identities.
   - client mTLS (default `7444`);
   - Admin mTLS (default `7445`).
 - Server-local control uses `/run/centrald/server.sock` with root peer-credential
-  checks and bounded typed messages.
+  checks and bounded typed messages. Packaged `/run/centrald` is created as
+  `root:root` mode `0755` by `tmpfiles.d` plus the root-owned server/broker
+  `RuntimeDirectory=`. The unprivileged client unit must not declare
+  `RuntimeDirectory=centrald` (systemd would chown or remove the shared
+  directory). Do not chmod `/run/centrald` to `0700`.
 - PKI uses a separately stored offline root and online server/client/Admin
   issuers. Persist the online server issuer so a local TLS-name rotation does
   not require the offline root.
@@ -216,8 +220,10 @@ execution and credential saving visibly disabled.
   to a bad prefix.
 - `scripts/bump-version.js` keeps `package.json`, workspace `Cargo.toml`,
   `tauri.conf.json`, and `Cargo.lock` in lockstep (stale locks break every
-  `--locked` build); it refuses invalid SemVer, existing origin tags, and
-  disagreeing version fields.
+  `--locked` build); it captures `cargo metadata --locked` before rewriting
+  `Cargo.toml`, then updates the lock with `cargo update --workspace --offline`
+  so a version bump cannot pull young registry crates. It refuses invalid
+  SemVer, existing origin tags, and disagreeing version fields.
 - `npm run qa` needs the site dependencies (`npm ci --prefix site`); CI
   (`ci.yml`, `release.yml`) and `scripts/setup.js` install them. Linux builds
   require `libpam0g-dev` (the client's `pam` crate) in the linux-builder
@@ -250,8 +256,8 @@ execution and credential saving visibly disabled.
   chunked response cannot grow memory) and verifies with
   `allow_legacy = false`; `UPDATE_BASE_URL_EXPLICIT` is a baked flag from
   `centrald.config`. HTTPS redirects are capped at 3 hops, HTTPS-only, and
-  refuse loopback/RFC1918/link-local/ULA IP literals (cross-host public HTTPS
-  stays allowed for GitHub Releases). Admin self-update uses the same fetch
+  refuse loopback/RFC1918/link-local/ULA IP literals including IPv4-mapped
+  IPv6 (cross-host public HTTPS stays allowed for GitHub Releases). Admin self-update uses the same fetch
   policy: `check_admin_update` / `install_admin_update` Minisign-verify the
   updater JSON, then call the Tauri plugin only if versions match. Do not
   restore `updater:default` in the Admin capability ACL.
@@ -263,7 +269,8 @@ execution and credential saving visibly disabled.
   directory's PowerShell with `-File` (no shell, fixed arguments).
 - ZIP entry names must be simple: non-empty, <= 255 chars, no absolute or
   empty path parts, no `.`/`..`, no trailing dot/space, no Windows device
-  names (`CON`, `NUL`, `COM1`, ...), and **no `:` anywhere** (drive
+  names (`CON`, `NUL`, `COM1`, ..., including superscript `COM¹`/`LPT¹`
+  aliases), and **no `:` anywhere** (drive
   qualifiers and NTFS alternate data streams). After joining, the target must
   still be contained under the extract directory. Bounds: 512 entries max,
   512 MiB per entry, 600 s extraction wall clock, hard total expansion cap.
@@ -279,7 +286,8 @@ execution and credential saving visibly disabled.
   Unix repair publish that copy as root; the unprivileged daemon must not.
 - Unix broker sockets are `root:centrald` mode `0660`. `/run/centrald` stays
   `0755` so the unprivileged client can traverse to `broker.sock`; do not
-  chmod the runtime directory to `0700` after create. Windows broker pipes
+  chmod the runtime directory to `0700` after create. The client unit must not
+  use `RuntimeDirectory=centrald`. Windows broker pipes
   use `FRFW` (not `GA`). Unix and Windows both cap 64 in-flight connections
   and a 10 s first-frame timeout; Windows first frames must be unframed to
   the JSON body before dispatch.

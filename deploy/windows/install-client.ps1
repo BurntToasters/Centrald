@@ -466,5 +466,5 @@ Write-Host "Do not set CentralDBroker to automatic start until privileged operat
 if ($enrolled) {
   Write-Host "This client is already enrolled. Confirm the CentralDClient service is running with: Get-Service CentralDClient"
 } else {
-  Write-Host "Next step: open an elevated terminal and run: centrald-client enroll"
+  Write-Host "Next step: open an elevated terminal and run: `"C:\Program Files\CentralD\centrald-client.exe`" enroll"
 }

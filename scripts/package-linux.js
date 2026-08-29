@@ -79,10 +79,19 @@ fi
 if [ ! -f /etc/centrald/server.toml ]; then
   echo "CentralD server is installed. Next: sudo centrald-server initial-setup" >&2
 fi
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+  systemd-tmpfiles --create /usr/lib/tmpfiles.d/centrald-server.conf || true
+fi
 `,
   prerm: `#!/bin/sh\nset -eu\nif [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then\n  if command -v systemctl >/dev/null 2>&1; then\n    if systemctl is-active --quiet centrald-server.service; then\n      systemctl stop centrald-server.service || true\n    fi\n    systemctl disable centrald-server.service || true\n  fi\nfi\n`,
   postrm: `#!/bin/sh\nset -eu\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\nfi\n`,
   service: path.join(root, "deploy/systemd/centrald-server.service"),
+  extraFiles: [
+    {
+      source: path.join(root, "deploy/tmpfiles.d/centrald-server.conf"),
+      destination: "usr/lib/tmpfiles.d/centrald-server.conf",
+    },
+  ],
 });
 
 buildDebianPackage({
@@ -96,7 +105,7 @@ buildDebianPackage({
     architecture: debianArch,
     dependencies: ["adduser", "ca-certificates", "systemd", "util-linux"],
   }),
-  postinst: `#!/bin/sh\nset -eu\nif ! getent group centrald >/dev/null 2>&1; then addgroup --system centrald >/dev/null; fi\nif ! getent passwd centrald >/dev/null 2>&1; then adduser --system --ingroup centrald --home /var/lib/centrald-client --no-create-home --shell /usr/sbin/nologin centrald >/dev/null; fi\nfor path in /var/lib/centrald-client /var/lib/centrald-client/identities /var/lib/centrald-client/configurations /var/lib/centrald-client.lock; do\n  if [ -L "$path" ]; then echo "refusing symbolic-link CentralD client state: $path" >&2; exit 1; fi\ndone\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client/identities\ninstall -d -m 0700 -o centrald -g centrald /var/lib/centrald-client/configurations\nif [ -e /var/lib/centrald-client.lock ]; then\n  if [ ! -f /var/lib/centrald-client.lock ]; then echo "CentralD client state lock is not a regular file" >&2; exit 1; fi\n  chown centrald:centrald /var/lib/centrald-client.lock\n  chmod 0600 /var/lib/centrald-client.lock\nelse\n  install -m 0600 -o centrald -g centrald /dev/null /var/lib/centrald-client.lock\nfi\nif [ -e /var/lib/centrald-broker ]; then\n  if [ ! -d /var/lib/centrald-broker ]; then echo "CentralD broker state is not a directory" >&2; exit 1; fi\n  chown root:root /var/lib/centrald-broker\n  chmod 0700 /var/lib/centrald-broker\nelse\n  install -d -m 0700 -o root -g root /var/lib/centrald-broker\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-client.service; then\n    systemctl try-restart centrald-client.service || echo "warning: centrald-client.service did not restart cleanly; inspect with systemctl status centrald-client" >&2\n  fi\nfi\nif [ ! -f /var/lib/centrald-client/configurations/current.pointer ]; then\n  echo "CentralD client is installed. Next: sudo centrald-client enroll" >&2\nfi\n`,
+  postinst: `#!/bin/sh\nset -eu\nif ! getent group centrald >/dev/null 2>&1; then addgroup --system centrald >/dev/null; fi\nif ! getent passwd centrald >/dev/null 2>&1; then adduser --system --ingroup centrald --home /var/lib/centrald-client --no-create-home --shell /usr/sbin/nologin centrald >/dev/null; fi\nfor path in /var/lib/centrald-client /var/lib/centrald-client/identities /var/lib/centrald-client/configurations /var/lib/centrald-client.lock; do\n  if [ -L "$path" ]; then echo "refusing symbolic-link CentralD client state: $path" >&2; exit 1; fi\ndone\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client\ninstall -d -m 0750 -o root -g centrald /var/lib/centrald-client/identities\ninstall -d -m 0700 -o centrald -g centrald /var/lib/centrald-client/configurations\nif [ -e /var/lib/centrald-client.lock ]; then\n  if [ ! -f /var/lib/centrald-client.lock ]; then echo "CentralD client state lock is not a regular file" >&2; exit 1; fi\n  chown centrald:centrald /var/lib/centrald-client.lock\n  chmod 0600 /var/lib/centrald-client.lock\nelse\n  install -m 0600 -o centrald -g centrald /dev/null /var/lib/centrald-client.lock\nfi\nif [ -e /var/lib/centrald-broker ]; then\n  if [ ! -d /var/lib/centrald-broker ]; then echo "CentralD broker state is not a directory" >&2; exit 1; fi\n  chown root:root /var/lib/centrald-broker\n  chmod 0700 /var/lib/centrald-broker\nelse\n  install -d -m 0700 -o root -g root /var/lib/centrald-broker\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\n  if systemctl is-active --quiet centrald-client.service; then\n    systemctl try-restart centrald-client.service || echo "warning: centrald-client.service did not restart cleanly; inspect with systemctl status centrald-client" >&2\n  fi\nfi\nif [ ! -f /var/lib/centrald-client/configurations/current.pointer ]; then\n  echo "CentralD client is installed. Next: sudo centrald-client enroll" >&2\nfi\nif command -v systemd-tmpfiles >/dev/null 2>&1; then\n  systemd-tmpfiles --create /usr/lib/tmpfiles.d/centrald-client.conf || true\nfi\n`,
   prerm: `#!/bin/sh\nset -eu\nif [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then\n  if command -v systemctl >/dev/null 2>&1; then\n    for unit in centrald-client.service centrald-broker.service; do\n      if systemctl is-active --quiet "$unit"; then\n        systemctl stop "$unit" || true\n      fi\n      systemctl disable "$unit" || true\n    done\n  fi\nfi\n`,
   postrm: `#!/bin/sh\nset -eu\nif [ "$1" = "purge" ]; then\n  rm -rf /var/lib/centrald-client /var/lib/centrald-broker /var/lib/centrald-client.lock\n  if getent passwd centrald >/dev/null 2>&1; then\n    deluser --system --quiet centrald >/dev/null 2>&1 || true\n  fi\n  if getent group centrald >/dev/null 2>&1; then\n    delgroup --system --quiet centrald >/dev/null 2>&1 || true\n  fi\nfi\nif command -v systemctl >/dev/null 2>&1; then\n  systemctl daemon-reload || true\nfi\n`,
   services: [
@@ -107,6 +116,12 @@ buildDebianPackage({
     {
       source: path.join(root, "deploy/systemd/centrald-broker.service"),
       name: "centrald-broker.service",
+    },
+  ],
+  extraFiles: [
+    {
+      source: path.join(root, "deploy/tmpfiles.d/centrald-client.conf"),
+      destination: "usr/lib/tmpfiles.d/centrald-client.conf",
     },
   ],
 });
@@ -192,6 +207,7 @@ function buildDebianPackage({
   postrm,
   service,
   services,
+  extraFiles = [],
 }) {
   const stagingDirectory = path.join(
     path.dirname(artifact),
@@ -236,6 +252,15 @@ function buildDebianPackage({
       copyArtifact(
         requireRegularFile(source, "systemd service"),
         path.join(staging, `lib/systemd/system/${name}`),
+        0o644,
+      );
+    }
+    for (const { source, destination } of extraFiles) {
+      const target = path.join(staging, destination);
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
+      copyArtifact(
+        requireRegularFile(source, "package extra file"),
+        target,
         0o644,
       );
     }

@@ -12,6 +12,8 @@
 !.env.example
 /apps/admin/dist/
 /apps/admin/src-tauri/target/
+# Linux `tauri build` emits this; desktop/windows schemas stay tracked.
+/apps/admin/src-tauri/gen/schemas/linux-schema.json
 /site/dist/
 /site/.astro/
 /site/src/content/docs/

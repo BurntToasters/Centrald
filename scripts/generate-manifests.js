@@ -300,7 +300,9 @@ function validateCompleteness(artifacts) {
   ];
   const missing = expected.filter((item) => !actual.has(item));
   if (missing.length > 0) {
-    throw new Error(`Release is incomplete; missing ${missing.join(", ")}`);
+    throw new Error(
+      `Release is incomplete; missing ${missing.join(", ")}. A complete release must be built on the Windows release host so Linux and Windows artifacts are present together.`,
+    );
   }
 }
 

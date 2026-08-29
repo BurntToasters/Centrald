@@ -301,7 +301,7 @@ function printSummary() {
     );
   }
   console.log(
-    "Remaining release prerequisites on this host: minisign, gh CLI (gh auth login), and the keys documented in .env.example.",
+    "Remaining release prerequisites on this host: Visual Studio Build Tools (MSVC v143 x64 and ARM64 plus the Windows SDK), minisign, gh CLI (gh auth login), and the keys documented in .env.example. setup:docker does not install MSVC.",
   );
 }
 

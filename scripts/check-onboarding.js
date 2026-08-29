@@ -138,6 +138,17 @@ for (const [source, text, label] of [
     "non-interactive Ubuntu setup defaults to recommended local PostgreSQL",
   ],
   [quickstart, "Rerun the same command", "interrupted setup recovery guidance"],
+  [
+    quickstart,
+    "C:\\Program Files\\CentralD\\centrald-client.exe",
+    "quick start Windows enroll uses the install path",
+  ],
+  [quickstart, "libfuse2t64", "quick start Admin AppImage FUSE dependency"],
+  [
+    read("deploy/systemd/centrald-client.service"),
+    "Do not use\n# RuntimeDirectory=",
+    "client unit does not own shared /run/centrald",
+  ],
 ])
   requireText(source, text, label);
 

@@ -32,50 +32,43 @@ pub fn https_redirect_is_allowed(next: &Url) -> Result<(), &'static str> {
 
 fn host_is_non_public_literal(url: &Url) -> bool {
     match url.host() {
-        Some(Host::Ipv4(ip)) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-        }
-        Some(Host::Ipv6(ip)) => {
-            ip.is_loopback()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-                || ip.is_unspecified()
-        }
+        Some(Host::Ipv4(ip)) => ipv4_is_non_public(ip),
+        Some(Host::Ipv6(ip)) => ip_is_non_public(std::net::IpAddr::V6(ip)),
         Some(Host::Domain(domain)) => {
             let port = url.port_or_known_default().unwrap_or(443);
-            if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(domain, port)) {
-                #[allow(clippy::collapsible_if)]
-                if let Some(ip) = addrs.next().map(|addr| addr.ip()) {
-                    if ip.is_loopback() || ip.is_unspecified() {
-                        return true;
-                    }
-                    match ip {
-                        std::net::IpAddr::V4(ipv4) => {
-                            if ipv4.is_private()
-                                || ipv4.is_link_local()
-                                || ipv4.is_broadcast()
-                                || ipv4.is_documentation()
-                            {
-                                return true;
-                            }
-                        }
-                        std::net::IpAddr::V6(ipv6) => {
-                            if ipv6.is_unique_local() || ipv6.is_unicast_link_local() {
-                                return true;
-                            }
-                        }
-                    }
-                }
+            if let Ok(mut addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(domain, port))
+                && let Some(ip) = addrs.next().map(|addr| addr.ip())
+            {
+                return ip_is_non_public(ip);
             }
             false
         }
         None => true,
     }
+}
+
+fn ip_is_non_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => ipv4_is_non_public(ipv4),
+        std::net::IpAddr::V6(ipv6) => {
+            if let Some(mapped) = ipv6.to_ipv4_mapped() {
+                return ipv4_is_non_public(mapped);
+            }
+            ipv6.is_loopback()
+                || ipv6.is_unique_local()
+                || ipv6.is_unicast_link_local()
+                || ipv6.is_unspecified()
+        }
+    }
+}
+
+fn ipv4_is_non_public(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_documentation()
 }
 
 #[cfg(test)]
@@ -108,5 +101,20 @@ mod tests {
                 .is_err()
         );
         assert!(https_redirect_is_allowed(&Url::parse("https://192.0.2.1/x").unwrap()).is_err());
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:127.0.0.1]/x").unwrap())
+                .is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:10.0.0.1]/x").unwrap()).is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:169.254.169.254]/x").unwrap())
+                .is_err()
+        );
+        assert!(
+            https_redirect_is_allowed(&Url::parse("https://[::ffff:192.0.2.1]/x").unwrap())
+                .is_err()
+        );
     }
 }

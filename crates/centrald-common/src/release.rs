@@ -247,6 +247,9 @@ fn is_windows_device_filename(value: &str) -> bool {
             | "COM7"
             | "COM8"
             | "COM9"
+            | "COM\u{00B9}"
+            | "COM\u{00B2}"
+            | "COM\u{00B3}"
             | "LPT1"
             | "LPT2"
             | "LPT3"
@@ -256,6 +259,9 @@ fn is_windows_device_filename(value: &str) -> bool {
             | "LPT7"
             | "LPT8"
             | "LPT9"
+            | "LPT\u{00B9}"
+            | "LPT\u{00B2}"
+            | "LPT\u{00B3}"
     )
 }
 

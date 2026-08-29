@@ -7,7 +7,10 @@ interface Props {
 }
 
 const { entry } = Astro.props;
-const { Content } = await render(entry);
+const { Content, headings } = await render(entry);
+
+// Filter h2 and h3 for Table of Contents
+const tocHeadings = headings.filter((h) => h.depth === 2 || h.depth === 3);
 
 const all = (await getCollection("docs")).sort(
   (left, right) => left.data.order - right.data.order,
@@ -28,92 +31,312 @@ for (const item of all) {
 ---
 
 <BaseLayout
-  title={`${entry.data.title} - CentralD`}
+  title={`${entry.data.title} - CentralD Documentation`}
   description={entry.data.description}
 >
-  <div class="docs-layout">
-    <aside class="docs-sidebar" aria-label="Documentation">
-      <nav>
-        {
-          groups.map((group) => (
-            <div class="docs-group">
-              <p class="docs-group-title">{group.name}</p>
-              <ul>
-                {group.items.map((item) => (
-                  <li>
-                    <a
-                      href={`/docs/${item.id}`}
-                      aria-current={item.id === entry.id ? "page" : undefined}
-                    >
-                      {item.data.title}
+  <div class="docs-wrapper">
+    <div class="docs-layout">
+      <!-- Mobile Sidebar Toggle -->
+      <div class="mobile-sidebar-bar">
+        <button
+          type="button"
+          class="mobile-sidebar-toggle"
+          id="mobileSidebarToggle"
+          aria-label="Toggle documentation navigation"
+        >
+          <svg
+            class="toggle-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+          <span>Documentation Menu</span>
+        </button>
+        <span class="mobile-current-title">{entry.data.title}</span>
+      </div>
+
+      <!-- Left Navigation Sidebar -->
+      <aside
+        class="docs-sidebar"
+        id="docsSidebar"
+        aria-label="Documentation Sidebar"
+      >
+        <nav class="sidebar-nav">
+          {
+            groups.map((group) => (
+              <div class="docs-group">
+                <p class="docs-group-title">{group.name}</p>
+                <ul class="docs-group-list">
+                  {group.items.map((item) => (
+                    <li>
+                      <a
+                        href={`/docs/${item.id}`}
+                        class="docs-nav-link"
+                        aria-current={item.id === entry.id ? "page" : undefined}
+                      >
+                        <span class="nav-indicator" />
+                        <span class="nav-text">{item.data.title}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          }
+        </nav>
+      </aside>
+
+      <!-- Center Article Content -->
+      <main class="docs-main">
+        <!-- Breadcrumbs -->
+        <nav class="docs-breadcrumbs" aria-label="Breadcrumb">
+          <a href="/docs/quickstart">Docs</a>
+          <span class="crumb-separator">/</span>
+          <span class="crumb-group">{entry.data.group}</span>
+          <span class="crumb-separator">/</span>
+          <span class="crumb-current">{entry.data.title}</span>
+        </nav>
+
+        <article class="prose">
+          <header class="doc-article-header">
+            <h1>{entry.data.title}</h1>
+            {
+              entry.data.description && (
+                <p class="doc-lede">{entry.data.description}</p>
+              )
+            }
+          </header>
+
+          <Content />
+        </article>
+
+        <!-- Pagination (Prev / Next) -->
+        <nav class="docs-pager" aria-label="Documentation navigation">
+          {
+            previous ? (
+              <a
+                class="docs-pager-card pager-prev"
+                href={`/docs/${previous.id}`}
+              >
+                <div class="pager-meta">
+                  <svg
+                    class="pager-arrow"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                  <span>Previous</span>
+                </div>
+                <div class="pager-title">{previous.data.title}</div>
+              </a>
+            ) : (
+              <div class="pager-placeholder" />
+            )
+          }
+          {
+            next ? (
+              <a class="docs-pager-card pager-next" href={`/docs/${next.id}`}>
+                <div class="pager-meta">
+                  <span>Next</span>
+                  <svg
+                    class="pager-arrow"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                  >
+                    <path
+                      fill-rule="evenodd"
+                      d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+                      clip-rule="evenodd"
+                    />
+                  </svg>
+                </div>
+                <div class="pager-title">{next.data.title}</div>
+              </a>
+            ) : (
+              <div class="pager-placeholder" />
+            )
+          }
+        </nav>
+      </main>
+
+      <!-- Right Table of Contents Sidebar -->
+      {
+        tocHeadings.length > 0 && (
+          <aside class="docs-toc" aria-label="Table of contents">
+            <div class="toc-sticky">
+              <p class="toc-heading">On this page</p>
+              <ul class="toc-list">
+                {tocHeadings.map((h) => (
+                  <li class={`toc-item depth-${h.depth}`}>
+                    <a href={`#${h.slug}`} class="toc-link">
+                      {h.text}
                     </a>
                   </li>
                 ))}
               </ul>
             </div>
-          ))
-        }
-      </nav>
-    </aside>
-    <main class="docs-content">
-      <article class="prose">
-        <h1>{entry.data.title}</h1>
-        <Content />
-      </article>
-      <nav class="docs-pager" aria-label="Documentation pages">
-        {
-          previous ? (
-            <a class="docs-pager-link" href={`/docs/${previous.id}`}>
-              <span>Previous</span>
-              {previous.data.title}
-            </a>
-          ) : (
-            <span />
-          )
-        }
-        {
-          next ? (
-            <a
-              class="docs-pager-link docs-pager-next"
-              href={`/docs/${next.id}`}
-            >
-              <span>Next</span>
-              {next.data.title}
-            </a>
-          ) : (
-            <span />
-          )
-        }
-      </nav>
-    </main>
+          </aside>
+        )
+      }
+    </div>
   </div>
 </BaseLayout>
 
+<script>
+  // Mobile sidebar toggle
+  const toggleBtn = document.getElementById("mobileSidebarToggle");
+  const sidebar = document.getElementById("docsSidebar");
+  if (toggleBtn && sidebar) {
+    toggleBtn.addEventListener("click", () => {
+      sidebar.classList.toggle("open");
+    });
+  }
+
+  // Setup code block copy buttons
+  function attachCodeCopyButtons() {
+    const preBlocks = document.querySelectorAll<HTMLPreElement>(".prose pre");
+    preBlocks.forEach((pre) => {
+      // Check if button already exists
+      if (pre.parentElement?.classList.contains("code-container")) return;
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "code-container";
+      pre.parentNode?.insertBefore(wrapper, pre);
+      wrapper.appendChild(pre);
+
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "code-copy-btn";
+      copyBtn.type = "button";
+      copyBtn.setAttribute("aria-label", "Copy code snippet");
+      copyBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      `;
+
+      copyBtn.addEventListener("click", async () => {
+        const code = pre.querySelector("code")?.innerText || pre.innerText;
+        try {
+          await navigator.clipboard.writeText(code);
+          copyBtn.classList.add("copied");
+          copyBtn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          `;
+          setTimeout(() => {
+            copyBtn.classList.remove("copied");
+            copyBtn.innerHTML = `
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            `;
+          }, 2000);
+        } catch (err) {
+          console.error("Failed to copy code", err);
+        }
+      });
+
+      wrapper.appendChild(copyBtn);
+    });
+  }
+
+  attachCodeCopyButtons();
+  document.addEventListener("astro:after-swap", attachCodeCopyButtons);
+</script>
+
 <style>
-  .docs-layout {
+  .docs-wrapper {
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 1.5rem;
+    padding: 2rem 1.5rem;
+  }
+
+  .docs-layout {
     display: grid;
-    grid-template-columns: 14rem minmax(0, 1fr);
-    gap: 3rem;
+    grid-template-columns: 16rem minmax(0, 1fr) 13rem;
+    gap: 2.5rem;
     align-items: start;
   }
+
+  /* Mobile Sidebar Bar */
+  .mobile-sidebar-bar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 1.5rem;
+  }
+
+  .mobile-sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background: var(--surface-secondary);
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .toggle-icon {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .mobile-current-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50%;
+  }
+
+  /* Left Sidebar */
   .docs-sidebar {
     position: sticky;
-    top: 4.5rem;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+    padding-right: 0.75rem;
   }
+
   .docs-group {
-    margin-bottom: 1.25rem;
+    margin-bottom: 1.75rem;
   }
+
   .docs-group-title {
-    font-size: 0.72rem;
+    font-size: 0.75rem;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--muted);
-    margin: 0 0 0.4rem;
+    color: var(--text-muted);
+    margin: 0 0 0.6rem 0.5rem;
   }
-  .docs-sidebar ul {
+
+  .docs-group-list {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -121,54 +344,253 @@ for (const item of all) {
     flex-direction: column;
     gap: 0.15rem;
   }
-  .docs-sidebar a {
-    display: block;
-    padding: 0.3rem 0.6rem;
-    border-radius: 0.4rem;
-    font-size: 0.92rem;
+
+  .docs-nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 0.75rem;
+    border-radius: var(--radius-md);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: all var(--transition-fast);
+  }
+
+  .nav-indicator {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: transparent;
+    transition: all var(--transition-fast);
+  }
+
+  .docs-nav-link:hover {
     color: var(--text);
+    background-color: var(--surface-hover);
+    text-decoration: none;
   }
-  .docs-sidebar a:hover {
-    background: var(--surface);
-  }
-  .docs-sidebar a[aria-current="page"] {
-    background: var(--surface);
+
+  .docs-nav-link[aria-current="page"] {
+    background-color: var(--brand-gradient-subtle);
     color: var(--accent);
     font-weight: 600;
   }
-  .docs-content {
+
+  .docs-nav-link[aria-current="page"] .nav-indicator {
+    background-color: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    transform: scale(1.5);
+  }
+
+  /* Main Article */
+  .docs-main {
     min-width: 0;
   }
+
+  .docs-breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    margin-bottom: 1.5rem;
+  }
+
+  .docs-breadcrumbs a {
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+
+  .docs-breadcrumbs a:hover {
+    color: var(--accent);
+  }
+
+  .crumb-separator {
+    color: var(--border-strong);
+  }
+
+  .crumb-current {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .doc-article-header {
+    margin-bottom: 2rem;
+  }
+
+  .doc-article-header h1 {
+    font-size: 2.35rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin: 0 0 0.5rem;
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .doc-lede {
+    font-size: 1.15rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  /* Pager */
   .docs-pager {
     display: flex;
     justify-content: space-between;
-    gap: 1rem;
-    margin-top: 3rem;
+    gap: 1.5rem;
+    margin-top: 4rem;
+    padding-top: 2rem;
     border-top: 1px solid var(--border);
-    padding-top: 1.5rem;
   }
-  .docs-pager-link {
+
+  .docs-pager-card {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    max-width: 45%;
+    gap: 0.35rem;
+    padding: 1rem 1.25rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    flex: 1;
+    max-width: 48%;
+    text-decoration: none;
+    transition: all var(--transition-normal);
   }
-  .docs-pager-link span {
+
+  .docs-pager-card:hover {
+    border-color: var(--accent);
+    background: var(--surface-hover);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-sm);
+    text-decoration: none;
+  }
+
+  .pager-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     font-size: 0.75rem;
-    color: var(--muted);
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    color: var(--text-muted);
   }
-  .docs-pager-next {
+
+  .pager-next .pager-meta {
+    justify-content: flex-end;
+  }
+
+  .pager-arrow {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
+  .pager-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .pager-next {
     text-align: right;
-    margin-left: auto;
   }
-  @media (max-width: 768px) {
+
+  .pager-placeholder {
+    flex: 1;
+  }
+
+  /* Right TOC */
+  .docs-toc {
+    position: sticky;
+    top: 5rem;
+    max-height: calc(100vh - 6rem);
+    overflow-y: auto;
+    font-size: 0.8125rem;
+    padding-left: 0.5rem;
+  }
+
+  .toc-sticky {
+    border-left: 1px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  .toc-heading {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    margin: 0 0 0.75rem;
+  }
+
+  .toc-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .toc-item.depth-3 {
+    padding-left: 0.75rem;
+  }
+
+  .toc-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    line-height: 1.4;
+    transition: color var(--transition-fast);
+  }
+
+  .toc-link:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  @media (max-width: 1100px) {
+    .docs-layout {
+      grid-template-columns: 15rem minmax(0, 1fr);
+    }
+    .docs-toc {
+      display: none;
+    }
+  }
+
+  @media (max-width: 800px) {
     .docs-layout {
       grid-template-columns: 1fr;
     }
+
+    .mobile-sidebar-bar {
+      display: flex;
+    }
+
     .docs-sidebar {
+      display: none;
       position: static;
+      max-height: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    .docs-sidebar.open {
+      display: block;
+    }
+
+    .docs-pager {
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .docs-pager-card {
+      max-width: 100%;
     }
   }
 </style>

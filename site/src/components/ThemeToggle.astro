@@ -1,0 +1,187 @@
+---
+
+---
+
+<div class="theme-toggle" role="group" aria-label="Theme preference">
+  <button
+    type="button"
+    class="theme-btn"
+    data-theme-value="system"
+    title="Match system theme"
+    aria-label="Match system theme"
+  >
+    <svg
+      class="icon"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.75"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <rect x="2" y="3" width="16" height="11" rx="2"></rect>
+      <line x1="7" y1="17" x2="13" y2="17"></line>
+      <line x1="10" y1="14" x2="10" y2="17"></line>
+    </svg>
+  </button>
+  <button
+    type="button"
+    class="theme-btn"
+    data-theme-value="light"
+    title="Light mode"
+    aria-label="Light mode"
+  >
+    <svg
+      class="icon"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.75"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="10" cy="10" r="4"></circle>
+      <line x1="10" y1="1.5" x2="10" y2="3.5"></line>
+      <line x1="10" y1="16.5" x2="10" y2="18.5"></line>
+      <line x1="4" y1="4" x2="5.4" y2="5.4"></line>
+      <line x1="14.6" y1="14.6" x2="16" y2="16"></line>
+      <line x1="1.5" y1="10" x2="3.5" y2="10"></line>
+      <line x1="16.5" y1="10" x2="18.5" y2="10"></line>
+      <line x1="4" y1="16" x2="5.4" y2="14.6"></line>
+      <line x1="14.6" y1="5.4" x2="16" y2="4"></line>
+    </svg>
+  </button>
+  <button
+    type="button"
+    class="theme-btn"
+    data-theme-value="dark"
+    title="Dark mode"
+    aria-label="Dark mode"
+  >
+    <svg
+      class="icon"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.75"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M17.2 13.2A7.5 7.5 0 1 1 6.8 2.8 6 6 0 0 0 17.2 13.2z"></path>
+    </svg>
+  </button>
+</div>
+
+<style>
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    padding: 0.1875rem;
+    gap: 0.125rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border-radius: var(--radius-pill);
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .theme-btn:hover {
+    color: var(--text);
+  }
+
+  .theme-btn.active {
+    background-color: var(--surface);
+    color: var(--accent);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .icon {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+</style>
+
+<script>
+  function setupThemeToggle() {
+    const toggles = document.querySelectorAll(".theme-toggle");
+    if (!toggles.length) return;
+
+    function getStoredTheme() {
+      return localStorage.getItem("centrald-theme") || "system";
+    }
+
+    function applyTheme(theme: string) {
+      if (theme === "system") {
+        localStorage.removeItem("centrald-theme");
+        const isDark = window.matchMedia(
+          "(prefers-color-scheme: dark)",
+        ).matches;
+        document.documentElement.removeAttribute("data-theme");
+        document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+      } else {
+        localStorage.setItem("centrald-theme", theme);
+        document.documentElement.setAttribute("data-theme", theme);
+        document.documentElement.style.colorScheme = theme;
+      }
+      updateButtons(theme);
+    }
+
+    function updateButtons(currentTheme: string) {
+      document
+        .querySelectorAll<HTMLButtonElement>(".theme-btn")
+        .forEach((btn) => {
+          const val = btn.getAttribute("data-theme-value");
+          if (val === currentTheme) {
+            btn.classList.add("active");
+            btn.setAttribute("aria-pressed", "true");
+          } else {
+            btn.classList.remove("active");
+            btn.setAttribute("aria-pressed", "false");
+          }
+        });
+    }
+
+    // Initialize button states
+    updateButtons(getStoredTheme());
+
+    // Attach click events
+    document
+      .querySelectorAll<HTMLButtonElement>(".theme-btn")
+      .forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const selectedTheme = btn.getAttribute("data-theme-value");
+          if (selectedTheme) {
+            applyTheme(selectedTheme);
+          }
+        });
+      });
+
+    // Listen to system changes if in system mode
+    window
+      .matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", (e) => {
+        if (getStoredTheme() === "system") {
+          document.documentElement.style.colorScheme = e.matches
+            ? "dark"
+            : "light";
+        }
+      });
+  }
+
+  setupThemeToggle();
+  document.addEventListener("astro:after-swap", setupThemeToggle);
+</script>

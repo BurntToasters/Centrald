@@ -6,166 +6,1193 @@ import BaseLayout from "../layouts/BaseLayout.astro";
   title="CentralD - Security-first homelab device manager"
   description="CentralD manages Windows and Linux devices from a single Ubuntu Server with outbound-only clients, a Tauri desktop Admin, and a typed, audited job pipeline."
 >
-  <main>
+  <main class="home-main">
+    <!-- Ambient Radial Glows -->
+    <div class="ambient-glow glow-top" aria-hidden="true"></div>
+    <div class="ambient-glow glow-bottom" aria-hidden="true"></div>
+
+    <!-- Hero Section -->
     <section class="hero">
-      <p class="hero-eyebrow">Security-first homelab management</p>
-      <h1>One server. Every device. No inbound ports.</h1>
+      <div class="hero-badge-container">
+        <span class="badge purple hero-badge">
+          <svg
+            class="badge-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+          Security-First Homelab Management
+        </span>
+      </div>
+
+      <h1 class="hero-title">
+        One server. Every device. <span class="gradient-text"
+          >No inbound ports.</span>
+      </h1>
+
       <p class="hero-lede">
-        CentralD is a device manager for private LAN and VPN deployments. An
-        Ubuntu Server host manages outbound-only Windows and Linux clients
-        through a Tauri desktop Admin application - with typed jobs, audited
-        remote settings, and secure transient terminals.
+        CentralD is a sovereign device manager engineered for private LANs and
+        homelabs. Manage Windows and Linux nodes from a hardened Ubuntu host via
+        outbound-only mTLS clients, an audited job pipeline, and a modern
+        desktop Admin application.
       </p>
+
       <div class="hero-actions">
-        <a class="button primary" href="/docs/quickstart">Get started</a>
-        <a class="button" href="/docs/architecture">Read the architecture</a>
+        <a class="button primary lg" href="/docs/quickstart">
+          <span>Get started</span>
+          <svg class="btn-arrow" viewBox="0 0 20 20" fill="currentColor">
+            <path
+              fill-rule="evenodd"
+              d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z"
+              clip-rule="evenodd"></path>
+          </svg>
+        </a>
+        <a class="button secondary lg" href="/docs/architecture">
+          <svg
+            class="btn-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+          </svg>
+          <span>Architecture & Threat Model</span>
+        </a>
       </div>
     </section>
 
-    <section class="quick">
-      <div class="panel">
-        <p class="panel-title">First-run path</p>
-        <pre
-          class="code"><code>sudo centrald-server initial-setup
-sudo centrald-server config
-# on each managed Linux device
-sudo centrald-client enroll</code></pre>
-      </div>
-      <div class="panel">
-        <p class="panel-title">What you get</p>
-        <ul class="checklist">
-          <li>Outbound-only client network daemon</li>
-          <li>mTLS everywhere, no plaintext traffic</li>
-          <li>Typed, leased, and audited job queue</li>
-          <li>Verified, operator-approved updates</li>
-        </ul>
+    <!-- Architecture & Pipeline Interactive Preview -->
+    <section class="preview-section">
+      <div class="glass-card preview-card">
+        <div class="preview-header">
+          <div class="window-controls">
+            <span class="dot red"></span>
+            <span class="dot yellow"></span>
+            <span class="dot green"></span>
+          </div>
+          <span class="preview-title"
+            >CentralD Protocol & Isolation Architecture</span
+          >
+          <div class="preview-status">
+            <span class="status-indicator"></span>
+            <span>mTLS 1.3 Active</span>
+          </div>
+        </div>
+
+        <div class="architecture-diagram">
+          <!-- Desktop Admin Node -->
+          <div class="arch-box node-admin">
+            <div class="arch-box-header">
+              <span class="badge purple">Desktop Admin</span>
+              <span class="arch-box-sub">Tauri v2 + Rust</span>
+            </div>
+            <p class="arch-box-desc">
+              Zero permanent tokens. mTLS with local certificate store.
+            </p>
+            <div class="arch-pill">Admin Port :7445</div>
+          </div>
+
+          <!-- Connecting arrows -->
+          <div class="arch-flow">
+            <div class="flow-line"><span class="flow-dot"></span></div>
+            <span class="flow-label">Encrypted mTLS</span>
+          </div>
+
+          <!-- Server Core Node -->
+          <div class="arch-box node-server">
+            <div class="arch-box-header">
+              <span class="badge teal">Ubuntu Server Core</span>
+              <span class="arch-box-sub">Hardened Host</span>
+            </div>
+            <div class="server-specs">
+              <div class="spec-row">
+                <span class="spec-label">Enrollment:</span>
+                <code>0.0.0.0:7443</code>
+              </div>
+              <div class="spec-row">
+                <span class="spec-label">Client mTLS:</span>
+                <code>0.0.0.0:7444</code>
+              </div>
+              <div class="spec-row">
+                <span class="spec-label">Local Socket:</span>
+                <code>/run/centrald/server.sock</code>
+              </div>
+              <div class="spec-row">
+                <span class="spec-label">PostgreSQL:</span>
+                <code>127.0.0.1:5432 (Isolated)</code>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connecting arrows -->
+          <div class="arch-flow">
+            <div class="flow-line reverse"><span class="flow-dot"></span></div>
+            <span class="flow-label">Outbound-Only</span>
+          </div>
+
+          <!-- Managed Nodes -->
+          <div class="arch-box node-client">
+            <div class="arch-box-header">
+              <span class="badge amber">Managed Clients</span>
+              <span class="arch-box-sub">Linux & Windows</span>
+            </div>
+            <p class="arch-box-desc">
+              Unprivileged network daemon. Zero listening ports on host.
+            </p>
+            <div class="arch-pill client-pill">0 Inbound Ports</div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <section class="features">
-      <a class="feature" href="/docs/architecture">
-        <h2>Architecture</h2>
+    <!-- Tabbed Quick-Start Code Section -->
+    <section class="quickstart-section">
+      <div class="section-heading">
+        <span class="badge teal">Quickstart</span>
+        <h2>Up and running in 3 minutes</h2>
         <p>
-          Three TLS listeners, one PostgreSQL source of truth, and a locked-down
-          server-local control socket.
+          Simple package installation with no open inbound ports on clients.
         </p>
-      </a>
-      <a class="feature" href="/docs/operations">
-        <h2>Operations</h2>
+      </div>
+
+      <div class="code-showcase glass-card">
+        <div class="tab-bar" role="tablist">
+          <button
+            class="tab-btn active"
+            data-tab="tab-server"
+            role="tab"
+            aria-selected="true"
+          >
+            <svg
+              class="tab-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+            <span>1. Server Host</span>
+          </button>
+          <button
+            class="tab-btn"
+            data-tab="tab-client"
+            role="tab"
+            aria-selected="false"
+          >
+            <svg
+              class="tab-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>2. Enrolled Client</span>
+          </button>
+          <button
+            class="tab-btn"
+            data-tab="tab-admin"
+            role="tab"
+            aria-selected="false"
+          >
+            <svg
+              class="tab-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+              <path d="M2 17l10 5 10-5"></path>
+              <path d="M2 12l10 5 10-5"></path>
+            </svg>
+            <span>3. Desktop Admin</span>
+          </button>
+        </div>
+
+        <div class="tab-content-container">
+          <!-- Server Tab -->
+          <div class="tab-content active" id="tab-server">
+            <div class="code-header">
+              <span class="code-title">Ubuntu Server 24.04 First-Run</span>
+              <button
+                class="copy-snippet-btn"
+                data-clipboard-target="#snippet-server"
+                aria-label="Copy server commands"
+              >
+                <svg
+                  class="copy-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  ></path>
+                </svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre
+              class="code-block"><code id="snippet-server"><span class="code-comment"># Install packaged CentralD server</span>
+sudo apt install ./centrald-server_*.deb
+
+<span class="code-comment"># Initialize PKI, PostgreSQL, and UFW firewall in one command</span>
+sudo centrald-server initial-setup
+
+<span class="code-comment"># Service starts automatically via systemd. Check status anytime:</span>
+sudo centrald-server config</code></pre>
+          </div>
+
+          <!-- Client Tab -->
+          <div class="tab-content" id="tab-client">
+            <div class="code-header">
+              <span class="code-title">Managed Node (Linux / Windows)</span>
+              <button
+                class="copy-snippet-btn"
+                data-clipboard-target="#snippet-client"
+                aria-label="Copy client commands"
+              >
+                <svg
+                  class="copy-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  ></path>
+                </svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre
+              class="code-block"><code id="snippet-client"><span class="code-comment"># Install client package on Ubuntu / Debian</span>
+sudo apt install ./centrald-client_*.deb
+
+<span class="code-comment"># Interactive enrollment with one-time invitation token</span>
+sudo centrald-client enroll
+
+<span class="code-comment"># The client connects outbound to the server on port 7444. Zero open ports!</span></code></pre>
+          </div>
+
+          <!-- Admin Tab -->
+          <div class="tab-content" id="tab-admin">
+            <div class="code-header">
+              <span class="code-title">Tauri v2 Desktop Admin Application</span>
+              <button
+                class="copy-snippet-btn"
+                data-clipboard-target="#snippet-admin"
+                aria-label="Copy admin instructions"
+              >
+                <svg
+                  class="copy-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  ></path>
+                </svg>
+                <span class="copy-label">Copy</span>
+              </button>
+            </div>
+            <pre
+              class="code-block"><code id="snippet-admin"><span class="code-comment"># 1. Download CentralD Admin for Linux (AppImage) or Windows (NSIS)</span>
+<span class="code-comment"># 2. Launch Admin -> Click "Add Server"</span>
+<span class="code-comment"># 3. Paste the one-time Admin access key printed during initial-setup</span>
+<span class="code-comment"># 4. Admin generates a local mTLS key pair and authenticates over port 7445</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Core Security Pillars Grid -->
+    <section class="pillars-section">
+      <div class="section-heading">
+        <span class="badge purple">Core Guarantees</span>
+        <h2>Engineered for Zero-Trust Homelabs</h2>
         <p>
-          Configuration, enrollment, renewal, jobs, shell sessions, backups, and
-          recovery runbooks.
+          CentralD never compromises on security boundaries or cryptographic
+          rigor.
         </p>
-      </a>
-      <a class="feature" href="/docs/threat-model">
-        <h2>Threat model</h2>
-        <p>
-          What CentralD defends against and what it does not, so you can deploy
-          it with the right assumptions.
-        </p>
-      </a>
-      <a class="feature" href="/docs/releases">
-        <h2>Releases</h2>
-        <p>
-          Channel policy, immutable artifacts, Minisign verification, and the
-          update pipeline.
-        </p>
-      </a>
+      </div>
+
+      <div class="features-grid">
+        <div class="card feature-card">
+          <div class="card-icon-wrapper purple">
+            <svg
+              class="feature-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+          </div>
+          <h3>Zero Inbound Client Ports</h3>
+          <p>
+            Client daemons connect strictly outbound to the server over mTLS.
+            Managed nodes run with zero listening TCP/UDP ports, making them
+            invulnerable to inbound port scanning and lateral movement.
+          </p>
+          <div class="card-tags">
+            <span class="badge">Outbound Daemon</span>
+            <span class="badge">Unprivileged User</span>
+          </div>
+        </div>
+
+        <div class="card feature-card">
+          <div class="card-icon-wrapper teal">
+            <svg
+              class="feature-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <path d="M9 12l2 2 4-4"></path>
+            </svg>
+          </div>
+          <h3>Strict PKI & Invitations</h3>
+          <p>
+            Offline root CA with dedicated online issuers. Devices enroll using
+            single-use <code>centrald-invite1</code> invitations hashed with Argon2id.
+            No permanent reusable bearer tokens exist anywhere.
+          </p>
+          <div class="card-tags">
+            <span class="badge teal">Argon2id</span>
+            <span class="badge teal">mTLS 1.3</span>
+          </div>
+        </div>
+
+        <div class="card feature-card">
+          <div class="card-icon-wrapper amber">
+            <svg
+              class="feature-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+          </div>
+          <h3>Typed & Audited Job Engine</h3>
+          <p>
+            No arbitrary unauthenticated bash execution. CentralD employs typed
+            jobs with explicit short-lived leases, state machine validation, and
+            hash-chained tamper-evident local audit logs.
+          </p>
+          <div class="card-tags">
+            <span class="badge amber">Hash-Chained Audit</span>
+            <span class="badge amber">PostgreSQL</span>
+          </div>
+        </div>
+
+        <div class="card feature-card">
+          <div class="card-icon-wrapper cyan">
+            <svg
+              class="feature-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path
+                d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+              ></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+          </div>
+          <h3>Minisign-Verified Updates</h3>
+          <p>
+            Immutable release binaries verified cryptographically with Minisign
+            and Tauri signatures before installation. Server, Client, and Admin
+            components update only upon explicit operator approval.
+          </p>
+          <div class="card-tags">
+            <span class="badge">Minisign</span>
+            <span class="badge">Air-Gapped Feeds</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Deep-Dive Documentation Grid -->
+    <section class="docs-section">
+      <div class="section-heading">
+        <span class="badge slate">Explore CentralD</span>
+        <h2>Complete Documentation & Guides</h2>
+      </div>
+
+      <div class="docs-grid">
+        <a class="glass-card doc-card" href="/docs/architecture">
+          <div class="doc-card-header">
+            <h3>System Architecture</h3>
+            <span class="doc-arrow">→</span>
+          </div>
+          <p>
+            Learn how the 3 TLS listeners, PostgreSQL database, and
+            `/run/centrald/server.sock` local socket interact securely.
+          </p>
+        </a>
+
+        <a class="glass-card doc-card" href="/docs/operations">
+          <div class="doc-card-header">
+            <h3>Operations Runbook</h3>
+            <span class="doc-arrow">→</span>
+          </div>
+          <p>
+            Guides for client enrollment, recovery keys, service restarts,
+            database backups, and configuration management.
+          </p>
+        </a>
+
+        <a class="glass-card doc-card" href="/docs/threat-model">
+          <div class="doc-card-header">
+            <h3>Threat Model & Security</h3>
+            <span class="doc-arrow">→</span>
+          </div>
+          <p>
+            Explicit boundaries: what CentralD defends against, homelab threat
+            assumptions, and fail-closed guarantees.
+          </p>
+        </a>
+
+        <a class="glass-card doc-card" href="/docs/releases">
+          <div class="doc-card-header">
+            <h3>Release Pipeline & Channels</h3>
+            <span class="doc-arrow">→</span>
+          </div>
+          <p>
+            Release channels (stable, alpha, beta), signature verification,
+            reproducible builds, and manifest derivation.
+          </p>
+        </a>
+      </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+      <div class="glass-card cta-card">
+        <div class="cta-content">
+          <h2>Ready to secure your homelab fleet?</h2>
+          <p>
+            Deploy CentralD today under the GPL-3.0 license. No telemetry, no
+            cloud dependency, full sovereignty.
+          </p>
+          <div class="cta-actions">
+            <a class="button primary lg" href="/docs/quickstart"
+              >Start with Quickstart</a
+            >
+            <a
+              class="button secondary lg"
+              href="https://github.com/BurntToasters/centrald"
+              target="_blank"
+              rel="noopener noreferrer">View on GitHub</a
+            >
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 </BaseLayout>
 
+<script>
+  // Tab Switching
+  const tabs = document.querySelectorAll<HTMLButtonElement>(".tab-btn");
+  const panels = document.querySelectorAll<HTMLElement>(".tab-content");
+
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      tabs.forEach((t) => {
+        t.classList.remove("active");
+        t.setAttribute("aria-selected", "false");
+      });
+      panels.forEach((p) => p.classList.remove("active"));
+
+      tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+
+      const targetId = tab.getAttribute("data-tab");
+      if (targetId) {
+        document.getElementById(targetId)?.classList.add("active");
+      }
+    });
+  });
+
+  // Clipboard copy
+  const copyBtns =
+    document.querySelectorAll<HTMLButtonElement>(".copy-snippet-btn");
+  copyBtns.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const targetSelector = btn.getAttribute("data-clipboard-target");
+      if (!targetSelector) return;
+      const target = document.querySelector(targetSelector);
+      if (!target) return;
+
+      const text = target.textContent || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        const label = btn.querySelector(".copy-label");
+        if (label) {
+          const original = label.textContent;
+          label.textContent = "Copied!";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            label.textContent = original;
+            btn.classList.remove("copied");
+          }, 2000);
+        }
+      } catch (err) {
+        console.error("Failed to copy", err);
+      }
+    });
+  });
+</script>
+
 <style>
+  .home-main {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Ambient Glows */
+  .ambient-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .glow-top {
+    top: 5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 48rem;
+    height: 24rem;
+    background: radial-gradient(
+      circle,
+      var(--ambient-glow-1) 0%,
+      rgba(109, 74, 255, 0) 70%
+    );
+  }
+
+  .glow-bottom {
+    top: 55rem;
+    right: 5%;
+    width: 40rem;
+    height: 20rem;
+    background: radial-gradient(
+      circle,
+      var(--ambient-glow-2) 0%,
+      rgba(79, 70, 229, 0) 70%
+    );
+  }
+
+  /* Hero Section */
   .hero {
+    position: relative;
+    z-index: 1;
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 4.5rem 1.5rem 3rem;
+    padding: 5.5rem 1.5rem 3.5rem;
     text-align: center;
   }
-  .hero-eyebrow {
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    font-size: 0.8rem;
-    color: var(--accent);
-    margin-bottom: 1rem;
+
+  .hero-badge-container {
+    margin-bottom: 1.5rem;
   }
-  .hero h1 {
-    font-size: clamp(2.2rem, 5vw, 3.4rem);
-    line-height: 1.1;
-    max-width: 18em;
-    margin: 0 auto 1.25rem;
+
+  .hero-badge {
+    padding: 0.35rem 0.95rem;
+    font-size: 0.8125rem;
   }
+
+  .badge-icon {
+    width: 0.9rem;
+    height: 0.9rem;
+  }
+
+  .hero-title {
+    font-size: clamp(2.4rem, 5.5vw, 4rem);
+    font-weight: 800;
+    line-height: 1.12;
+    letter-spacing: -0.035em;
+    max-width: 17em;
+    margin: 0 auto 1.5rem;
+  }
+
+  .gradient-text {
+    background: var(--brand-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
   .hero-lede {
-    max-width: 42em;
-    margin: 0 auto 2rem;
-    color: var(--muted);
-    font-size: 1.1rem;
+    max-width: 44em;
+    margin: 0 auto 2.5rem;
+    color: var(--text-secondary);
+    font-size: 1.15rem;
+    line-height: 1.7;
   }
+
   .hero-actions {
     display: flex;
-    gap: 0.75rem;
+    gap: 1rem;
     justify-content: center;
+    align-items: center;
     flex-wrap: wrap;
   }
-  .quick {
+
+  .btn-arrow {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  .btn-icon {
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+
+  /* Preview Architecture Card */
+  .preview-section {
+    position: relative;
+    z-index: 1;
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 1rem 1.5rem 3rem;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
+    padding: 1rem 1.5rem 4rem;
   }
-  .panel {
+
+  .preview-card {
+    padding: 1.5rem;
+    overflow: hidden;
+  }
+
+  .preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem;
+  }
+
+  .window-controls {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+  }
+
+  .dot.red {
+    background-color: #ef4444;
+  }
+  .dot.yellow {
+    background-color: #f59e0b;
+  }
+  .dot.green {
+    background-color: #10b981;
+  }
+
+  .preview-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .preview-status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--accent-teal);
+    font-weight: 600;
+  }
+
+  .status-indicator {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background-color: var(--accent-teal);
+    box-shadow: 0 0 8px var(--accent-teal);
+  }
+
+  .architecture-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 0;
+  }
+
+  .arch-box {
+    flex: 1;
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .arch-box-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .arch-box-sub {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .arch-box-desc {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .arch-pill {
+    align-self: flex-start;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.75rem;
-    padding: 1.25rem;
+    color: var(--accent);
   }
-  .panel-title {
-    font-weight: 700;
-    margin: 0 0 0.75rem;
+
+  .client-pill {
+    color: var(--accent-teal);
+    border-color: rgba(0, 214, 143, 0.3);
   }
-  .code {
-    margin: 0;
-  }
-  .checklist {
-    margin: 0;
-    padding-left: 1.1rem;
-    color: var(--muted);
+
+  .server-specs {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
   }
-  .features {
+
+  .spec-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+  }
+
+  .spec-label {
+    color: var(--text-muted);
+  }
+
+  .spec-row code {
+    font-size: 0.72rem;
+  }
+
+  .arch-flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0 0.5rem;
+  }
+
+  .flow-line {
+    width: 3.5rem;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      rgba(109, 74, 255, 0.2),
+      var(--accent),
+      rgba(109, 74, 255, 0.2)
+    );
+    position: relative;
+  }
+
+  .flow-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  /* Section Headings */
+  .section-heading {
+    text-align: center;
+    max-width: 36rem;
+    margin: 0 auto 3rem;
+  }
+
+  .section-heading h2 {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin: 0.75rem 0 0.75rem;
+  }
+
+  .section-heading p {
+    color: var(--text-secondary);
+    font-size: 1.05rem;
+    margin: 0;
+  }
+
+  /* Quickstart Section */
+  .quickstart-section {
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 0 1.5rem 3rem;
+    padding: 2rem 1.5rem 5rem;
+  }
+
+  .code-showcase {
+    max-width: 50rem;
+    margin: 0 auto;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .tab-bar {
+    display: flex;
+    background: var(--surface-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 0.4rem 0.5rem 0;
+    gap: 0.25rem;
+  }
+
+  .tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1.25rem;
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: 600;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .tab-btn:hover {
+    color: var(--text);
+  }
+
+  .tab-btn.active {
+    background: var(--surface);
+    color: var(--accent);
+    border-color: var(--border);
+    border-bottom-color: var(--surface);
+    margin-bottom: -1px;
+  }
+
+  .tab-icon {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+
+  .tab-content {
+    display: none;
+    padding: 1.5rem;
+  }
+
+  .tab-content.active {
+    display: block;
+  }
+
+  .code-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+  }
+
+  .code-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .copy-snippet-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    border-radius: var(--radius-pill);
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .copy-snippet-btn:hover {
+    background: var(--surface-hover);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .copy-snippet-btn.copied {
+    background: var(--accent-teal);
+    border-color: transparent;
+    color: #0b0d14;
+  }
+
+  .copy-icon {
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+
+  .code-comment {
+    color: #64748b;
+  }
+
+  /* Pillars Grid */
+  .pillars-section {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 2rem 1.5rem 5rem;
+  }
+
+  .features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    gap: 1.75rem;
+  }
+
+  .feature-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 1.25rem;
+  }
+
+  .card-icon-wrapper {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: var(--radius-lg);
+    background: var(--surface-secondary);
+    border: 1px solid var(--border);
+  }
+
+  .card-icon-wrapper.purple {
+    color: var(--accent);
+    background: var(--brand-gradient-subtle);
+    border-color: rgba(109, 74, 255, 0.3);
+  }
+  .card-icon-wrapper.teal {
+    color: var(--accent-teal);
+    background: var(--accent-teal-subtle);
+    border-color: rgba(0, 214, 143, 0.3);
+  }
+  .card-icon-wrapper.amber {
+    color: var(--accent-amber);
+    background: var(--accent-amber-subtle);
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+  .card-icon-wrapper.cyan {
+    color: var(--accent-cyan);
+    background: var(--accent-cyan-subtle);
+    border-color: rgba(6, 182, 212, 0.3);
+  }
+
+  .feature-icon {
+    width: 1.35rem;
+    height: 1.35rem;
+  }
+
+  .feature-card h3 {
+    font-size: 1.2rem;
+    margin: 0 0 0.5rem;
+  }
+
+  .feature-card p {
+    font-size: 0.9375rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: 0;
+    flex-grow: 1;
+  }
+
+  .card-tags {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding-top: 0.5rem;
+  }
+
+  /* Documentation Grid */
+  .docs-section {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 2rem 1.5rem 5rem;
+  }
+
+  .docs-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
     gap: 1.5rem;
   }
-  .feature {
+
+  .doc-card {
     display: block;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 0.75rem;
+    text-decoration: none;
     padding: 1.5rem;
   }
-  .feature:hover {
-    border-color: var(--accent);
+
+  .doc-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
   }
-  .feature h2 {
-    margin: 0 0 0.5rem;
-    font-size: 1.15rem;
-  }
-  .feature p {
+
+  .doc-card h3 {
+    font-size: 1.125rem;
     margin: 0;
-    color: var(--muted);
-    font-size: 0.95rem;
+    color: var(--text);
   }
-  @media (max-width: 768px) {
-    .quick {
-      grid-template-columns: 1fr;
+
+  .doc-arrow {
+    font-size: 1.2rem;
+    color: var(--accent);
+    transition: transform var(--transition-fast);
+  }
+
+  .doc-card:hover .doc-arrow {
+    transform: translateX(4px);
+  }
+
+  .doc-card p {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* CTA Banner */
+  .cta-section {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 1rem 1.5rem 4rem;
+  }
+
+  .cta-card {
+    text-align: center;
+    padding: 4rem 2rem;
+    background: linear-gradient(
+      135deg,
+      var(--surface-glass) 0%,
+      var(--surface-secondary) 100%
+    );
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cta-content {
+    max-width: 38rem;
+    margin: 0 auto;
+  }
+
+  .cta-card h2 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    letter-spacing: -0.025em;
+    margin-bottom: 1rem;
+  }
+
+  .cta-card p {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    margin-bottom: 2rem;
+  }
+
+  .cta-actions {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  @media (max-width: 900px) {
+    .architecture-diagram {
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .arch-flow {
+      transform: rotate(90deg);
+      padding: 0.5rem 0;
+    }
+
+    .flow-line {
+      width: 2rem;
     }
   }
 </style>

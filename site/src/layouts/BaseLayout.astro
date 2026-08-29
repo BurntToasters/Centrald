@@ -1,4 +1,6 @@
 ---
+import ThemeToggle from "../components/ThemeToggle.astro";
+
 interface Props {
   title: string;
   description: string;
@@ -20,81 +22,490 @@ const { title, description } = Astro.props;
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:site_name" content="CentralD" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta
+      name="theme-color"
+      content="#0b0d14"
+      media="(prefers-color-scheme: dark)"
+    />
+    <meta
+      name="theme-color"
+      content="#f8fafc"
+      media="(prefers-color-scheme: light)"
+    />
+
+    <!-- Prevent Flash of Unstyled Theme (FOUC) -->
+    <script is:inline>
+      (function () {
+        try {
+          const storedTheme = localStorage.getItem("centrald-theme");
+          if (storedTheme === "light" || storedTheme === "dark") {
+            document.documentElement.setAttribute("data-theme", storedTheme);
+            document.documentElement.style.colorScheme = storedTheme;
+          } else {
+            const prefersDark = window.matchMedia(
+              "(prefers-color-scheme: dark)",
+            ).matches;
+            document.documentElement.style.colorScheme = prefersDark
+              ? "dark"
+              : "light";
+          }
+        } catch (e) {}
+      })();
+    </script>
+
     <link rel="stylesheet" href="/global.css" />
   </head>
   <body>
     <header class="site-header">
-      <nav class="site-nav" aria-label="Primary">
-        <a class="site-brand" href="/">
-          <span class="site-mark">C</span>
-          <span>CentralD</span>
-        </a>
-        <a href="/docs/quickstart">Get started</a>
-        <a href="/docs/architecture">Architecture</a>
-        <a href="/docs/operations">Operations</a>
-        <a href="/docs/threat-model">Security</a>
-        <a href="https://github.com/BurntToasters/centrald">GitHub</a>
-      </nav>
+      <div class="site-header-container">
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a class="site-brand" href="/" aria-label="CentralD Home">
+            <span class="site-mark">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+            </span>
+            <span class="brand-text">CentralD</span>
+            <span class="badge purple header-badge">Alpha</span>
+          </a>
+
+          <div class="nav-links">
+            <a class="nav-link" href="/docs/quickstart">Get started</a>
+            <a class="nav-link" href="/docs/architecture">Architecture</a>
+            <a class="nav-link" href="/docs/operations">Operations</a>
+            <a class="nav-link" href="/docs/threat-model">Security</a>
+            <a class="nav-link" href="/docs/releases">Releases</a>
+          </div>
+
+          <div class="nav-actions">
+            <ThemeToggle />
+            <a
+              class="github-btn"
+              href="https://github.com/BurntToasters/centrald"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="CentralD GitHub repository"
+            >
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"
+                ></path>
+              </svg>
+              <span class="github-text">GitHub</span>
+            </a>
+            <button
+              type="button"
+              class="mobile-menu-btn"
+              aria-label="Toggle navigation menu"
+              aria-expanded="false"
+            >
+              <svg
+                class="menu-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="3" y1="12" x2="21" y2="12"></line>
+                <line x1="3" y1="6" x2="21" y2="6"></line>
+                <line x1="3" y1="18" x2="21" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+        </nav>
+      </div>
+
+      <!-- Mobile dropdown drawer -->
+      <div class="mobile-drawer" id="mobileDrawer">
+        <div class="mobile-drawer-links">
+          <a class="mobile-nav-link" href="/docs/quickstart">Get started</a>
+          <a class="mobile-nav-link" href="/docs/architecture">Architecture</a>
+          <a class="mobile-nav-link" href="/docs/operations">Operations</a>
+          <a class="mobile-nav-link" href="/docs/threat-model">Security</a>
+          <a class="mobile-nav-link" href="/docs/releases">Releases</a>
+          <a
+            class="mobile-nav-link"
+            href="https://github.com/BurntToasters/centrald"
+            target="_blank"
+            rel="noopener noreferrer">GitHub</a
+          >
+        </div>
+      </div>
     </header>
+
     <slot />
+
     <footer class="site-footer">
-      <p>
-        CentralD is free software under GPL-3.0-or-later. Built for private LAN
-        and VPN homelabs.
-      </p>
+      <div class="footer-container">
+        <div class="footer-grid">
+          <div class="footer-brand-col">
+            <div class="footer-brand">
+              <span class="site-mark">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                  <path d="M2 17l10 5 10-5"></path>
+                  <path d="M2 12l10 5 10-5"></path>
+                </svg>
+              </span>
+              <span class="brand-text">CentralD</span>
+            </div>
+            <p class="footer-desc">
+              Security-first device management for private LAN and VPN homelabs.
+              Managed Ubuntu host, outbound-only clients, and desktop Admin.
+            </p>
+            <p class="footer-license">
+              Free software under <strong>GPL-3.0-or-later</strong>.
+            </p>
+          </div>
+
+          <div class="footer-links-col">
+            <p class="footer-heading">Documentation</p>
+            <ul>
+              <li><a href="/docs/quickstart">Quickstart Guide</a></li>
+              <li><a href="/docs/architecture">System Architecture</a></li>
+              <li><a href="/docs/operations">Operations Runbook</a></li>
+              <li><a href="/docs/threat-model">Threat Model</a></li>
+              <li><a href="/docs/releases">Releases & Updates</a></li>
+            </ul>
+          </div>
+
+          <div class="footer-links-col">
+            <p class="footer-heading">Project</p>
+            <ul>
+              <li>
+                <a
+                  href="https://github.com/BurntToasters/centrald"
+                  target="_blank"
+                  rel="noopener noreferrer">GitHub Repository</a>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/BurntToasters/centrald/issues"
+                  target="_blank"
+                  rel="noopener noreferrer">Issue Tracker</a>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/BurntToasters/centrald/blob/main/SECURITY.md"
+                  target="_blank"
+                  rel="noopener noreferrer">Security Policy</a>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/BurntToasters/centrald/blob/main/LICENSE"
+                  target="_blank"
+                  rel="noopener noreferrer">GPL-3.0 License</a>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="footer-bottom">
+          <p>
+            © {new Date().getFullYear()} CentralD Contributors. Built for homelab
+            sovereignty.
+          </p>
+        </div>
+      </div>
     </footer>
+
+    <script>
+      const menuBtn = document.querySelector(".mobile-menu-btn");
+      const drawer = document.getElementById("mobileDrawer");
+      if (menuBtn && drawer) {
+        menuBtn.addEventListener("click", () => {
+          const expanded = menuBtn.getAttribute("aria-expanded") === "true";
+          menuBtn.setAttribute("aria-expanded", String(!expanded));
+          drawer.classList.toggle("open");
+        });
+      }
+    </script>
   </body>
 </html>
 
 <style>
   .site-header {
-    border-bottom: 1px solid var(--border);
-    background: color-mix(in srgb, var(--bg) 92%, transparent);
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 50;
+    width: 100%;
+    background: var(--surface-glass);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--surface-glass-border);
+    transition:
+      background-color var(--transition-normal),
+      border-color var(--transition-normal);
   }
-  .site-nav {
+
+  .site-header-container {
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 0.75rem 1.5rem;
+    padding: 0 1.5rem;
+  }
+
+  .site-nav {
     display: flex;
     align-items: center;
-    gap: 1.25rem;
+    justify-content: space-between;
+    height: var(--header-height);
+    gap: 1.5rem;
   }
+
   .site-brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.65rem;
     font-weight: 700;
-    margin-right: auto;
+    font-size: 1.125rem;
+    color: var(--text);
+    text-decoration: none;
   }
+
   .site-mark {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
-    border-radius: 0.5rem;
-    background: linear-gradient(135deg, #38bdf8, #6366f1);
-    color: #0b1220;
-    font-weight: 800;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--radius-md);
+    background: var(--brand-gradient);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(109, 74, 255, 0.35);
   }
+
+  .site-mark svg {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  .brand-text {
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .header-badge {
+    font-size: 0.65rem;
+    padding: 0.15rem 0.5rem;
+  }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .nav-link {
+    padding: 0.45rem 0.85rem;
+    border-radius: var(--radius-pill);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: all var(--transition-fast);
+  }
+
+  .nav-link:hover {
+    color: var(--text);
+    background-color: var(--surface-hover);
+    text-decoration: none;
+  }
+
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .github-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    background-color: var(--surface);
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+    transition: all var(--transition-normal);
+  }
+
+  .github-btn:hover {
+    background-color: var(--surface-hover);
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+    text-decoration: none;
+    opacity: 1;
+  }
+
+  .github-btn .icon {
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .mobile-menu-btn {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .menu-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .mobile-drawer {
+    display: none;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 1rem 1.5rem 1.5rem;
+  }
+
+  .mobile-drawer.open {
+    display: block;
+  }
+
+  .mobile-drawer-links {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .mobile-nav-link {
+    padding: 0.6rem 0.75rem;
+    border-radius: var(--radius-md);
+    color: var(--text);
+    font-weight: 500;
+    font-size: 1rem;
+  }
+
+  .mobile-nav-link:hover {
+    background-color: var(--surface-secondary);
+  }
+
+  /* Footer */
   .site-footer {
     border-top: 1px solid var(--border);
-    margin-top: 4rem;
+    background-color: var(--surface-secondary);
+    margin-top: 5rem;
+    padding: 4rem 1.5rem 2rem;
+    transition:
+      background-color var(--transition-normal),
+      border-color var(--transition-normal);
   }
-  .site-footer p {
+
+  .footer-container {
     max-width: var(--content-max);
     margin: 0 auto;
-    padding: 1.5rem;
-    color: var(--muted);
-    font-size: 0.9rem;
   }
-  @media (max-width: 640px) {
-    .site-nav a:not(.site-brand) {
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 3rem;
+    margin-bottom: 3rem;
+  }
+
+  .footer-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+  }
+
+  .footer-desc {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    max-width: 26rem;
+    margin-bottom: 1rem;
+  }
+
+  .footer-license {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+  }
+
+  .footer-heading {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text);
+    margin: 0 0 1.25rem;
+  }
+
+  .footer-links-col ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .footer-links-col a {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+    transition: color var(--transition-fast);
+  }
+
+  .footer-links-col a:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .footer-bottom {
+    border-top: 1px solid var(--border);
+    padding-top: 2rem;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    text-align: center;
+  }
+
+  @media (max-width: 860px) {
+    .nav-links {
       display: none;
+    }
+
+    .github-text {
+      display: none;
+    }
+
+    .mobile-menu-btn {
+      display: inline-flex;
+    }
+
+    .footer-grid {
+      grid-template-columns: 1fr;
+      gap: 2rem;
     }
   }
 </style>

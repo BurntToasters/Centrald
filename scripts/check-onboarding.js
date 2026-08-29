@@ -149,6 +149,11 @@ for (const [source, text, label] of [
     "Do not use\n# RuntimeDirectory=",
     "client unit does not own shared /run/centrald",
   ],
+  [
+    read("docs/IMPLEMENTATION_STATUS.md"),
+    "Linux hosts fail closed",
+    "implementation status does not claim Linux can complete a full release",
+  ],
 ])
   requireText(source, text, label);
 

@@ -158,7 +158,9 @@ npm run release:bump -- 0.1.0-alpha.2
 
 The helper rejects invalid SemVer, refuses to bump to a version whose tag
 already exists on `origin`, and refuses to touch a tree whose version fields
-disagree. A stale `Cargo.lock` is regenerated so `--locked` builds keep working.
+disagree. `Cargo.lock` workspace package versions are updated with
+`cargo update --workspace --offline` so a bump cannot re-resolve young registry
+crates.
 
 One command builds every platform the current host can produce, assembles the
 artifacts, signs them, generates the manifests, and verifies the complete signed
@@ -258,6 +260,10 @@ npm run release:publish
 ```
 
 This requires the exact `v<package-version>` tag to already exist at HEAD.
+Because `CDN_BASE_URL` is baked, publish also fails closed unless
+`CENTRALD_S3_ENDPOINT`, `CENTRALD_S3_BUCKET`, and AWS credentials are set. That
+check runs before the version tag is created so a GitHub-only publish cannot
+leave the CDN feed empty.
 
 If the immutable version release already published successfully but channel
 publication failed, retry only the mutable pointer step. The retry downloads the
@@ -280,7 +286,11 @@ The release workflow expects:
 - `TAURI_SIGNING_PRIVATE_KEY`;
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the key is encrypted;
 - `MINISIGN_SECRET_KEY_B64`, the base64 encoding of the ephemeral unprotected
-  Minisign secret-key file used only by the final signing job.
+  Minisign secret-key file used only by the final signing job;
+- `CENTRALD_S3_ENDPOINT`, `CENTRALD_S3_BUCKET`, optional `CENTRALD_S3_REGION`,
+  `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` so the fallback publish can
+  mirror signed channel manifests to the baked CDN. Without them the job fails
+  closed instead of shipping binaries that point at an empty feed.
 
 The workflow is a manual fallback, not a tag-push trigger. Dispatch it
 explicitly at the existing `v<package-version>` tag; this prevents it from

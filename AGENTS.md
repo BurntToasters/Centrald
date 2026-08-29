@@ -214,10 +214,11 @@ execution and credential saving visibly disabled.
   `stable`. Pass release flags after `--`: `npm run release -- --channel beta`
   or `npm run release -- --all-docker`. `CENTRALD_RELEASE_CHANNEL` also
   overrides the tracked channel for one build.
-- The S3 mirror is gated on `CENTRALD_S3_ENDPOINT` being set: without it the
-  release flow warns loudly and skips the sync (CI stays green), and
-  `sync-channel.js` rejects an empty/undetermined channel instead of uploading
-  to a bad prefix.
+- The S3 mirror is required when `CDN_BASE_URL` is baked: publish fails closed
+  without `CENTRALD_S3_ENDPOINT` (and bucket/credentials). CI that does not
+  publish stays green. `sync-channel.js` JSON-parses the `.yml` feed (JSON
+  body), verifies Minisign, and rejects an empty/undetermined channel instead
+  of uploading to a bad prefix.
 - `scripts/bump-version.js` keeps `package.json`, workspace `Cargo.toml`,
   `tauri.conf.json`, and `Cargo.lock` in lockstep (stale locks break every
   `--locked` build); it captures `cargo metadata --locked` before rewriting
@@ -257,7 +258,9 @@ execution and credential saving visibly disabled.
   `allow_legacy = false`; `UPDATE_BASE_URL_EXPLICIT` is a baked flag from
   `centrald.config`. HTTPS redirects are capped at 3 hops, HTTPS-only, and
   refuse loopback/RFC1918/link-local/ULA IP literals including IPv4-mapped
-  IPv6 (cross-host public HTTPS stays allowed for GitHub Releases). Admin self-update uses the same fetch
+  IPv6, and fail closed when a redirect hostname is unresolvable or any
+  resolved address is non-public (cross-host public HTTPS stays allowed for
+  GitHub Releases). Admin self-update uses the same fetch
   policy: `check_admin_update` / `install_admin_update` Minisign-verify the
   updater JSON, then call the Tauri plugin only if versions match. Do not
   restore `updater:default` in the Admin capability ACL.
@@ -315,8 +318,9 @@ execution and credential saving visibly disabled.
   `--channel`/`CENTRALD_RELEASE_CHANNEL` become a Docker build arg.
 - `scripts/sync-channel.js` — S3 mirror of the four signed manifest files
   (release manifest + `.minisig`, Tauri manifest + `.minisig`), refused on
-  symlinks, requires `aws` CLI and S3 env; `release.js` calls it as the last
-  publish step only when `CENTRALD_S3_ENDPOINT` is set.
+  symlinks, requires `aws` CLI and S3 env, JSON-parses the channel field;
+  `release.js` calls it as the last publish step when `CDN_BASE_URL` is set
+  and fails closed if `CENTRALD_S3_ENDPOINT` is missing.
 - `scripts/setup-docker.js`, `scripts/setup.js` — handsfree release-host and
   workspace setup; `scripts/bump-version.js` — lockstep version + Cargo.lock
   regen; `scripts/sign-release.js`, `scripts/generate-manifests.js`,

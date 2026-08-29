@@ -408,12 +408,9 @@ function publishChannelOnly() {
 function syncChannelToCdn(suppliedEntries) {
   verifyVersionSync();
   if (!process.env.CENTRALD_S3_ENDPOINT?.trim()) {
-    console.warn(
-      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; " +
-        "skipping the S3 mirror. Configure the S3 environment (.env) and run " +
-        "`npm run release:sync-channel` to mirror the signed channel manifests.",
+    throw new Error(
+      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; refusing to finish publish without mirroring signed channel manifests. Set CENTRALD_S3_ENDPOINT, CENTRALD_S3_BUCKET, and AWS credentials in .env.",
     );
-    return;
   }
   const entries = suppliedEntries ?? localChannelEntries(config.releaseChannel);
   const temporaryRelative = `release/.cdn-sync-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
@@ -455,6 +452,11 @@ function requirePublishEnvironment() {
   }
   if (!commandExists("gh")) {
     throw new Error("GitHub CLI (gh) is required for publishing.");
+  }
+  if (config.cdnBaseUrl && !process.env.CENTRALD_S3_ENDPOINT?.trim()) {
+    throw new Error(
+      "CDN_BASE_URL is configured but CENTRALD_S3_ENDPOINT is not set; refusing to finish publish without mirroring signed channel manifests. Set CENTRALD_S3_ENDPOINT, CENTRALD_S3_BUCKET, and AWS credentials in .env.",
+    );
   }
 }
 

@@ -507,10 +507,14 @@ test("one-command release builds every host platform, tags, and publishes only w
   assert.match(release, /createAndPushVersionTag/);
   assert.match(release, /requireCompleteReleaseHost/);
   assert.match(release, /envWithoutReleaseSecrets/);
+  assert.match(
+    release,
+    /config\.cdnBaseUrl && !process\.env\.CENTRALD_S3_ENDPOINT/,
+  );
   assert.match(release, /CENTRALD_RELEASE_PUBLISH === "YES"/);
   assert.match(
     release,
-    /verify\(\);\n  if \(process\.env\.CENTRALD_RELEASE_PUBLISH === "YES"\)/,
+    /verify\(\);\n {2}if \(process\.env\.CENTRALD_RELEASE_PUBLISH === "YES"\)/,
   );
   assert.match(release, /git", \["tag", expectedTag\]/);
   assert.match(release, /git", \["push", "origin", expectedTag\]/);
@@ -643,15 +647,23 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
 });
 
 test("channels are baked per build and CDN manifests are mirrored to S3 after publish", async () => {
-  const [buildConfig, release, sync, build, envExample, buildRust] =
-    await Promise.all([
-      read("scripts/lib/build-config.js"),
-      read("scripts/release.js"),
-      read("scripts/sync-channel.js"),
-      read("scripts/build.js"),
-      read(".env.example"),
-      read("crates/centrald-common/build.rs"),
-    ]);
+  const [
+    buildConfig,
+    release,
+    sync,
+    build,
+    envExample,
+    buildRust,
+    releaseWorkflow,
+  ] = await Promise.all([
+    read("scripts/lib/build-config.js"),
+    read("scripts/release.js"),
+    read("scripts/sync-channel.js"),
+    read("scripts/build.js"),
+    read(".env.example"),
+    read("crates/centrald-common/build.rs"),
+    read(".github/workflows/release.yml"),
+  ]);
   // A single tree builds any channel: --channel on build/release and the
   // CENTRALD_RELEASE_CHANNEL env override beat the tracked config in both the
   // JS tooling and the Rust build script that bakes values into binaries.
@@ -690,18 +702,27 @@ test("channels are baked per build and CDN manifests are mirrored to S3 after pu
   assert.match(release, /syncChannelToCdn/);
   assert.match(release, /if \(config\.cdnBaseUrl\) syncChannelToCdn/);
   assert.match(release, /materializeChannelEntries/);
+  assert.match(
+    release,
+    /refusing to finish publish without mirroring signed channel manifests/,
+  );
+  assert.doesNotMatch(release, /skipping the S3 mirror/);
   assert.match(sync, /CENTRALD_S3_ENDPOINT/);
   assert.match(sync, /CENTRALD_S3_BUCKET/);
   assert.match(sync, /s3",\n\s+"cp"/);
   assert.match(sync, /minisig/);
   assert.match(sync, /--from-dir/);
   assert.match(sync, /assertManifestChannel/);
+  assert.match(sync, /lib\/channel-manifest\.js/);
   assert.match(sync, /Amazon\.AWSCli/);
   assert.match(sync, /Refusing symbolic-link release manifest/);
   assert.match(envExample, /CENTRALD_S3_ENDPOINT/);
   assert.match(envExample, /updated\.centrald\.dev/);
   assert.match(envExample, /# CENTRALD_MINISIGN_UNPROTECTED_KEY=YES/);
   assert.doesNotMatch(envExample, /^CENTRALD_MINISIGN_UNPROTECTED_KEY=YES$/m);
+  assert.match(releaseWorkflow, /secrets\.CENTRALD_S3_ENDPOINT/);
+  assert.match(releaseWorkflow, /secrets\.CENTRALD_S3_BUCKET/);
+  assert.match(releaseWorkflow, /awscli/);
   // Manifests are mirrored, but artifacts stay on immutable GitHub tag URLs.
   assert.doesNotMatch(sync, /release\/artifacts/);
 });
@@ -1400,6 +1421,10 @@ test("package upgrades restart only already-active CentralD services", async () 
   assert.match(packaging, /usr\/lib\/tmpfiles\.d\/centrald-server\.conf/);
   assert.match(packaging, /usr\/lib\/tmpfiles\.d\/centrald-client\.conf/);
   assert.match(packaging, /systemd-tmpfiles --create/);
+  assert.doesNotMatch(
+    packaging,
+    /systemd-tmpfiles --create \/usr\/lib\/tmpfiles\.d\/centrald-(?:server|client)\.conf \|\| true/,
+  );
 });
 
 test("CI Linux package smoke installs clang for bindgen", async () => {
@@ -1641,6 +1666,9 @@ test("outbound rustls uses an explicit ring CryptoProvider", async () => {
   assert.match(https, /fn install_rustls_crypto_provider/);
   assert.match(https, /ring::default_provider\(\)\.install_default\(\)/);
   assert.match(https, /to_ipv4_mapped\(\)/);
+  assert.match(https, /ToSocketAddrs::to_socket_addrs/);
+  assert.doesNotMatch(https, /addrs\.next\(\)/);
+  assert.match(https, /this-name-must-not-resolve\.invalid/);
   assert.match(serverMain, /install_rustls_crypto_provider/);
   assert.match(clientMain, /install_rustls_crypto_provider/);
   assert.match(adminLib, /install_rustls_crypto_provider/);

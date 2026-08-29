@@ -11,6 +11,10 @@ import {
   parseSemver,
   releaseTimestamp,
 } from "../lib/release-metadata.js";
+import {
+  assertManifestChannel,
+  manifestChannel,
+} from "../lib/channel-manifest.js";
 
 test("release timestamps honor reproducible build inputs", () => {
   assert.equal(
@@ -117,9 +121,44 @@ test("manifest generation is reproducible for one release timestamp", async () =
         assert.equal(updater.toString("base64"), environment.EXPECTED_UPDATER);
       }
     }
+    const generated = JSON.parse(
+      await readFile(
+        path.join(root, "release", "centrald-release.yml"),
+        "utf8",
+      ),
+    );
+    assert.equal(generated.channel, "beta");
+    assertManifestChannel(
+      await readFile(
+        path.join(root, "release", "centrald-release.yml"),
+        "utf8",
+      ),
+      "beta",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("CDN channel assert parses JSON release manifests, not YAML lines", () => {
+  const body = `${JSON.stringify(
+    {
+      schema_version: 1,
+      version: "0.1.0",
+      channel: "stable",
+      protocol_major: 1,
+    },
+    null,
+    2,
+  )}\n`;
+  assert.equal(manifestChannel(body), "stable");
+  assertManifestChannel(body, "stable");
+  assert.throws(() => assertManifestChannel(body, "alpha"), /expected alpha/u);
+  assert.throws(() => manifestChannel("channel: stable\n"), /not valid JSON/u);
+  assert.throws(
+    () => manifestChannel('{"schema_version":1}\n'),
+    /missing a channel field/u,
+  );
 });
 
 test("version bump updates package.json, Cargo.toml, and tauri.conf.json in lockstep", async () => {

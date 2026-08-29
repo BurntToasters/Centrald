@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { commandExists, run } from "./command.js";
 import { loadBuildConfig } from "./lib/build-config.js";
+import { assertManifestChannel } from "./lib/channel-manifest.js";
 
 // Uploads the signed channel manifests to the S3-compatible CDN bucket
 // (DigitalOcean Spaces or any S3 endpoint) so binaries that bake
@@ -89,7 +90,7 @@ for (const file of files) {
 
 verifyManifestSignatures(files);
 assertManifestChannel(
-  path.join(sourceDirectory, config.releaseManifest),
+  fs.readFileSync(path.join(sourceDirectory, config.releaseManifest), "utf8"),
   releaseChannel,
 );
 
@@ -149,21 +150,6 @@ function verifyManifestSignatures(allFiles) {
       "minisign",
       ["-V", "-P", config.minisignPublicKey, "-m", file, "-x", signature],
       { stdio: "inherit" },
-    );
-  }
-}
-
-function assertManifestChannel(manifestPath, expectedChannel) {
-  const body = fs.readFileSync(manifestPath, "utf8");
-  const match = /^channel:\s*(\S+)\s*$/m.exec(body);
-  if (!match) {
-    throw new Error(
-      `Release manifest ${manifestPath} is missing a channel field.`,
-    );
-  }
-  if (match[1] !== expectedChannel) {
-    throw new Error(
-      `Release manifest channel is ${match[1]}, expected ${expectedChannel}; refusing to upload to the wrong CDN prefix.`,
     );
   }
 }

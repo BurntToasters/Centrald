@@ -44,6 +44,17 @@ for (const [source, text, label] of [
   [quickstart, "timedatectl", "quick start NTP guidance"],
   [serverMain, "enable", "server setup service activation"],
   [serverMain, "CENTRALD_SKIP_SERVICE_START", "advanced service-start opt-out"],
+  [
+    read("crates/centrald-server/src/firewall.rs"),
+    "CENTRALD_SKIP_FIREWALL",
+    "advanced firewall opt-out",
+  ],
+  [
+    read("crates/centrald-server/src/firewall.rs"),
+    'const UFW: &str = "/usr/sbin/ufw"',
+    "setup uses the fixed UFW path",
+  ],
+  [manage, "Refresh host firewall (UFW)", "local console can re-apply UFW"],
   [manage, "Add a client (guided)", "guided server TUI"],
   [manage, "Server settings (advanced)", "advanced TUI grouping"],
   [app, "Getting started and common tasks", "Admin onboarding checklist"],
@@ -84,6 +95,7 @@ for (const [source, text, label] of [
     "fn suggested_public_host",
     "setup suggests this host's TLS name",
   ],
+  [read("scripts/package-linux.js"), '"ufw"', "server package depends on ufw"],
   [
     read("scripts/package-linux.js"),
     "CentralD server is installed. Next: sudo centrald-server initial-setup",
@@ -96,7 +108,7 @@ for (const [source, text, label] of [
   ],
   [
     readme,
-    "You do not need the local server console before the",
+    "You do not need the local server",
     "README first-run does not require config console",
   ],
   [
@@ -153,6 +165,11 @@ for (const [source, text, label] of [
     quickstart,
     "enter the server's LAN IPv4 address",
     "quick start VM TLS name uses a resolvable LAN IP",
+  ],
+  [
+    quickstart,
+    "installs the needed UFW rules for the actual",
+    "quick start first-run applies UFW",
   ],
   [
     quickstart,

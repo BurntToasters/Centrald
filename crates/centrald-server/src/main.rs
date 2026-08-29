@@ -15,6 +15,7 @@ use centrald_server::db::{
     connect_and_migrate, ensure_database_and_migrate, migrate_precreated_database,
     resolve_database_url,
 };
+use centrald_server::firewall;
 use centrald_server::local_postgres;
 use centrald_server::manage::{create_enrollment_key as create_key, require_root};
 use centrald_server::services::{
@@ -581,7 +582,8 @@ async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
     }
 
     let service = try_start_packaged_service(config_path).await;
-    print_completion(&summary, &admin, &service);
+    let firewall = firewall::apply_for_server(&config);
+    print_completion(&summary, &admin, &service, &firewall);
     Ok(())
 }
 

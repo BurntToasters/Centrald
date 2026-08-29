@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config_lock;
 pub mod db;
 pub mod file_security;
+pub mod firewall;
 pub mod local_audit;
 pub mod local_control;
 pub mod local_postgres;

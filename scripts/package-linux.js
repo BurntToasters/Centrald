@@ -64,6 +64,7 @@ buildDebianPackage({
       "coreutils",
       "postgresql",
       "systemd",
+      "ufw",
       "util-linux",
     ],
   }),

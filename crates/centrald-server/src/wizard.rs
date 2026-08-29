@@ -9,6 +9,7 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::cli::SetupArgs;
 use crate::db::{DatabaseAdminError, validate_database_url_policy};
+use crate::firewall::FirewallApplyReport;
 use crate::manage::CreatedEnrollmentKey;
 use crate::setup::{SetupOptions, SetupSummary};
 use centrald_common::config::{SERVER_DATA_DIR, SERVER_DATABASE_ENV_FILE, SERVER_DATABASE_URL_ENV};
@@ -33,6 +34,7 @@ pub fn print_completion(
     summary: &SetupSummary,
     admin: &CreatedEnrollmentKey,
     service_status: &str,
+    firewall: &FirewallApplyReport,
 ) {
     let service_ready = service_status.starts_with("READY:");
     let service_incomplete = service_status.starts_with("INCOMPLETE:");
@@ -83,6 +85,8 @@ pub fn print_completion(
     println!("{}", style("Service").cyan().bold());
     println!("  {service_status}");
     println!();
+    firewall.print();
+    println!();
     println!("{}", style("Next steps").cyan().bold());
     if service_incomplete {
         println!("  1. Fix service startup using the recovery command above.");
@@ -103,10 +107,6 @@ pub fn print_completion(
             "  4. Create client invitations from Admin, or later: sudo centrald-server config"
         );
     }
-    println!();
-    println!(
-        "If this host uses a firewall, allow inbound TCP 7443, 7444, and 7445 (see docs/QUICKSTART.md)."
-    );
 }
 
 fn collect_interactive(config_path: &Path, args: SetupArgs) -> Result<SetupOptions> {
@@ -402,6 +402,7 @@ mod tests {
         assert!(source.contains(
             "PostgreSQL: a new dedicated database is created; an existing database is refused."
         ));
+        assert!(source.contains("firewall.print()"));
     }
 
     #[test]

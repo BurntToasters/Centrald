@@ -67,6 +67,13 @@ trees.
   postinst prints `sudo centrald-server initial-setup` when
   `/etc/centrald/server.toml` is absent; the client `.deb` prints
   `sudo centrald-client enroll` until `current.pointer` exists.
+  `initial-setup` also applies UFW for unique non-loopback listener ports,
+  allows SSH first, and enables UFW unless `CI` or
+  `CENTRALD_SKIP_FIREWALL_ENABLE` is set. `CENTRALD_SKIP_FIREWALL` skips host
+  firewall mutation. Use only `/usr/sbin/ufw` and `/usr/bin/timeout` with
+  `env_clear`; never a shell. Do not open PostgreSQL. Loopback listeners are
+  skipped. Changing listeners from `centrald-server config` re-applies the
+  current ports.
 - After `initial-setup`, the next operator step is Admin enrollment with the
   printed access key. `centrald-server config` remains the local console for
   health, extra invitations, and advanced/local-only trust tasks; it is not a

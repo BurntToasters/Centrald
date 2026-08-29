@@ -14,7 +14,10 @@ until their gates flip with acceptance tests.
   package depends on PostgreSQL so `apt install ./centrald-server_*.deb` pulls
   it in. Unix non-interactive setup without `CENTRALD_DATABASE_URL` uses the
   same recommended local PostgreSQL path as the wizard default. Setup suggests
-  this host's hostname as the TLS name when it is a usable DNS name.
+  this host's hostname as the TLS name when it is a usable DNS name. After
+  commit, packaged Ubuntu setup also enables `centrald-server.service` and
+  configures UFW for the unique non-loopback listener ports (SSH first; enable
+  is skipped when `CI` or `CENTRALD_SKIP_FIREWALL_ENABLE` is set).
 - Recommended local PostgreSQL provisioning plus an advanced external-URL path.
   Managed local role/database names use the full server UUID, role and database
   comments bind them to that exact instance, setup writes non-secret recovery

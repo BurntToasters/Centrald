@@ -145,6 +145,21 @@ for (const [source, text, label] of [
   ],
   [quickstart, "libfuse2t64", "quick start Admin AppImage FUSE dependency"],
   [
+    quickstart,
+    "npm run build:linux:x64:native",
+    "quick start VM packages come from native Linux build",
+  ],
+  [
+    quickstart,
+    "enter the server's LAN IPv4 address",
+    "quick start VM TLS name uses a resolvable LAN IP",
+  ],
+  [
+    quickstart,
+    "Do not pass Electron flags",
+    "quick start does not recommend Electron --no-sandbox for Tauri",
+  ],
+  [
     read("deploy/systemd/centrald-client.service"),
     "Do not use\n# RuntimeDirectory=",
     "client unit does not own shared /run/centrald",

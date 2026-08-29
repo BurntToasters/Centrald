@@ -44,8 +44,9 @@ normal systemd package installation it also enables and starts
 `centrald-server.service`. You do not need the local server console before the
 first Admin enroll; create later client invitations from Admin. Use
 `sudo centrald-server config` for health, extra invitations, and advanced
-local-only trust tasks. See [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the
-novice walkthrough.
+local-only trust tasks. For a first homelab VM test, enter the server LAN IP as
+the TLS name unless every machine can resolve the hostname. See
+[`docs/QUICKSTART.md`](docs/QUICKSTART.md) for the novice walkthrough.
 
 ## End-to-end setup
 

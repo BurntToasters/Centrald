@@ -10,6 +10,43 @@ Privileged jobs, remote package install, and PTY/ConPTY terminal sessions stay
 fail-closed until their security gates are release-ready—do not treat this build
 as a full remote-management suite.
 
+## Homelab VM test
+
+Use disposable Linux packages from a Linux build host:
+
+```text
+npm run build:linux:x64:native
+```
+
+Do **not** run `npm run release` on Linux; that path fails closed because a
+complete GitHub release also needs Windows artifacts.
+
+Recommended layout:
+
+- Ubuntu Server 24.04 VM for `centrald-server` (headless is fine).
+- Ubuntu Server 24.04 VM for `centrald-client`.
+- A **graphical** Linux or Windows workstation for CentralD Admin. Do not expect
+  the AppImage to run on a headless server console.
+- Optional Windows VM for the client installer.
+
+**TLS name is the most common first-enroll failure.** The wizard prompt is
+`TLS name clients should verify (LAN DNS name or IP)`. It may suggest this
+machine's hostname. Other VMs usually cannot resolve that name. For a homelab
+without DNS, enter the server's LAN IPv4 address (for example `192.168.1.20`).
+That value is baked into the invitation and certificates. A later connection
+override only changes where TCP goes; TLS still verifies the invitation name.
+
+Ubuntu 24.04 Server typically ships with **ufw inactive**. If you never enable
+it, QUICKSTART `ufw allow` commands are optional. If you _do_ enable ufw, open
+7443–7445 **before** `ufw enable`, and keep SSH allowed. Also check the
+hypervisor or cloud security group; it is independent of ufw. Do not expose
+PostgreSQL (`5432`) to other VMs — CentralD uses `127.0.0.1` on the server.
+
+apt on 24.04 pulls **PostgreSQL 16** for the `postgresql` dependency.
+
+After setup, Admin Health may show a release-manifest check error until the
+first signed CDN publish exists. That does not block enrollment.
+
 ## 0. Network and clock prerequisites
 
 Before enrollment, confirm every machine has accurate time (NTP) and that the
@@ -56,25 +93,35 @@ sudo centrald-server initial-setup
 ```
 
 The installer prints that setup command until `/etc/centrald/server.toml`
-exists. The wizard asks for the public DNS name/IP (it suggests this machine's
-hostname when that name is usable), PostgreSQL setup mode, offline-root recovery
-location, and first Admin name. Accept the recommended local PostgreSQL option
-unless you already run a dedicated database. It creates the dedicated database,
-PKI, server identity, and one-time Admin access key. On a packaged systemd
-installation it also enables and starts `centrald-server.service`.
+exists. The wizard asks for the TLS name clients verify (LAN DNS name or IP; it
+suggests this machine's hostname when that name is usable). For VMs without
+shared DNS, type the server's LAN IP instead of accepting the hostname.
+PostgreSQL setup mode, offline-root recovery location, and first Admin name
+follow. Accept the recommended local PostgreSQL option unless you already run a
+dedicated database. It creates the dedicated database, PKI, server identity, and
+one-time Admin access key. On a packaged systemd installation it also enables
+and starts `centrald-server.service`.
 
 Move the offline-root recovery PEM off the server after setup. Keep the one-time
 Admin access key only long enough to enroll the Admin app.
 
-The Admin Linux AppImage needs a graphical session and FUSE 2:
+The Admin Linux AppImage is a Tauri/WebKitGTK app, not Electron. It needs a
+graphical session and FUSE 2 (`libfuse2t64` lives in Ubuntu **universe**). Do
+**not** install the `fuse` package to make AppImages work — that can break
+desktop session mounts. If `apt` cannot find `libfuse2t64`, enable universe
+first:
 
 ```text
+sudo add-apt-repository universe
+sudo apt update
 sudo apt install libfuse2t64
 chmod +x centrald-admin_*.AppImage
 ./centrald-admin_*.AppImage
 ```
 
 `--appimage-extract-and-run` is a diagnostic fallback when FUSE is unavailable.
+Do not pass Electron flags such as `--no-sandbox`; they are not a Tauri AppImage
+interface.
 
 If setup says the service was not started, run:
 

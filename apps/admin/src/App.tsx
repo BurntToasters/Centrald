@@ -145,6 +145,12 @@ export function App() {
   const [section, setSection] = useState<Section>("overview");
   const [showEnrollment, setShowEnrollment] = useState(false);
   const [showInvitation, setShowInvitation] = useState(false);
+  const [revokeRequest, setRevokeRequest] = useState<Readonly<{
+    id: string;
+    kind: "client" | "invitation";
+    name: string;
+  }> | null>(null);
+  const [revokeReason, setRevokeReason] = useState("");
   const [enrollment, setEnrollment] = useState(emptyEnrollment);
   const [inviteName, setInviteName] = useState("");
   const [inviteLifetime, setInviteLifetime] = useState(900);
@@ -359,49 +365,51 @@ export function App() {
     }
   }
 
-  async function revokeTarget(target: Target) {
+  function revokeTarget(target: Target) {
     if (!selectedId) return;
-    const reason = window.prompt(
-      `Reason for revoking ${target.name}:`,
-      "Device retired from this CentralD server",
-    );
-    if (!reason?.trim()) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await invoke<string>("revoke_client", {
-        profileId: selectedId,
-        clientId: target.id,
-        reason: reason.trim(),
-      });
-      setTargets((current) =>
-        current.filter((candidate) => candidate.id !== target.id),
-      );
-      setNotice(`${target.name} was revoked.`);
-    } catch (reasonValue) {
-      setError(String(reasonValue));
-    } finally {
-      setBusy(false);
-    }
+    // window.prompt has no script-dialog host in the Tauri WebView, so
+    // revocation collects its audit reason through an inline modal instead.
+    setRevokeReason("Device retired from this CentralD server");
+    setRevokeRequest({ id: target.id, kind: "client", name: target.name });
   }
 
-  async function revokeInvitation(invitationToRevoke: EnrollmentKey) {
+  function revokeInvitation(invitationToRevoke: EnrollmentKey) {
     if (!selectedId || invitationToRevoke.status !== "pending") return;
-    const reason = window.prompt(
-      `Reason for revoking the invitation for ${invitationToRevoke.name}:`,
-      "Invitation no longer needed",
-    );
-    if (!reason?.trim()) return;
+    setRevokeReason("Invitation no longer needed");
+    setRevokeRequest({
+      id: invitationToRevoke.id,
+      kind: "invitation",
+      name: invitationToRevoke.name,
+    });
+  }
+
+  async function confirmRevoke(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedId || !revokeRequest || !revokeReason.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      await invoke<string>("revoke_client_invitation", {
-        profileId: selectedId,
-        invitationId: invitationToRevoke.id,
-        reason: reason.trim(),
-      });
-      await refreshClientInvitations(selectedId);
-      setNotice(`Invitation for ${invitationToRevoke.name} was revoked.`);
+      if (revokeRequest.kind === "client") {
+        await invoke<string>("revoke_client", {
+          profileId: selectedId,
+          clientId: revokeRequest.id,
+          reason: revokeReason.trim(),
+        });
+        const revokedName = revokeRequest.name;
+        setTargets((current) =>
+          current.filter((candidate) => candidate.id !== revokeRequest.id),
+        );
+        setNotice(`${revokedName} was revoked.`);
+      } else {
+        await invoke<string>("revoke_client_invitation", {
+          profileId: selectedId,
+          invitationId: revokeRequest.id,
+          reason: revokeReason.trim(),
+        });
+        await refreshClientInvitations(selectedId);
+        setNotice(`Invitation for ${revokeRequest.name} was revoked.`);
+      }
+      closeRevoke();
     } catch (reasonValue) {
       setError(String(reasonValue));
     } finally {
@@ -491,6 +499,7 @@ export function App() {
     setNotice(null);
     closeInvitation();
     closeEnrollment();
+    closeRevoke();
     setSelectedId(profileId);
     setSection("overview");
   }
@@ -505,6 +514,11 @@ export function App() {
     setInviteName("");
     setInviteLifetime(900);
     setInvitation(null);
+  }
+
+  function closeRevoke() {
+    setRevokeRequest(null);
+    setRevokeReason("");
   }
 
   async function copyInvitation() {
@@ -906,6 +920,61 @@ export function App() {
           </form>
         </div>
       )}
+
+      {revokeRequest && (
+        <div className="modal-backdrop">
+          <form className="modal" onSubmit={confirmRevoke}>
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">
+                  {revokeRequest.kind === "client"
+                    ? "Device revocation"
+                    : "Invitation revocation"}
+                </p>
+                <h2>Revoke {revokeRequest.name}</h2>
+              </div>
+              <button
+                aria-label="Close"
+                className="icon-button"
+                onClick={closeRevoke}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <label>
+              Audit reason
+              <input
+                maxLength={256}
+                onChange={(event) => setRevokeReason(event.target.value)}
+                required
+                value={revokeReason}
+              />
+              <small>
+                The reason is recorded in the server audit chain with this
+                revocation.
+              </small>
+            </label>
+            <div className="modal-actions">
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={closeRevoke}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="button primary"
+                disabled={busy || !revokeReason.trim()}
+                type="submit"
+              >
+                {busy ? "Revoking" : "Revoke now"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   );
 }
@@ -1079,8 +1148,8 @@ function Devices({
     confirmMessage?: string,
     parameters?: Record<string, unknown>,
   ) => Promise<void>;
-  onRevoke: (target: Target) => Promise<void>;
-  onRevokeInvitation: (invitation: EnrollmentKey) => Promise<void>;
+  onRevoke: (target: Target) => void;
+  onRevokeInvitation: (invitation: EnrollmentKey) => void;
   targets: readonly Target[];
   updatesEnabled: boolean;
 }>) {

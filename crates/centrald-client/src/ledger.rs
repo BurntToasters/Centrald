@@ -475,6 +475,8 @@ fn apply_unix_nofollow(options: &mut OpenOptions, create_private: bool) {
     let _ = (options, create_private);
 }
 
+// The Windows build has no directory fsync; the Result exists for Unix.
+#[allow(clippy::unnecessary_wraps)]
 fn sync_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

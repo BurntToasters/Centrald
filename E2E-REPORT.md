@@ -113,7 +113,8 @@ skip-guard). dist rebuilt 00:08 with all fixes (build exit 0).
 - Artifacts: admin-gui2-enrolled.png, admin-gui-devices.png,
   admin-gui-settings-saved.png, admin-gui-revoked.png, admin-xvfb.png.
 - Desktop session runs the fixed dist build (relaunched after host restart;
-  Xauthority rotates per session).
+  Xauthority rotates per session). Enrolled Xvfb profile migrated into the
+  desktop HOME (same host, keys never leave it); window mapped, no errors.
 
 ## Bug found + fixed (in tree)
 

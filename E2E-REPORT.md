@@ -53,6 +53,9 @@ skip-guard). dist rebuilt 00:08 with all fixes (build exit 0).
   Artifact audit-export.jsonl (copy).
 - PROVEN audit append-only chaining: second export wrote 31-68 only, first file
   byte-unchanged, batch2 previousHash equals batch1 tail hash.
+- PROVEN hash chain independently: Python recomputed all 68 entry hashes
+  (BTreeMap-sorted canonical JSON, compact separators) and every previousHash
+  link — 0 problems.
 
 ## Linux client (packaged .deb, systemd)
 

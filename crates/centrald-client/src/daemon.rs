@@ -182,9 +182,20 @@ async fn finalize_active_publication(config: &ClientConfig) -> Result<()> {
     if let Some((_path, previous)) = crate::enrollment::previous_active_config(&config.data_dir)?
         && previous.identity_id != config.identity_id
     {
-        replace_previous_identity(&previous, config.identity_id)
-            .await
-            .context("complete authenticated reenrollment replacement")?;
+        // The previous identity is already dead server-side (revoked or
+        // reaped) when replacement authentication is rejected as unknown.
+        // The new identity above is live, so adopt it instead of retrying a
+        // rollback target that can never succeed.
+        if let Err(error) = replace_previous_identity(&previous, config.identity_id).await {
+            if is_unknown_identity(&error) {
+                warn!(
+                    previous = %previous.identity_id,
+                    "previous client identity is already inactive server-side; adopting the new identity"
+                );
+            } else {
+                return Err(error.context("complete authenticated reenrollment replacement"));
+            }
+        }
     }
     crate::enrollment::commit_active_config(&config.data_dir)
         .context("finalize recovered client credential pointer")
@@ -1037,6 +1048,17 @@ pub(crate) async fn ensure_identity_active(config: &ClientConfig) -> Result<()> 
         );
     }
     Ok(())
+}
+
+/// Reports whether a failure is the server rejecting an unknown or inactive
+/// identity at authentication. Callers use this to distinguish a previous
+/// credential that is already dead (safe to adopt the replacement) from a
+/// transient failure (must retry with rollback intact).
+fn is_unknown_identity(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<tonic::Status>())
+        .any(|status| status.code() == tonic::Code::Unauthenticated)
 }
 
 /// Uses the previously active identity to prove an authenticated replacement

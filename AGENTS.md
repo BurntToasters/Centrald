@@ -643,10 +643,12 @@ Jobs/terminal stay unavailable.
 ## Docs map
 
 `docs/QUICKSTART.md` (first-run path, guarded by `npm run check:onboarding`),
-`docs/OPERATIONS.md`, `docs/RELEASES.md` (channel layout, publish flow, CI
-secrets), `docs/ARCHITECTURE.md`, `docs/THREAT_MODEL.md`,
-`docs/IMPLEMENTATION_STATUS.md` (authoritative implemented-vs-gated list).
-Site content is synced from `docs/*.md` + `SECURITY.md`.
+`docs/TUTORIAL.md` (checkpointed step-by-step setup and management walkthrough,
+site page `/docs/tutorial`), `docs/OPERATIONS.md`, `docs/RELEASES.md` (channel
+layout, publish flow, CI secrets), `docs/ARCHITECTURE.md`,
+`docs/THREAT_MODEL.md`, `docs/IMPLEMENTATION_STATUS.md` (authoritative
+implemented-vs-gated list). Site content is synced from `docs/*.md` +
+`SECURITY.md`.
 
 When changing first-run behavior, update QUICKSTART, OPERATIONS, README,
 `check-onboarding.js`, and this file together.

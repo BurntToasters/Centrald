@@ -1,5 +1,41 @@
 # CentralD E2E report — 1.0.0 readiness (VM runs 2026-09-27/28)
 
+## Fully fresh instance (2026-09-28, from zero)
+
+- Reset path run personally: services stopped, `--nuke --yes-i-want-to-do-this`
+  dropped DB + config + data; packages purged; stale backups + old recovery
+  bundle removed; debs reinstalled fresh.
+- `initial-setup --non-interactive`: exit 0, READY, UFW enabled with OpenSSH +
+  7443/7444/7445 (v4+v6). New instance 01a0ea65-...
+- Linux client: `enroll --key-file` exit 0; rescue 9 [ok]; heartbeat live.
+- Windows client: fresh Wine prefix; `enroll --key-stdin` exit 0; heartbeat live
+  (windows/x86_64).
+- Admin GUI: fresh HOME; key typed; enrolled ("Connected to Fresh Admin");
+  Devices shows fresh-linux Online. Artifacts fresh-admin-enrolled.png,
+  fresh-devices.png, fresh-setup-redacted.log.
+- Post-fresh audit: server unit hardened (root, no caps, strict FS,
+  RuntimeDirectory 0755); client unit hardened (User=centrald, no
+  RuntimeDirectory); broker disabled/inactive; server.env 0600 root; PKI 0700
+  root; socket 0600; recovery PEM 0600; Postgres loopback-only; UFW active;
+  gates false (privileged operations, terminal, GUI nav); Admin ACL core:default
+  only; no shell spawns in server/client code; client CLI has no argv bearer
+  (--key-file/--key-stdin only); Hello advertises heartbeat only; setup journal
+  retired; setup log redacted (raw bearer scrubbed after enrollment).
+  `npm run qa` EXIT 0 again on the fresh install (skip-guard verified non-root
+  on root-only paths).
+- Friction notes: under Xvfb the GUI enroll submit needed the keyboard path
+  (click textarea, Tab x3, Enter); clicks alone did not submit in this run. Not
+  observed on the desktop session.
+
+## Full lifecycle simulation (fresh device, all three components)
+
+- Server healthy; invitation created; Wine enroll exit 0 (keys shredded).
+- Heartbeat live in DB (windows/x86_64, current last_seen).
+- GUI showed Online device; fresh Admin enrolled via GUI modal.
+- sim-device revoked via fixed inline modal ("Done sim-device was revoked"); DB
+  revoked. Wrong-target safeguard proven (declined linux-re2 when TUI selection
+  drifted). Artifacts sim-devices.png, sim-revoked.png.
+
 Host: Ubuntu 26.04.1 x86_64, systemd PID 1, Postgres 18, Rust 1.98.1, LAN IP
 10.100.0.117. Official sources only (Ubuntu archive, rustup, npm). No bearers
 below; invitation files shredded after use. Repo tree holds all fixes (revoke

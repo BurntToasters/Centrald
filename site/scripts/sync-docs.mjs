@@ -20,6 +20,14 @@ const documents = [
     order: 10,
   },
   {
+    source: "TUTORIAL.md",
+    sourceDir: repoDocs,
+    slug: "tutorial",
+    title: "Tutorial",
+    group: "Getting started",
+    order: 15,
+  },
+  {
     source: "ARCHITECTURE.md",
     sourceDir: repoDocs,
     slug: "architecture",

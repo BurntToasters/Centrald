@@ -140,11 +140,11 @@ skip-guard). dist rebuilt 00:08 with all fixes (build exit 0).
 ## Gates
 
 - Full `npm run qa` EXIT 0 on the live-install host (18 ok suites, zero
-  failures), re-certified after the daemon self-heal fix: the skip-guard fix for
-  valid_config_is_accepted closed the last gap (skips with note for unprivileged
-  runners beside a live install; full validation still runs as root and on clean
-  CI hosts). typecheck, eslint+clippy (host+windows-gnu), prettier, Admin
-  vitest, contracts 116 all green.
+  failures), re-certified on the committed `e2e-hardening` branch: the
+  skip-guard fix for valid_config_is_accepted closed the last gap (skips with
+  note for unprivileged runners beside a live install; full validation still
+  runs as root and on clean CI hosts). typecheck, eslint+clippy
+  (host+windows-gnu), prettier, Admin vitest, contracts 116 all green.
 
 ## Not verifiable on this Linux VM (needs Windows host)
 

@@ -60,7 +60,7 @@ build with the host MSVC toolchain by default, so normal setup does not require
 the Windows `Containers` feature or an engine switch. Native Windows builds
 still need Visual Studio Build Tools with the MSVC v143 toolset for both x64 and
 ARM64 plus the Windows SDK; `setup:docker` does not install those. Add `--yes`
-to also upgrade npm when it is older than the required 12.0.1, `--build-images`
+to also upgrade npm when it is older than the required 12.2.1, `--build-images`
 to warm the Linux builder image, or `--skip-images` to skip pulls.
 `--all-docker` opts into Windows-container setup: it enables/checks the Windows
 `Containers` feature, verifies both engine modes, and includes the Windows
@@ -73,15 +73,16 @@ install any package version published less than three days ago. The builder
 images copy the policy file before `npm ci`, so containers enforce it too.
 Install scripts are allowed inside the builder images (`--ignore-scripts=false`)
 with the allowlist managed in `package.json` (`allowScripts`). Both projects
-require `npm >= 12.0.1`.
+require `npm >= 12.2.1`.
 
 The pinned Node.js toolchain is `.node-version` at the repository root
-(currently `26.13.0`). GitHub Actions CI and release workflows read that file
-via `node-version-file`. `npm run setup` installs `OpenJS.NodeJS.LTS` (Node 26
-LTS) and refuses a running Node older than the pin. The Linux builder image
-installs `libatomic1` because official Node 25+ Linux binaries link libatomic
-and the Dockerfile copies only `/usr/local` from the Node base image onto
-Ubuntu.
+(currently `26.13.0`), while `engines.node` accepts `^24.22.1 || >=26.13.0`.
+GitHub Actions CI and release workflows read `.node-version` via
+`node-version-file`. `npm run setup` installs `OpenJS.NodeJS.LTS` (Node 26 LTS)
+and accepts Node 24 LTS (`24.22.1+`) or `.node-version` (`26.13.0+`). The Linux
+builder image installs `libatomic1` because official Node 25+ Linux binaries
+link libatomic and the Dockerfile copies only `/usr/local` from the Node base
+image onto Ubuntu.
 
 ## Release environment
 

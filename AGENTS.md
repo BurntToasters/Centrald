@@ -108,11 +108,12 @@ docs/                        canonical operator documentation
 ```
 
 Node toolchain pin is `.node-version` (`26.13.0`, Lithium LTS through April
-2029); `engines.node` is `>=26.13.0`; npm stays `>= 12.0.1`. CI and release
-workflows use `node-version-file: .node-version`. The Linux builder installs
-`libatomic1` because Node 25+ links libatomic and only `/usr/local` is copied
-from the Node image onto Ubuntu. `scripts/setup.js` checks the running Node
-against `.node-version`. Rust edition 2024, `rust-toolchain.toml`
+2029); `engines.node` is `^24.22.1 || >=26.13.0`; npm is `>= 12.2.1`. CI and
+release workflows use `node-version-file: .node-version`. The Linux builder
+installs `libatomic1` because Node 25+ links libatomic and only `/usr/local` is
+copied from the Node image onto Ubuntu. `scripts/setup.js` accepts Node 24 LTS
+(`24.22.1+`) or `.node-version` (`26.13.0+`). Rust edition 2024,
+`rust-toolchain.toml`
 pins `stable` with `cargo`, `clippy`, `rustfmt`. Workspace clippy: `all` +
 `pedantic` warn, `unwrap_used` and `expect_used` deny, `unsafe_code` deny.
 Server crate forbids unsafe. Unavoidable Windows FFI lives in

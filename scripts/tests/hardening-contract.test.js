@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const read = (path) =>
-  readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+  readFile(new URL(`../../${path}`, import.meta.url), "utf8").then((text) =>
+    text.replaceAll("\r\n", "\n"),
+  );
 
 test("database setup and reset are instance-owned", async () => {
   const [db, nuke, migration] = await Promise.all([
@@ -608,14 +610,15 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   ]);
   const pinnedNode = nodeVersionFile.trim();
   assert.equal(pinnedNode, "26.13.0");
-  assert.equal(rootPackage.engines.node, `>=${pinnedNode}`);
-  assert.equal(sitePackage.engines.node, `>=${pinnedNode}`);
+  const expectedNodeEngine = `^24.22.1 || >=${pinnedNode}`;
+  assert.equal(rootPackage.engines.node, expectedNodeEngine);
+  assert.equal(sitePackage.engines.node, expectedNodeEngine);
   // Every project-level npm operation (local and inside the Docker builders,
   // which copy the repo) hard-enforces a minimum package release age.
   assert.match(rootNpmrc, /min-release-age=3/);
   assert.match(siteNpmrc, /min-release-age=3/);
-  assert.equal(rootPackage.engines.npm, ">=12.0.1");
-  assert.equal(sitePackage.engines.npm, ">=12.0.1");
+  assert.equal(rootPackage.engines.npm, ">=12.2.1");
+  assert.equal(sitePackage.engines.npm, ">=12.2.1");
   const escapedNode = pinnedNode.replaceAll(".", "\\.");
   const linuxDockerfile = await read("docker/linux-builder.Dockerfile");
   const windowsDockerfile = await read("docker/windows-builder.Dockerfile");
@@ -656,10 +659,13 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   assert.deepEqual(pkg.allowScripts, {
     [`esbuild@${esbuildVersion}`]: true,
   });
+  assert.match(setupDocker, /REQUIRED_NPM = "12\.2\.1"/);
   assert.match(setupDocker, /\.node-version/);
   assert.match(setupDocker, /node:\$\{NODE_VERSION\}-bookworm-slim/);
   assert.doesNotMatch(setupDocker, /22\.22\.2/);
   assert.match(setupJs, /\.node-version/);
+  assert.match(setupJs, /MIN_NODE_24 = "24\.22\.1"/);
+  assert.match(setupJs, /compareVersions\(runningNode, MIN_NODE_24\)/);
   assert.match(setupJs, /compareVersions\(runningNode, pinnedNode\)/);
   for (const workflow of [ciWorkflow, releaseWorkflow]) {
     const setupNodes = workflow.match(/uses: actions\/setup-node@/g) ?? [];
@@ -669,6 +675,7 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
     assert.ok(setupNodes.length >= 3);
     assert.doesNotMatch(workflow, /node-version:/);
     assert.doesNotMatch(workflow, /22\.22\.2/);
+    assert.doesNotMatch(workflow, /# v4\./);
   }
   // The handsfree setup installs/starts Docker Desktop, enables the Windows
   // Containers feature, verifies both engine modes, and pre-pulls base images.

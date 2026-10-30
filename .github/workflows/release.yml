@@ -19,8 +19,8 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
@@ -39,7 +39,7 @@ jobs:
             patchelf \
             protobuf-compiler \
             xz-utils
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
@@ -47,7 +47,7 @@ jobs:
       - run: npm run config:check
       - name: Build signed Linux artifacts
         run: node scripts/build.js --target linux-x64 --native --signed
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: centrald-linux-x64
           path: dist/linux-x64/*
@@ -61,12 +61,12 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
         ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP 'npm-latest'
@@ -78,12 +78,12 @@ jobs:
         run: node scripts/build.js --target windows-x64 --signed
       - name: Build signed Windows ARM64 artifacts
         run: node scripts/build.js --target windows-arm64 --signed
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: centrald-windows-x64
           path: dist/windows-x64/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: centrald-windows-arm64
           path: dist/windows-arm64/*
@@ -105,10 +105,10 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
@@ -125,22 +125,22 @@ jobs:
             minisign \
             protobuf-compiler \
             awscli
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
       - run: npm ci
       - name: Install documentation site dependencies
         run: npm ci --prefix site
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: centrald-linux-x64
           path: dist/linux-x64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: centrald-windows-x64
           path: dist/windows-x64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: centrald-windows-arm64
           path: dist/windows-arm64

@@ -30,7 +30,7 @@ const skipImages = args.has("--skip-images");
 const buildImages = args.has("--build-images");
 const skipWindowsContainers = args.has("--skip-windows-containers");
 
-const REQUIRED_NPM = "12.0.1";
+const REQUIRED_NPM = "12.2.1";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NODE_VERSION = readFileSync(
   join(repoRoot, ".node-version"),

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM node:26.13.0-bookworm-slim AS node-toolchain
-# npm >= 12.0.1 is required; Node 26.13.0 ships npm 11.20.0, so npm goes in a separate prefix.
+# npm >= 12.2.1 is required; Node 26.13.0 ships npm 11.20.0, so npm goes in a separate prefix.
 # Install into a separate prefix so npm never overwrites its running files.
 RUN npm install -g --prefix /usr/local/npm-latest npm@latest
 FROM rust:bookworm AS rust-toolchain

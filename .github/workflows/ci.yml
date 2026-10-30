@@ -17,12 +17,12 @@ jobs:
     name: Linux QA
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
@@ -60,7 +60,7 @@ jobs:
           --health-cmd "pg_isready -U postgres" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -79,12 +79,12 @@ jobs:
     name: Linux package install smoke
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
@@ -106,12 +106,12 @@ jobs:
     name: Windows compile checks
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.0.1)
+      - name: Install npm 12 (project requires >= 12.2.1)
         shell: pwsh
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP 'npm-latest'

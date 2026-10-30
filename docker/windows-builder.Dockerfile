@@ -19,7 +19,7 @@ SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPref
 ARG CENTRALD_RELEASE_CHANNEL=
 ENV CENTRALD_RELEASE_CHANNEL=${CENTRALD_RELEASE_CHANNEL}
 
-# Node 26.13.0 LTS, pinned to .node-version. Bundled npm 11.20.0 is below npm >= 12.0.1.
+# Node 26.13.0 LTS, pinned to .node-version. Bundled npm 11.20.0 is below npm >= 12.2.1.
 # Upgrade runs after the node directory is on PATH.
 ADD https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip C:\\node.zip
 RUN Expand-Archive -Path C:\\node.zip -DestinationPath C:\\; Remove-Item C:\\node.zip

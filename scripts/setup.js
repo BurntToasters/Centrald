@@ -7,6 +7,7 @@ import { commandExists, run } from "./command.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pinnedNode = readFileSync(join(repoRoot, ".node-version"), "utf8").trim();
+const MIN_NODE_24 = "24.22.1";
 
 const args = new Set(process.argv.slice(2));
 const windows = args.has("--windows") || process.platform === "win32";
@@ -46,9 +47,14 @@ requireTool("node", [
 const runningNode = execFileSync("node", ["--version"], { encoding: "utf8" })
   .trim()
   .replace(/^v/, "");
-if (compareVersions(runningNode, pinnedNode) < 0) {
+const runningMajor = Number.parseInt(runningNode.split(".")[0], 10) || 0;
+const supportedNode =
+  runningMajor === 24
+    ? compareVersions(runningNode, MIN_NODE_24) >= 0
+    : compareVersions(runningNode, pinnedNode) >= 0;
+if (!supportedNode) {
   throw new Error(
-    `Node.js ${runningNode} is older than the pinned toolchain (${pinnedNode}). Install Node.js >= ${pinnedNode} and retry.`,
+    `Node.js ${runningNode} is unsupported. Install Node.js ^${MIN_NODE_24} or >= ${pinnedNode} and retry.`,
   );
 }
 

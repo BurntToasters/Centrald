@@ -107,7 +107,12 @@ site/                        Astro 7 docs site (syncs from docs/)
 docs/                        canonical operator documentation
 ```
 
-Node `>= 22.12`, npm `>= 12.0.1`. Rust edition 2024, `rust-toolchain.toml`
+Node toolchain pin is `.node-version` (`26.13.0`, Lithium LTS through April
+2029); `engines.node` is `>=26.13.0`; npm stays `>= 12.0.1`. CI and release
+workflows use `node-version-file: .node-version`. The Linux builder installs
+`libatomic1` because Node 25+ links libatomic and only `/usr/local` is copied
+from the Node image onto Ubuntu. `scripts/setup.js` checks the running Node
+against `.node-version`. Rust edition 2024, `rust-toolchain.toml`
 pins `stable` with `cargo`, `clippy`, `rustfmt`. Workspace clippy: `all` +
 `pedantic` warn, `unwrap_used` and `expect_used` deny, `unsafe_code` deny.
 Server crate forbids unsafe. Unavoidable Windows FFI lives in
@@ -477,7 +482,8 @@ Release / build (`.env`, never argv, never `centrald.config`):
   loaded by release/build scripts via `node --env-file-if-exists=.env`.
 - `.npmrc` (root and `site/`) hard-enforces `min-release-age=3`; Docker
   builder images copy it before `npm ci`. Install scripts are allowed in the
-  builder images with the allowlist in `package.json` (`allowScripts`). npm
+  builder images with the allowlist in `package.json` (`allowScripts`).
+  Each `allowScripts` key must match the locked `esbuild` version. npm
   upgrades use `npm@latest` everywhere; never pin a specific npm version.
 - `npm run setup:docker` is the handsfree Docker setup for release hosts.
   `--all-docker` additionally enables/checks the Windows `Containers`

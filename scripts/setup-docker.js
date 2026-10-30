@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { commandExists, platformInvocation, run } from "./command.js";
 import {
   dockerDesktopExecutable,
@@ -28,6 +31,11 @@ const buildImages = args.has("--build-images");
 const skipWindowsContainers = args.has("--skip-windows-containers");
 
 const REQUIRED_NPM = "12.0.1";
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const NODE_VERSION = readFileSync(
+  join(repoRoot, ".node-version"),
+  "utf8",
+).trim();
 
 if (process.platform === "win32") setupWindowsHost();
 else setupUnixHost();
@@ -56,7 +64,7 @@ function setupUnixHost() {
   }
   waitForDockerEngine(120);
   if (!skipImages) {
-    run(dockerExecutable(), ["pull", "node:22.22.2-bookworm-slim"]);
+    run(dockerExecutable(), ["pull", `node:${NODE_VERSION}-bookworm-slim`]);
     run(dockerExecutable(), ["pull", "rust:bookworm"]);
     run(dockerExecutable(), ["pull", "ubuntu:24.04"]);
     if (buildImages) {
@@ -84,7 +92,7 @@ function dockerInstalled() {
 function ensureNpmVersion() {
   if (!commandExists("npm", ["--version"])) {
     throw new Error(
-      "npm is missing. Install Node.js >= 22.12 (bundles npm) and retry.",
+      `npm is missing. Install Node.js >= ${NODE_VERSION} (bundles npm) and retry.`,
     );
   }
   let version;
@@ -252,7 +260,7 @@ function verifyEngineSwitching() {
 function pullBaseImages() {
   console.log("Pre-pulling builder base images...");
   ensureDockerEngine("linux", "Linux base images");
-  run(dockerExecutable(), ["pull", "node:22.22.2-bookworm-slim"]);
+  run(dockerExecutable(), ["pull", `node:${NODE_VERSION}-bookworm-slim`]);
   run(dockerExecutable(), ["pull", "rust:bookworm"]);
   run(dockerExecutable(), ["pull", "ubuntu:24.04"]);
   if (!allDocker) return;

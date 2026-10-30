@@ -258,8 +258,8 @@ mod tests {
             rows: 24,
         };
         let (program, args) = shell_command(&spec).unwrap();
-        assert!(!program.is_empty());
-        assert!(args.is_empty());
+        assert_ne!(program, "");
+        assert_eq!(args, Vec::<String>::new());
     }
 
     #[cfg(target_os = "linux")]

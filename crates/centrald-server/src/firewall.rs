@@ -543,7 +543,10 @@ mod tests {
             ),
             (addr(mapped, 7445), "CentralD-admin"),
         ];
-        assert!(unique_public_tcp_rules(&listeners).is_empty());
+        assert_eq!(
+            unique_public_tcp_rules(&listeners),
+            Vec::<ListenRule>::new()
+        );
     }
 
     #[test]

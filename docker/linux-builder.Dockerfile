@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22.22.2-bookworm-slim AS node-toolchain
-# The project requires npm >= 12.0.1; the Node 22 base image ships npm 10.
+FROM node:26.13.0-bookworm-slim AS node-toolchain
+# npm >= 12.0.1 is required; Node 26.13.0 ships npm 11.20.0, so npm goes in a separate prefix.
 # Install into a separate prefix so npm never overwrites its running files.
 RUN npm install -g --prefix /usr/local/npm-latest npm@latest
 FROM rust:bookworm AS rust-toolchain
@@ -21,6 +21,7 @@ ENV CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/npm-latest/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     CI=true
 
+# Node 25+ official Linux binaries need libatomic; only /usr/local is copied from the Node image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       build-essential \
@@ -29,6 +30,7 @@ RUN apt-get update \
       desktop-file-utils \
       dpkg-dev \
       file \
+      libatomic1 \
       libayatana-appindicator3-dev \
       libclang-dev \
       libpam0g-dev \

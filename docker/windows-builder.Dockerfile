@@ -19,14 +19,13 @@ SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPref
 ARG CENTRALD_RELEASE_CHANNEL=
 ENV CENTRALD_RELEASE_CHANNEL=${CENTRALD_RELEASE_CHANNEL}
 
-# Node 22 LTS (pinned to the repository toolchain version). The project
-# requires npm >= 12.0.1, so npm is upgraded from the Node 22 bundle. The
-# upgrade must run after the node directory is on PATH.
-ADD https://nodejs.org/dist/v22.22.2/node-v22.22.2-win-x64.zip C:\\node.zip
+# Node 26.13.0 LTS, pinned to .node-version. Bundled npm 11.20.0 is below npm >= 12.0.1.
+# Upgrade runs after the node directory is on PATH.
+ADD https://nodejs.org/dist/v26.13.0/node-v26.13.0-win-x64.zip C:\\node.zip
 RUN Expand-Archive -Path C:\\node.zip -DestinationPath C:\\; Remove-Item C:\\node.zip
-ENV PATH="C:\\node-v22.22.2-win-x64;${PATH}"
+ENV PATH="C:\\node-v26.13.0-win-x64;${PATH}"
 RUN npm install -g --prefix C:\\npm-latest npm@latest
-ENV PATH="C:\\npm-latest;C:\\node-v22.22.2-win-x64;${PATH}"
+ENV PATH="C:\\npm-latest;C:\\node-v26.13.0-win-x64;${PATH}"
 
 # Latest stable Rust toolchain via rustup. --no-modify-path keeps the registry
 # PATH untouched; the cargo bin directory is appended explicitly above.

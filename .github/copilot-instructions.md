@@ -37,7 +37,6 @@ Keep commit messages brief and informative.
 Use these BCLS-derived categories when applicable:
 
 - `PKG` - dependencies and packages.
-- `Electron` - Electron changes.
 - `Tauri` - Tauri changes.
 - `TypeScript` - TypeScript changes.
 - `Codebase` - refactoring, cleanup, scripts, or internal changes.
@@ -48,7 +47,6 @@ Use these BCLS-derived categories when applicable:
 - `Security` - security fixes or hardening.
 - `Licenses` - licensing or attribution changes.
 - `Ver` - version-only changes.
-- `macOS` - macOS-specific changes.
 - `Windows` - Windows-specific changes.
 - `Linux` - Linux-specific changes.
 - `Misc` - only when no more specific category fits.

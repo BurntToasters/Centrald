@@ -295,9 +295,10 @@ npm run site:build  # sync docs and produce site/dist
 
 Cloudflare Pages is configured with root directory `site`, build command
 `npm ci && npm run build`, and output directory `dist`. Set the Pages
-`NODE_VERSION` environment variable to `22.22.2` (Astro 7 requires Node 22.12+).
-The build always re-syncs `docs/*.md` into `site/src/content/docs` first, so
-`docs/` remains the single source of truth; the sync output is gitignored.
+`NODE_VERSION` environment variable to `26.13.0` (the `.node-version` pin).
+Astro 7 supports the current Active LTS. The build always re-syncs `docs/*.md`
+into `site/src/content/docs` first, so `docs/` remains the single source of
+truth; the sync output is gitignored.
 
 ## License
 

@@ -75,6 +75,14 @@ Install scripts are allowed inside the builder images (`--ignore-scripts=false`)
 with the allowlist managed in `package.json` (`allowScripts`). Both projects
 require `npm >= 12.0.1`.
 
+The pinned Node.js toolchain is `.node-version` at the repository root
+(currently `26.13.0`). GitHub Actions CI and release workflows read that file
+via `node-version-file`. `npm run setup` installs `OpenJS.NodeJS.LTS` (Node 26
+LTS) and refuses a running Node older than the pin. The Linux builder image
+installs `libatomic1` because official Node 25+ Linux binaries link libatomic
+and the Dockerfile copies only `/usr/local` from the Node base image onto
+Ubuntu.
+
 ## Release environment
 
 Copy `.env.example` to `.env` and fill in the secrets. The release and build

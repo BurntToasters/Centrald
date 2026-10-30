@@ -583,21 +583,40 @@ test("containerized builds isolate the host and refresh Rust stable everywhere",
 });
 
 test("npm supply-chain policy requires npm 12 and a three-day release age", async () => {
-  const [rootNpmrc, siteNpmrc, rootPackage, sitePackage, setupDocker, pkg] =
-    await Promise.all([
-      read(".npmrc"),
-      read("site/.npmrc"),
-      read("package.json").then(JSON.parse),
-      read("site/package.json").then(JSON.parse),
-      read("scripts/setup-docker.js"),
-      read("package.json").then((value) => JSON.parse(value)),
-    ]);
+  const [
+    rootNpmrc,
+    siteNpmrc,
+    rootPackage,
+    sitePackage,
+    setupDocker,
+    setupJs,
+    pkg,
+    nodeVersionFile,
+    ciWorkflow,
+    releaseWorkflow,
+  ] = await Promise.all([
+    read(".npmrc"),
+    read("site/.npmrc"),
+    read("package.json").then(JSON.parse),
+    read("site/package.json").then(JSON.parse),
+    read("scripts/setup-docker.js"),
+    read("scripts/setup.js"),
+    read("package.json").then((value) => JSON.parse(value)),
+    read(".node-version"),
+    read(".github/workflows/ci.yml"),
+    read(".github/workflows/release.yml"),
+  ]);
+  const pinnedNode = nodeVersionFile.trim();
+  assert.equal(pinnedNode, "26.13.0");
+  assert.equal(rootPackage.engines.node, `>=${pinnedNode}`);
+  assert.equal(sitePackage.engines.node, `>=${pinnedNode}`);
   // Every project-level npm operation (local and inside the Docker builders,
   // which copy the repo) hard-enforces a minimum package release age.
   assert.match(rootNpmrc, /min-release-age=3/);
   assert.match(siteNpmrc, /min-release-age=3/);
   assert.equal(rootPackage.engines.npm, ">=12.0.1");
   assert.equal(sitePackage.engines.npm, ">=12.0.1");
+  const escapedNode = pinnedNode.replaceAll(".", "\\.");
   const linuxDockerfile = await read("docker/linux-builder.Dockerfile");
   const windowsDockerfile = await read("docker/windows-builder.Dockerfile");
   // The builder images upgrade npm to the latest release and copy the policy
@@ -610,11 +629,15 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
     windowsDockerfile,
     /npm install -g --prefix C:\\\\npm-latest npm@latest/,
   );
-  assert.match(linuxDockerfile, /node:22\.22\.2-bookworm-slim/);
+  assert.match(
+    linuxDockerfile,
+    new RegExp(`node:${escapedNode}-bookworm-slim`),
+  );
+  assert.match(linuxDockerfile, /libatomic1/);
   assert.match(linuxDockerfile, /libclang-dev/);
   assert.match(linuxDockerfile, /type=cache,target=\/src\/target/);
   assert.match(linuxDockerfile, /CI=true/);
-  assert.match(windowsDockerfile, /node-v22\.22\.2-win-x64/);
+  assert.match(windowsDockerfile, new RegExp(`node-v${escapedNode}-win-x64`));
   assert.match(
     linuxDockerfile,
     /COPY package\.json package-lock\.json \.npmrc \.\//,
@@ -628,6 +651,25 @@ test("npm supply-chain policy requires npm 12 and a three-day release age", asyn
   assert.match(linuxDockerfile, /--ignore-scripts=false/);
   assert.match(windowsDockerfile, /--ignore-scripts=false/);
   assert.equal(pkg.scripts["setup:docker"], "node scripts/setup-docker.js");
+  const lock = JSON.parse(await read("package-lock.json"));
+  const esbuildVersion = lock.packages["node_modules/esbuild"].version;
+  assert.deepEqual(pkg.allowScripts, {
+    [`esbuild@${esbuildVersion}`]: true,
+  });
+  assert.match(setupDocker, /\.node-version/);
+  assert.match(setupDocker, /node:\$\{NODE_VERSION\}-bookworm-slim/);
+  assert.doesNotMatch(setupDocker, /22\.22\.2/);
+  assert.match(setupJs, /\.node-version/);
+  assert.match(setupJs, /compareVersions\(runningNode, pinnedNode\)/);
+  for (const workflow of [ciWorkflow, releaseWorkflow]) {
+    const setupNodes = workflow.match(/uses: actions\/setup-node@/g) ?? [];
+    const versionFiles =
+      workflow.match(/node-version-file: \.node-version/g) ?? [];
+    assert.equal(setupNodes.length, versionFiles.length);
+    assert.ok(setupNodes.length >= 3);
+    assert.doesNotMatch(workflow, /node-version:/);
+    assert.doesNotMatch(workflow, /22\.22\.2/);
+  }
   // The handsfree setup installs/starts Docker Desktop, enables the Windows
   // Containers feature, verifies both engine modes, and pre-pulls base images.
   assert.match(setupDocker, /Docker\.DockerDesktop/);

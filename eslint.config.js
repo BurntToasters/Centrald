@@ -4,22 +4,30 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["coverage/**", "dist/**", "release/**", "target/**"] },
+  {
+    ignores: [
+      "**/dist/**",
+      "target/**",
+      "site/**",
+      "test-results/**",
+      "playwright-report/**",
+      "node_modules/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["apps/admin/src/**/*.{ts,tsx}", "scripts/**/*.{js,mjs}"],
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        ...globals.node,
-      },
-    },
-    plugins: {
-      "react-hooks": reactHooks,
-    },
+    files: ["web/**/*.{ts,tsx}"],
+    languageOptions: { globals: globals.browser },
+    plugins: { "react-hooks": reactHooks },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // Async loaders set state after await; the rule cannot tell.
+      "react-hooks/set-state-in-effect": "off",
     },
+  },
+  {
+    files: ["tests/**/*.ts", "scripts/**/*.{js,mjs}", "*.{js,mjs,ts}"],
+    languageOptions: { globals: globals.node },
   },
 );

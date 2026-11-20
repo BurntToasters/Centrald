@@ -1,0 +1,28 @@
+#!/bin/sh
+# Package hooks for centrald-agent, shared by the .deb and .rpm.
+# Usage: agent-maint configure <install|upgrade> | remove
+set -e
+
+has_systemd() { [ -d /run/systemd/system ]; }
+
+case "$1" in
+configure)
+	has_systemd && systemctl daemon-reload
+	if [ -f /etc/centrald/agent.toml ]; then
+		if has_systemd; then
+			systemctl enable centrald-agent.service >/dev/null 2>&1
+			systemctl restart centrald-agent.service
+		fi
+	else
+		echo
+		echo "CentralD agent installed. Connect this machine to your server:"
+		echo "  sudo centrald-agent enroll"
+		echo "and paste the join code from the web app (Add device > Manual)."
+	fi
+	;;
+remove)
+	if has_systemd; then
+		systemctl disable --now centrald-agent.service >/dev/null 2>&1 || true
+	fi
+	;;
+esac

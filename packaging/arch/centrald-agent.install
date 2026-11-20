@@ -1,0 +1,8 @@
+post_install() {
+  echo "Connect this machine to your CentralD server:"
+  echo "  sudo centrald-agent enroll"
+}
+
+post_upgrade() {
+  systemctl try-restart centrald-agent.service 2>/dev/null || true
+}

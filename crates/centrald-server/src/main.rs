@@ -1,737 +1,381 @@
-#![forbid(unsafe_code)]
+//! `CentralD` server: the web app, its API, and the hub agents connect to.
 
-use std::net::{IpAddr, SocketAddr};
+mod api;
+mod auth;
+mod config;
+mod db;
+mod downloads;
+mod error;
+mod hub;
+mod model;
+mod net;
+mod session;
+mod state;
+mod tls;
+mod ui;
+
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use centrald_common::config::ServerConfig;
-use centrald_protocol::v1::admin_service_server::AdminServiceServer;
-use centrald_protocol::v1::client_service_server::ClientServiceServer;
-use centrald_protocol::v1::enrollment_service_server::EnrollmentServiceServer;
-use centrald_server::cli::{EnrollArgs, ServerCli, ServerCommand, SetupArgs};
-use centrald_server::db::{
-    connect_and_migrate, ensure_database_and_migrate, migrate_precreated_database,
-    resolve_database_url,
-};
-use centrald_server::firewall;
-use centrald_server::local_postgres;
-use centrald_server::manage::{create_enrollment_key as create_key, require_root};
-use centrald_server::services::{
-    AdminRpc, ClientRpc, EnrollmentRpc, RuntimeState, run_maintenance, run_update_checks,
-};
-use centrald_server::setup::{SetupOptions, initialize, preflight, prepare_directories};
-use centrald_server::setup_recovery;
-use centrald_server::wizard::{collect as collect_setup, print_completion};
-use clap::Parser;
-use secrecy::ExposeSecret;
-use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity, Server, ServerTlsConfig};
-use tracing::info;
-use tracing_subscriber::EnvFilter;
+use clap::{Parser, Subcommand};
+use rusqlite::OptionalExtension;
 
-const ENROLLMENT_MAX_MESSAGE_BYTES: usize = 512 * 1024;
-const CLIENT_MAX_MESSAGE_BYTES: usize = 256 * 1024;
-const ADMIN_MAX_MESSAGE_BYTES: usize = 512 * 1024;
+use crate::config::ServerConfig;
+use crate::db::Db;
+use crate::state::AppState;
 
-#[tokio::main]
-#[allow(clippy::large_futures)]
-async fn main() -> Result<()> {
-    centrald_common::https::install_rustls_crypto_provider();
-    let cli = ServerCli::parse();
-    if cli.no_color {
-        console::set_colors_enabled(false);
-        console::set_colors_enabled_stderr(false);
-    }
-    init_tracing(cli.json)?;
-    if cli.yes_i_want_to_do_this && !cli.nuke {
-        bail!("--yes-i-want-to-do-this is valid only with --nuke");
-    }
-    let is_initial_setup = matches!(cli.command.as_ref(), Some(ServerCommand::InitialSetup(_)));
-    if !is_initial_setup && !cli.nuke {
-        setup_recovery::prepare_for_normal_command(&cli.config_path).await?;
-    }
+#[derive(Debug, Parser)]
+#[command(
+    name = "centrald-server",
+    version,
+    about = "CentralD server for homelab remote management"
+)]
+struct Cli {
+    /// Configuration file (default /etc/centrald/server.toml; optional).
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
 
-    let _setup_mutation_lock = if cli.nuke {
-        if cli.command.is_some() {
-            bail!("--nuke cannot be combined with a subcommand");
-        }
-        require_root()?;
-        Some(setup_recovery::acquire_setup_mutation_lock()?)
-    } else {
-        None
-    };
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the server (what the system service does).
+    Run,
+    /// Show the web address, setup code, and health of this server.
+    Status,
+    /// Set a new password for an operator and turn off their two-factor sign-in.
+    ResetPassword {
+        /// The operator's username.
+        username: String,
+        /// Read the new password from standard input instead of prompting.
+        #[arg(long)]
+        password_stdin: bool,
+    },
+}
 
-    if cli.nuke && setup_recovery::reset_interrupted_setup_for_nuke(&cli.config_path).await? {
-        println!("Interrupted CentralD setup permanently reset.");
-        println!("  Removed the generated PostgreSQL role/database and partial setup files.");
-        println!("No published CentralD installation remained.");
-        return Ok(());
-    }
-
-    if cli.config_path.exists() {
-        centrald_server::config_lock::recover_interrupted_database_update(&cli.config_path)
-            .context("recover interrupted database settings update")?;
-        centrald_server::config_lock::recover_interrupted_settings_update(&cli.config_path)
-            .context("recover interrupted audited settings update")?;
-        centrald_server::manage::recover_interrupted_online_issuer_rotation(&cli.config_path)
-            .context("recover interrupted online issuer rotation")?;
-        centrald_server::manage::recover_interrupted_root_replacement(&cli.config_path)
-            .context("recover interrupted offline root replacement")?;
-        centrald_server::manage::recover_interrupted_tls_rotation(&cli.config_path)
-            .context("recover interrupted server TLS rotation")?;
-    }
-
-    if cli.nuke {
-        let summary = centrald_server::nuke::nuke(&cli.config_path).await?;
-        println!("CentralD installation permanently reset.");
-        println!("  Dropped PostgreSQL database: {}", summary.database_name);
-        println!("  Removed data: {}", summary.data_dir.display());
-        println!("  Removed config: {}", summary.config_path.display());
-        println!(
-            "  Removed database environment file: {}",
-            summary.environment_file.display()
-        );
-        println!("The offline root recovery bundle was intentionally preserved.");
-        return Ok(());
-    }
-    let command = cli.command.context(
-        "a subcommand is required (use initial-setup, config, run, or --nuke --yes-i-want-to-do-this)",
-    )?;
-    match command {
-        ServerCommand::Run => run(&cli.config_path).await,
-        ServerCommand::Status(_) => {
-            let config = ServerConfig::load(&cli.config_path)?;
-            println!("server instance: {}", config.server.instance_id);
-            println!("TLS name: {}", config.server.public_host);
-            println!(
-                "listeners: enrollment={} client={} admin={}",
-                config.server.enrollment_listen,
-                config.server.client_listen,
-                config.server.admin_listen
-            );
-            Ok(())
+fn main() -> std::process::ExitCode {
+    let cli = Cli::parse();
+    let result = (|| -> Result<()> {
+        let config = ServerConfig::load(cli.config.as_deref())?;
+        match cli.command.unwrap_or(Command::Run) {
+            Command::Run => run(config),
+            Command::Status => status(&config),
+            Command::ResetPassword {
+                username,
+                password_stdin,
+            } => reset_password(&config, &username, password_stdin),
         }
-        ServerCommand::InitialSetup(args) => initial_setup(&cli.config_path, args).await,
-        ServerCommand::Config => centrald_server::manage::run(&cli.config_path).await,
-        ServerCommand::Channel(args) => {
-            centrald_server::manage::set_channel(&cli.config_path, args.channel.as_str())
+    })();
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("centrald-server: {error:#}");
+            std::process::ExitCode::FAILURE
         }
-        ServerCommand::EnrollClient(args) => {
-            create_enrollment_key(&cli.config_path, args, "client", cli.json).await
-        }
-        ServerCommand::EnrollAdmin(args) => {
-            create_enrollment_key(&cli.config_path, args, "admin", cli.json).await
-        }
-        ServerCommand::MaintenanceBroker => {
-            bail!("maintenance broker transport is not initialized")
-        }
-        command => bail!("command {command:?} is scaffolded but not initialized"),
     }
 }
 
-#[allow(clippy::too_many_lines)]
-async fn run(config_path: &Path) -> Result<()> {
-    require_root()?;
-    let mut config = ServerConfig::load(config_path)?;
-    let local_socket = config.server.local_socket.clone();
-    let server_lock = centrald_server::local_control::acquire_server_lock(&local_socket)
-        .context("acquire exclusive CentralD server runtime lock")?;
-    centrald_server::manage::check_pki_expiry(&config)?;
-    if centrald_server::manage::renew_server_identity_if_needed(config_path)? {
-        config = ServerConfig::load(config_path)?;
-        centrald_server::manage::check_pki_expiry(&config)?;
-        info!("server TLS leaf renewed during startup");
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("CENTRALD_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        // No color codes in journald or redirected logs.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+        .init();
+}
+
+fn prepare_data_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("cannot create {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("cannot restrict {}", path.display()))?;
     }
-    let enrollment_address = config.server.enrollment_listen;
-    let client_address = config.server.client_listen;
-    let admin_address = config.server.admin_listen;
-    let server_chain = centrald_server::file_security::read_root_public_text(
-        &config.pki.server_chain,
-        256 * 1024,
-        "server TLS certificate chain",
-    )?
-    .into_bytes();
-    let server_key = centrald_server::file_security::read_root_private_text(
-        &config.pki.server_key,
-        256 * 1024,
-        "server TLS private key",
-    )?
-    .into_bytes();
-    let client_issuer_certificate = centrald_server::file_security::read_root_public_text(
-        &config.pki.client_issuer_cert,
-        256 * 1024,
-        "client issuer certificate",
-    )?
-    .into_bytes();
-    let admin_issuer_certificate = centrald_server::file_security::read_root_public_text(
-        &config.pki.admin_issuer_cert,
-        256 * 1024,
-        "Admin issuer certificate",
-    )?
-    .into_bytes();
-    let state = RuntimeState::load(config.clone(), config_path.to_path_buf()).await?;
-    let reconciled = centrald_server::local_audit::reconcile(&state.pool, config_path).await?;
-    if reconciled > 0 {
-        info!(reconciled, "reconciled server-local audit journal");
-    }
-    let local_pool = state.pool.clone();
-    let enrollment_crypto_limit = state.enrollment_crypto_limit.clone();
-    tokio::spawn(run_maintenance(state.clone()));
-    tokio::spawn(run_update_checks(state.clone()));
-    let identity = Identity::from_pem(server_chain, server_key);
-    let client_ca = Certificate::from_pem(client_issuer_certificate);
-    let admin_ca = Certificate::from_pem(admin_issuer_certificate);
-
-    info!(%enrollment_address, "enrollment TLS listener ready");
-    info!(%client_address, "client mTLS listener ready");
-    info!(%admin_address, "admin mTLS listener ready");
-
-    let enrollment = Server::builder()
-        .tls_config(
-            ServerTlsConfig::new()
-                .identity(identity.clone())
-                .timeout(Duration::from_secs(10)),
-        )?
-        .add_service(
-            EnrollmentServiceServer::new(EnrollmentRpc::new(state.clone()))
-                .max_decoding_message_size(ENROLLMENT_MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(ENROLLMENT_MAX_MESSAGE_BYTES),
-        )
-        .serve_with_shutdown(enrollment_address, shutdown_signal());
-    let clients = Server::builder()
-        .tcp_keepalive(Some(Duration::from_secs(60)))
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
-        .tls_config(
-            ServerTlsConfig::new()
-                .identity(identity.clone())
-                .client_ca_root(client_ca.clone())
-                .timeout(Duration::from_secs(10)),
-        )?
-        .add_service(
-            ClientServiceServer::new(ClientRpc::new(state.clone()))
-                .max_decoding_message_size(CLIENT_MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(CLIENT_MAX_MESSAGE_BYTES),
-        )
-        .serve_with_shutdown(client_address, shutdown_signal());
-    let admins = Server::builder()
-        .tcp_keepalive(Some(Duration::from_secs(60)))
-        .http2_keepalive_interval(Some(Duration::from_secs(30)))
-        .tls_config(
-            ServerTlsConfig::new()
-                .identity(identity)
-                .client_ca_root(admin_ca)
-                .timeout(Duration::from_secs(10)),
-        )?
-        .add_service(
-            AdminServiceServer::new(AdminRpc::new(state))
-                .max_decoding_message_size(ADMIN_MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(ADMIN_MAX_MESSAGE_BYTES),
-        )
-        .serve_with_shutdown(admin_address, shutdown_signal());
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let local_shutdown = shutdown_rx.clone();
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        let _ = shutdown_tx.send(true);
-    });
-
-    let local_control = centrald_server::local_control::serve(
-        local_socket,
-        local_pool,
-        config.clone(),
-        enrollment_crypto_limit,
-        server_lock,
-        local_shutdown,
-    );
-
-    if centrald_server::manage::tls_retirement_pending(config_path)? {
-        let retirement_config = config_path.to_path_buf();
-        let retirement_probe_config = config.clone();
-        tokio::spawn(async move {
-            match verify_tls_listeners_before_retirement(&retirement_probe_config).await {
-                Ok(()) => {
-                    match centrald_server::manage::retire_completed_tls_rotation(&retirement_config)
-                    {
-                        Ok(true) => info!(
-                            "retired previous server TLS rollback material after all listener TLS probes succeeded"
-                        ),
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(%error, "could not retire previous server TLS rollback material");
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "keeping server TLS/PKI rollback material because listener health probes did not all succeed");
-                }
-            }
-        });
-    }
-
-    let enrollment = async { enrollment.await.context("enrollment listener stopped") };
-    let clients = async { clients.await.context("client listener stopped") };
-    let admins = async { admins.await.context("Admin listener stopped") };
-    let tls_renewal = monitor_server_tls_renewal(config_path.to_path_buf(), shutdown_rx.clone());
-    tokio::try_join!(enrollment, clients, admins, local_control, tls_renewal)?;
     Ok(())
 }
 
-async fn monitor_server_tls_renewal(
-    config_path: PathBuf,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) -> Result<()> {
-    let mut interval = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Startup already performed the first renewal check. Consume the immediate
-    // tick so the long-lived daemon checks again on the bounded schedule.
-    interval.tick().await;
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                if centrald_server::manage::renew_server_identity_if_needed(&config_path)? {
-                    bail!(
-                        "server TLS leaf renewed; exiting so the service manager can activate the replacement identity"
-                    );
-                }
-            }
-            _ = shutdown_rx.changed() => {
-                return Ok(());
+/// Local tools run as root but must not create root-owned files the
+/// service account then cannot read, so they become the data owner first.
+#[cfg(unix)]
+fn become_data_owner(data_dir: &Path) -> Result<()> {
+    use nix::unistd::{Gid, Uid, setgid, setgroups, setuid};
+    use std::os::unix::fs::MetadataExt;
+    if !Uid::effective().is_root() {
+        return Ok(());
+    }
+    let Ok(metadata) = std::fs::metadata(data_dir) else {
+        return Ok(());
+    };
+    if metadata.uid() == 0 {
+        return Ok(());
+    }
+    setgroups(&[]).context("drop supplementary groups")?;
+    setgid(Gid::from_raw(metadata.gid())).context("switch group")?;
+    setuid(Uid::from_raw(metadata.uid())).context("switch user")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn become_data_owner(_data_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn open_existing_db(config: &ServerConfig) -> Result<Db> {
+    let path = config.database_path();
+    if !path.exists() {
+        bail!(
+            "no CentralD data in {}; start the server first (sudo systemctl start centrald-server)",
+            config.data_dir.display()
+        );
+    }
+    become_data_owner(&config.data_dir)?;
+    Db::open(&path)
+}
+
+/// Web addresses for this host, most useful first.
+fn web_urls(listen: std::net::SocketAddr) -> Vec<String> {
+    let port = listen.port();
+    if !listen.ip().is_unspecified() {
+        return vec![format!("https://{listen}")];
+    }
+    let mut urls = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for interface in interfaces {
+            let ip = interface.ip();
+            if ip.is_ipv4() && !ip.is_loopback() {
+                urls.push(format!("https://{ip}:{port}"));
             }
         }
     }
+    if let Some(host) = sysinfo::System::host_name() {
+        urls.push(format!("https://{}:{port}", host.to_ascii_lowercase()));
+    }
+    urls.dedup();
+    urls
+}
+
+fn run(config: ServerConfig) -> Result<()> {
+    init_logging();
+    prepare_data_dir(&config.data_dir)?;
+    let db = Db::open(&config.database_path())?;
+    hub::Hub::recover_on_start(&db)?;
+
+    let setup_code = db.call_blocking(|c| {
+        let users: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+        if users > 0 {
+            db::delete_setting(c, api::SETUP_CODE_KEY)?;
+            return Ok(None);
+        }
+        if let Some(code) = db::get_setting(c, api::SETUP_CODE_KEY)? {
+            return Ok(Some(code));
+        }
+        let code = auth::new_setup_code();
+        db::set_setting(c, api::SETUP_CODE_KEY, &code)?;
+        Ok(Some(code))
+    })?;
+
+    let tls = tls::TlsState::load_or_create(&config)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("start runtime")?;
+    runtime.block_on(async move {
+        let listener = net::TlsListener::bind(config.listen, tls.config.clone()).await?;
+        let state = Arc::new(AppState {
+            hub: hub::Hub::new(db.clone()),
+            builds: downloads::AgentBuilds::new(config.agent_dir.clone()),
+            config,
+            db,
+            tls,
+            login_limiter: auth::RateLimiter::default(),
+            agent_limiter: auth::RateLimiter::default(),
+            hash_permits: tokio::sync::Semaphore::new(2),
+        });
+
+        tracing::info!(version = centrald_proto::VERSION, listen = %state.config.listen, "CentralD server started");
+        for url in web_urls(state.config.listen) {
+            tracing::info!("web app: {url}");
+        }
+        if let Some(code) = setup_code {
+            tracing::info!("first-run setup code: {code} (enter it in the web app to create the first account)");
+        }
+        tracing::info!(
+            "CA fingerprint: {}",
+            centrald_proto::format_fingerprint(&state.tls.ca_fingerprint)
+        );
+
+        tokio::spawn(maintenance(state.clone()));
+        let app = api::router(state).into_make_service_with_connect_info::<net::ClientAddr>();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .context("server stopped")?;
+        tracing::info!("CentralD server stopped");
+        Ok(())
+    })
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .unwrap_or_else(|_| tracing::warn!("failed to install Ctrl+C handler"));
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        if let Ok(mut signal) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            signal.recv().await;
-        } else {
-            std::future::pending::<()>().await;
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-}
-
-async fn verify_tls_listeners_before_retirement(config: &ServerConfig) -> Result<()> {
-    let root = centrald_server::file_security::read_root_public_text(
-        &config.pki.root_cert,
-        256 * 1024,
-        "root CA certificate",
-    )?;
-    let client_issuer = centrald_server::file_security::read_root_public_text(
-        &config.pki.client_issuer_cert,
-        256 * 1024,
-        "client issuer certificate",
-    )?;
-    let client_key = centrald_server::file_security::read_root_private_text(
-        &config.pki.client_issuer_key,
-        256 * 1024,
-        "client issuer private key",
-    )?;
-    let admin_issuer = centrald_server::file_security::read_root_public_text(
-        &config.pki.admin_issuer_cert,
-        256 * 1024,
-        "Admin issuer certificate",
-    )?;
-    let admin_key = centrald_server::file_security::read_root_private_text(
-        &config.pki.admin_issuer_key,
-        256 * 1024,
-        "Admin issuer private key",
-    )?;
-    let client_probe = centrald_pki::issue_ephemeral_identity(
-        "centrald-client-tls-probe",
-        centrald_pki::IdentityCertificateKind::Client,
-        &client_issuer,
-        &client_key,
-        &root,
-    )?;
-    let admin_probe = centrald_pki::issue_ephemeral_identity(
-        "centrald-admin-tls-probe",
-        centrald_pki::IdentityCertificateKind::Admin,
-        &admin_issuer,
-        &admin_key,
-        &root,
-    )?;
-
-    for attempt in 1..=30_u32 {
-        let result = async {
-            probe_tls_listener(
-                config.server.enrollment_listen,
-                &config.server.public_host,
-                &root,
-                None,
-            )
-            .await
-            .context("enrollment TLS probe")?;
-            probe_tls_listener(
-                config.server.client_listen,
-                &config.server.public_host,
-                &root,
-                Some(&client_probe),
-            )
-            .await
-            .context("client-mTLS probe")?;
-            probe_tls_listener(
-                config.server.admin_listen,
-                &config.server.public_host,
-                &root,
-                Some(&admin_probe),
-            )
-            .await
-            .context("Admin-mTLS probe")?;
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-        match result {
-            Ok(()) => return Ok(()),
-            Err(error) if attempt < 30 => {
-                tracing::debug!(attempt, %error, "listener TLS health probe not ready yet");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    bail!("listener TLS health probes exhausted retries")
-}
-
-async fn probe_tls_listener(
-    address: SocketAddr,
-    server_name: &str,
-    root_pem: &str,
-    identity: Option<&centrald_pki::PemIdentity>,
-) -> Result<()> {
-    let destination = probe_destination(address);
-    let mut tls = ClientTlsConfig::new()
-        .domain_name(server_name.to_owned())
-        .ca_certificate(Certificate::from_pem(root_pem));
-    if let Some(identity) = identity {
-        tls = tls.identity(Identity::from_pem(
-            identity.certificate_chain_pem.as_bytes(),
-            identity.private_key_pem.as_bytes(),
-        ));
-    }
-    let channel = Endpoint::from_shared(destination)?
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(3))
-        .tls_config(tls)?
-        .connect()
-        .await?;
-    drop(channel);
-    Ok(())
-}
-
-fn probe_destination(address: SocketAddr) -> String {
-    let ip = if address.ip().is_unspecified() {
-        match address.ip() {
-            IpAddr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
-        }
-    } else {
-        address.ip()
-    };
-    match ip {
-        IpAddr::V4(ip) => format!("https://{ip}:{}", address.port()),
-        IpAddr::V6(ip) => format!("https://[{ip}]:{}", address.port()),
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-async fn initial_setup(config_path: &Path, args: SetupArgs) -> Result<()> {
-    require_root()?;
-    let _setup_mutation_lock = setup_recovery::acquire_setup_mutation_lock()?;
-    let recovered_committed = setup_recovery::recover_before_initial_setup(config_path).await?;
-    if config_path.exists() {
-        if recovered_committed {
-            bail!(
-                "CentralD setup already committed before the previous process stopped. Use `sudo centrald-server config` to create a new Admin access key or inspect health; use the explicit --nuke command only when you intend to erase the installation."
-            );
-        }
-        bail!(
-            "CentralD is already configured at {}. Use `sudo centrald-server config` for guided administration.",
-            config_path.display()
-        );
-    }
-
-    let options = collect_setup(config_path, args)?;
-    // Prove every output is absent and every ancestor is safe before creating
-    // the managed PostgreSQL role. Recovery may remove only these preflighted
-    // targets after an interrupted setup.
-    preflight(&options).context("validate every setup output before changing PostgreSQL")?;
-    prepare_directories(&options)
-        .context("create private server setup directories before changing PostgreSQL")?;
-    let managed_role = options.managed_local_role.clone();
-    setup_recovery::begin_setup(&options)
-        .context("create crash-recovery state before PostgreSQL provisioning")?;
-    if let Some(role) = managed_role.as_deref() {
-        if let Err(error) =
-            local_postgres::provision_role(role, &options.database_url, options.instance_id)
-        {
-            return Err(setup_failure(
-                &options,
-                error.context("provision the generated local PostgreSQL role"),
-            )
-            .await);
-        }
-        if let Err(error) =
-            local_postgres::provision_database(role, &options.database_url, options.instance_id)
-        {
-            return Err(setup_failure(
-                &options,
-                error.context("provision the generated local PostgreSQL database"),
-            )
-            .await);
-        }
-    }
-
-    let summary = match initialize(&options) {
-        Ok(summary) => summary,
-        Err(error) => {
-            return Err(setup_failure(&options, error).await);
-        }
-    };
-    let config = match ServerConfig::load(config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            let error =
-                anyhow::Error::new(error).context("load newly generated server configuration");
-            return Err(setup_failure(&options, error).await);
-        }
-    };
-    let database_result = if managed_role.is_some() {
-        migrate_precreated_database(
-            options.database_url.expose_secret(),
-            config.database.max_connections,
-            config.server.instance_id,
-        )
-        .await
-    } else {
-        ensure_database_and_migrate(
-            options.database_url.expose_secret(),
-            config.database.max_connections,
-            config.server.instance_id,
-        )
-        .await
-    };
-    let database = match database_result {
-        Ok(database) => database,
-        Err(error) => {
-            let error =
-                anyhow::Error::new(error).context("create and migrate the CentralD database");
-            return Err(setup_failure(&options, error).await);
-        }
-    };
-    if let Some(role) = managed_role.as_deref()
-        && let Err(error) = local_postgres::harden_role(role, options.instance_id)
-    {
-        database.pool.close().await;
-        return Err(setup_failure(
-            &options,
-            error.context("secure the generated local PostgreSQL role"),
-        )
-        .await);
-    }
-    let admin = match create_key(
-        &database.pool,
-        &config,
-        "admin",
-        &options.admin_name,
-        std::time::Duration::from_secs(24 * 60 * 60),
-    )
-    .await
-    {
-        Ok(admin) => admin,
-        Err(error) => {
-            database.pool.close().await;
-            return Err(setup_failure(
-                &options,
-                error.context("create the initial Admin access key"),
-            )
-            .await);
-        }
-    };
-    database.pool.close().await;
-
-    if let Err(error) = setup_recovery::mark_committed(config_path) {
-        return Err(
-            setup_failure(&options, error.context("mark PostgreSQL setup committed")).await,
-        );
-    }
-    if let Err(error) = setup_recovery::retire_committed(config_path) {
-        tracing::warn!(
-            %error,
-            "setup committed successfully but its recovery journal could not be retired; the next server command will retry safe retirement"
-        );
-    }
-
-    let service = try_start_packaged_service(config_path).await;
-    let firewall = firewall::apply_for_server(&config);
-    print_completion(&summary, &admin, &service, &firewall);
-    Ok(())
-}
-
-async fn setup_failure(options: &SetupOptions, error: anyhow::Error) -> anyhow::Error {
-    match setup_recovery::rollback_current_setup(&options.config_path).await {
-        Ok(()) => error,
-        Err(cleanup_error) => error.context(format!(
-            "automatic setup rollback was incomplete; rerun `sudo centrald-server initial-setup` to retry recovery: {cleanup_error:#}"
-        )),
-    }
-}
-
-#[allow(clippy::unused_async)]
-async fn packaged_local_socket_reachable() -> bool {
     #[cfg(unix)]
     {
-        tokio::net::UnixStream::connect(centrald_server::DEFAULT_LOCAL_SOCKET)
-            .await
-            .is_ok()
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
+            return;
+        }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = centrald_server::DEFAULT_LOCAL_SOCKET;
-        false
-    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
-async fn try_start_packaged_service(config_path: &Path) -> String {
-    if std::env::var_os("CENTRALD_SKIP_SERVICE_START").is_some() {
-        return "Automatic service start skipped by CENTRALD_SKIP_SERVICE_START; run sudo systemctl enable --now centrald-server when ready.".into();
-    }
-    if config_path != Path::new(centrald_server::DEFAULT_CONFIG_PATH) {
-        return "Custom configuration path detected; start CentralD with your own service definition or centrald-server run.".into();
-    }
-    if std::env::current_exe().ok().as_deref() != Some(Path::new("/usr/bin/centrald-server")) {
-        return "Source/custom server binary detected; start it with centrald-server run or install the server package for automatic systemd activation.".into();
-    }
-    if !Path::new("/run/systemd/system").is_dir() {
-        return "systemd is not active; start CentralD with centrald-server run or your service manager.".into();
-    }
-    let unit_installed = [
-        "/etc/systemd/system/centrald-server.service",
-        "/usr/lib/systemd/system/centrald-server.service",
-        "/lib/systemd/system/centrald-server.service",
-    ]
-    .iter()
-    .any(|path| Path::new(path).is_file());
-    if !unit_installed {
-        return "Packaged systemd unit was not found; start CentralD with centrald-server run or install the server package.".into();
-    }
-    let systemctl = Path::new("/usr/bin/systemctl");
-    let timeout = Path::new("/usr/bin/timeout");
-    if !systemctl.is_file() || !timeout.is_file() {
-        return "systemctl/timeout was not found at the packaged paths; enable and start centrald-server.service with your service manager.".into();
-    }
-    match Command::new(timeout)
-        .args([
-            "--kill-after=5s",
-            "45s",
-            "/usr/bin/systemctl",
-            "--no-ask-password",
-            "enable",
-            "--now",
-            "centrald-server.service",
-        ])
-        .status()
-    {
-        Ok(status) if status.success() => {
-            let ready = tokio::time::timeout(Duration::from_secs(60), async {
-                loop {
-                    if packaged_local_socket_reachable().await {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-            })
-            .await
-            .is_ok();
-            if ready {
-                "READY: centrald-server.service is enabled, running, and accepting local health connections. It will start automatically after reboot.".into()
-            } else {
-                "INCOMPLETE: setup committed and the service is enabled, but the daemon did not become healthy within 60 seconds. Run: sudo systemctl status centrald-server --no-pager; then sudo centrald-server config and choose Health, status, and next steps.".into()
+/// Hourly upkeep: certificate refresh and retention.
+async fn maintenance(state: state::Shared) {
+    let mut tick = tokio::time::interval(Duration::from_secs(3600));
+    loop {
+        tick.tick().await;
+        match state.tls.refresh() {
+            Ok(true) => {
+                tracing::info!(
+                    "issued a new server certificate (addresses changed or renewal due)"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(error = %format!("{error:#}"), "certificate refresh failed");
             }
         }
-        Ok(status) => format!(
-            "INCOMPLETE: setup committed, but systemd could not start CentralD (exit status {status}). Run: sudo systemctl enable --now centrald-server"
-        ),
-        Err(error) => format!(
-            "INCOMPLETE: setup committed, but systemd startup failed ({error}). Run: sudo systemctl enable --now centrald-server"
-        ),
+        let pruned = state
+            .db
+            .call(|c| {
+                let time = db::now();
+                c.execute("DELETE FROM metrics WHERE at < ?1", [time - 8 * 86_400])?;
+                c.execute(
+                    "DELETE FROM runs WHERE created_at < ?1
+                     AND id NOT IN (SELECT run_id FROM run_targets WHERE state = 'running')",
+                    [time - 90 * 86_400],
+                )?;
+                c.execute("DELETE FROM audit WHERE at < ?1", [time - 365 * 86_400])?;
+                c.execute(
+                    "DELETE FROM join_tokens WHERE expires_at < ?1",
+                    [time - 30 * 86_400],
+                )?;
+                c.execute("DELETE FROM sessions WHERE expires_at < ?1", [time])?;
+                Ok(())
+            })
+            .await;
+        if let Err(error) = pruned {
+            tracing::error!(%error, "retention cleanup failed");
+        }
     }
 }
 
-async fn create_enrollment_key(
-    config_path: &Path,
-    args: EnrollArgs,
-    role: &str,
-    json: bool,
-) -> Result<()> {
-    require_root()?;
-    let config = ServerConfig::load(config_path)?;
-    let ttl = humantime::parse_duration(&args.expires).context("invalid --expires duration")?;
-    if ttl.is_zero() || ttl > std::time::Duration::from_secs(24 * 60 * 60) {
-        bail!("enrollment-key lifetime must be greater than zero and no more than 24 hours");
-    }
-    let name = args.name.unwrap_or_else(|| format!("{role} enrollment"));
-    let database_url = resolve_database_url(&config)?;
-    let pool = connect_and_migrate(
-        database_url.expose_secret(),
-        config.database.max_connections,
-        config.server.instance_id,
-    )
-    .await?;
-    let created = create_key(&pool, &config, role, &name, ttl).await?;
-    pool.close().await;
+fn status(config: &ServerConfig) -> Result<()> {
+    let db = open_existing_db(config)?;
+    let (users, setup_code, devices, online_recent) = db.call_blocking(|c| {
+        let users: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+        let code = db::get_setting(c, api::SETUP_CODE_KEY)?;
+        let devices: i64 = c.query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))?;
+        let recent: i64 = c.query_row(
+            "SELECT COUNT(*) FROM devices WHERE last_seen_at > ?1",
+            [db::now() - 120],
+            |r| r.get(0),
+        )?;
+        Ok((users, code, devices, recent))
+    })?;
+    let ca_path = config.tls_dir().join("ca.crt");
+    let fingerprint = std::fs::read_to_string(&ca_path).ok().and_then(|pem| {
+        use rustls::pki_types::CertificateDer;
+        use rustls::pki_types::pem::PemObject;
+        CertificateDer::from_pem_slice(pem.as_bytes())
+            .ok()
+            .map(|der| centrald_proto::format_fingerprint(&centrald_proto::sha256(der.as_ref())))
+    });
 
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "id": created.id,
-                "role": created.role,
-                "name": created.name,
-                "expiresAt": created.expires_at,
-                "accessKey": created.key.expose_secret(),
-            })
-        );
-    } else {
-        println!("one-time {role} access key (shown once):");
-        println!("{}", created.key.expose_secret());
-        println!("expires: {}", created.expires_at);
+    println!("CentralD server {}", centrald_proto::VERSION);
+    println!();
+    println!("Open the web app at:");
+    for url in web_urls(config.listen) {
+        println!("  {url}");
     }
+    println!();
+    if users == 0 {
+        match setup_code {
+            Some(code) => {
+                println!("Setup code: {code}");
+                println!("Enter it in the web app to create the first account.");
+            }
+            None => println!("Setup code: not created yet (start the server first)."),
+        }
+    } else {
+        println!("Accounts: {users}");
+    }
+    println!("Devices: {devices} enrolled, {online_recent} seen in the last two minutes");
+    if let Some(fingerprint) = fingerprint {
+        println!();
+        println!("Certificate authority fingerprint (SHA-256):");
+        println!("  {fingerprint}");
+        println!("Your browser will warn about the certificate on first visit; compare");
+        println!("this fingerprint, or install the CA from Settings in the web app.");
+    }
+    println!();
+    println!("Data: {}", config.data_dir.display());
     Ok(())
 }
 
-fn init_tracing(json: bool) -> Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    if json {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .json()
-            .try_init()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+fn reset_password(config: &ServerConfig, username: &str, from_stdin: bool) -> Result<()> {
+    let db = open_existing_db(config)?;
+    let name = username.to_owned();
+    let found: Option<(String, String)> = db.call_blocking(move |c| {
+        Ok(c.query_row(
+            "SELECT id, username FROM users WHERE username = ?1",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+    })?;
+    let Some((id, canonical)) = found else {
+        bail!("there is no operator named `{username}`");
+    };
+    let password = if from_stdin {
+        let mut text = String::new();
+        std::io::stdin()
+            .take(1024)
+            .read_to_string(&mut text)
+            .context("read password")?;
+        text.trim_end_matches(['\r', '\n']).to_owned()
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .try_init()
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    }
+        if !std::io::stdin().is_terminal() {
+            bail!("no terminal to prompt on; pass --password-stdin");
+        }
+        let first = rpassword::prompt_password(format!("New password for {canonical}: "))?;
+        let second = rpassword::prompt_password("Repeat it: ")?;
+        if first != second {
+            bail!("the passwords do not match");
+        }
+        first
+    };
+    auth::validate_password(&password, &canonical).map_err(anyhow::Error::msg)?;
+    let hash = auth::hash_password(&password)?;
+    db.call_blocking(move |c| {
+        let tx = c.transaction()?;
+        tx.execute(
+            "UPDATE users SET password_hash = ?2, totp_enabled = 0, totp_secret = NULL WHERE id = ?1",
+            rusqlite::params![id, hash],
+        )?;
+        tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
+        db::audit(&tx, "local console", "account.password_reset", &canonical, "two-factor turned off", "")?;
+        tx.commit()?;
+        Ok(())
+    })?;
+    println!("Password updated. Two-factor sign-in is off and all sessions were signed out.");
     Ok(())
 }

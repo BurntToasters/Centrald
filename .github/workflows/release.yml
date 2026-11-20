@@ -1,166 +1,136 @@
 name: Release
 
+# Push a tag that matches package.json (for example v0.1.0) to build every
+# platform, sign SHA256SUMS with Minisign, and open a draft GitHub release.
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   linux:
-    name: Linux x64 artifacts
-    runs-on: ubuntu-24.04
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
-        ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            desktop-file-utils \
-            dpkg-dev \
-            libayatana-appindicator3-dev \
-            libclang-dev \
-            libpam0g-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            patchelf \
-            protobuf-compiler \
-            xz-utils
-      - name: Install npm 12 (project requires >= 12.2.1)
+      - name: Install latest npm
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add ${{ matrix.arch }}-unknown-linux-musl
       - run: npm ci
-      - run: npm run config:check
-      - name: Build signed Linux artifacts
-        run: node scripts/build.js --target linux-x64 --native --signed
+      - run: npm run build:web
+      - name: Build static binaries
+        env:
+          CENTRALD_REQUIRE_UI: "1"
+        run:
+          cargo build --release --locked --target ${{ matrix.arch
+          }}-unknown-linux-musl -p centrald-server -p centrald-agent
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: centrald-linux-x64
-          path: dist/linux-x64/*
+          name: bin-${{ matrix.arch }}-unknown-linux-musl
+          path: |
+            target/${{ matrix.arch }}-unknown-linux-musl/release/centrald-server
+            target/${{ matrix.arch }}-unknown-linux-musl/release/centrald-agent
           if-no-files-found: error
 
   windows:
-    name: Windows x64 and ARM64 artifacts
-    runs-on: windows-2022
-    env:
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
-        ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    name: Windows ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-2025
+          - arch: aarch64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Install npm 12 (project requires >= 12.2.1)
-        shell: pwsh
-        run: |
-          $prefix = Join-Path $env:RUNNER_TEMP 'npm-latest'
-          npm install -g --prefix $prefix npm@latest
-          $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - run: npm ci
-      - run: npm run config:check
-      - name: Build signed Windows x64 artifacts
-        run: node scripts/build.js --target windows-x64 --signed
-      - name: Build signed Windows ARM64 artifacts
-        run: node scripts/build.js --target windows-arm64 --signed
+      - run: rustup target add ${{ matrix.arch }}-pc-windows-msvc
+      - run:
+          cargo build --release --locked --target ${{ matrix.arch
+          }}-pc-windows-msvc -p centrald-agent
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: centrald-windows-x64
-          path: dist/windows-x64/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: centrald-windows-arm64
-          path: dist/windows-arm64/*
+          name: bin-${{ matrix.arch }}-pc-windows-msvc
+          path:
+            target/${{ matrix.arch }}-pc-windows-msvc/release/centrald-agent.exe
           if-no-files-found: error
 
   publish:
-    name: Verify, sign, and publish
+    name: Package, sign, draft release
     needs: [linux, windows]
     runs-on: ubuntu-24.04
-    env:
-      GH_TOKEN: ${{ github.token }}
-      CENTRALD_RELEASE_PUBLISH: YES
-      CENTRALD_GITHUB_IMMUTABLE_RELEASES: YES
-      CENTRALD_MINISIGN_UNPROTECTED_KEY: YES
-      MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
-      CENTRALD_S3_ENDPOINT: ${{ secrets.CENTRALD_S3_ENDPOINT }}
-      CENTRALD_S3_BUCKET: ${{ secrets.CENTRALD_S3_BUCKET }}
-      CENTRALD_S3_REGION: ${{ secrets.CENTRALD_S3_REGION }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Install verification dependencies
+      - name: Check the tag matches package.json
+        run: |
+          version=$(jq -r .version package.json)
+          test "$GITHUB_REF_NAME" = "v$version"
+      - name: Install packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libayatana-appindicator3-dev \
-            libclang-dev \
-            libpam0g-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            minisign \
-            protobuf-compiler \
-            awscli
-      - name: Install npm 12 (project requires >= 12.2.1)
+          sudo apt-get install -y --no-install-recommends rpm minisign
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-aarch64-unknown-linux-musl
+          path: target/aarch64-unknown-linux-musl/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-x86_64-pc-windows-msvc
+          path: target/x86_64-pc-windows-msvc/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-aarch64-pc-windows-msvc
+          path: target/aarch64-pc-windows-msvc/release
+      - run: node scripts/package.mjs --require-all
+      - name: Sign SHA256SUMS
+        env:
+          MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
-          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
-          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
-      - run: npm ci
-      - name: Install documentation site dependencies
-        run: npm ci --prefix site
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: centrald-linux-x64
-          path: dist/linux-x64
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: centrald-windows-x64
-          path: dist/windows-x64
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: centrald-windows-arm64
-          path: dist/windows-arm64
-      - name: Materialize ephemeral Minisign key
-        shell: bash
+          key="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$key"
+          chmod 0600 "$key"
+          printf '%s\n' "$MINISIGN_PASSWORD" |
+            minisign -S -s "$key" -m dist/SHA256SUMS -t "CentralD $GITHUB_REF_NAME"
+          minisign -V -P "$(jq -r .publicKey packaging/minisign.json)" -m dist/SHA256SUMS
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$MINISIGN_SECRET_KEY_B64"
-          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$RUNNER_TEMP/centrald-minisign.key"
-          chmod 0600 "$RUNNER_TEMP/centrald-minisign.key"
-          echo "MINISIGN_SECRET_KEY_FILE=$RUNNER_TEMP/centrald-minisign.key" >> "$GITHUB_ENV"
-      - name: Assemble release artifacts
-        run: npm run release:assemble
-      - name: Sign every artifact before manifest generation
-        run: npm run release:sign
-      - name: Generate immutable release manifests
-        run: npm run release:manifests
-      - name: Sign the generated manifests
-        run: npm run release:sign
-      - name: Publish GitHub releases
-        run: npm run release:publish
-      - name: Remove ephemeral signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/centrald-minisign.key"
+          flags=(--draft --verify-tag --title "CentralD $GITHUB_REF_NAME" --generate-notes)
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
+            dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.exe \
+            dist/arch/PKGBUILD dist/arch/*.install \
+            dist/SHA256SUMS dist/SHA256SUMS.minisig

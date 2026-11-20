@@ -1,286 +1,249 @@
 # Operations
 
-## Scope of this release
+How to configure, secure, back up, upgrade, and troubleshoot a CentralD
+installation. For first-time setup, see [Get started](QUICKSTART.md).
 
-Operators can rely on setup, PKI, `centrald-invite1` enrollment, mTLS inventory,
-invitation lifecycle, audited remote settings, client rescue, and Admin
-self-update wiring. Typed jobs, privileged broker enablement, PTY/ConPTY shell,
-OS-vault credential saving, and remote CentralD package installation remain
-fail-closed. Do not auto-start or enable `centrald-broker` / `CentralDBroker`
-until `PRIVILEGED_OPERATIONS_ENABLED` is a release gate with acceptance tests.
+## Where things live
 
-## Firewall and listeners
+| What                       | Where                                                     |
+| -------------------------- | --------------------------------------------------------- |
+| Server settings (optional) | `/etc/centrald/server.toml`                               |
+| Server data                | `/var/lib/centrald` (owned by the `centrald` user)        |
+| Database                   | `/var/lib/centrald/centrald.db` (SQLite)                  |
+| Certificates and CA key    | `/var/lib/centrald/tls/`                                  |
+| Agent builds offered       | `/usr/share/centrald/agents/`                             |
+| Server service             | `centrald-server.service`                                 |
+| Agent credential (Linux)   | `/etc/centrald/agent.toml` (root only)                    |
+| Agent credential (Windows) | `C:\ProgramData\CentralD\agent.toml` (Administrators)     |
+| Agent service              | `centrald-agent.service`; Windows service `CentralDAgent` |
 
-Default packaged listeners (all unprivileged ports 1024–65535):
+The server runs as the unprivileged `centrald` user with a hardened systemd
+unit. It needs only its data directory and one TCP port. The agent runs as root
+(LocalSystem on Windows) because running commands and installing updates require
+it.
 
-| Port | Role           |
-| ---- | -------------- |
-| 7443 | Enrollment TLS |
-| 7444 | Client mTLS    |
-| 7445 | Admin mTLS     |
+## Server settings
 
-`centrald-server initial-setup` opens those TCP ports (or whatever non-loopback
-listeners you later persist) with UFW, allows SSH first (`OpenSSH`, falling back
-to `22/tcp`), and enables UFW unless `CI` or `CENTRALD_SKIP_FIREWALL_ENABLE` is
-set. Enabling UFW uses Ubuntu's default deny-incoming policy; other host
-services need their own allow rules. PostgreSQL stays on `127.0.0.1:5432` and is
-never opened. Set `CENTRALD_SKIP_FIREWALL=1` to leave the host firewall
-untouched. Changing listeners in `centrald-server config` re-applies the current
-ports; use Refresh host firewall (UFW) to retry. Hypervisor and cloud security
-groups are independent of UFW.
+Every setting is optional. Edit `/etc/centrald/server.toml`, then
+`sudo systemctl restart centrald-server`.
 
-Clients and Admin are outbound-only.
+```toml
+# Address and port of the web app and agent connections.
+listen = "0.0.0.0:7443"
 
-## Clock / NTP
+# Extra DNS names or IPs for the server certificate. The machine's hostname
+# and LAN addresses are always included.
+hostnames = ["nas.home.arpa", "100.64.0.10"]
 
-Invitation and certificate validity use wall-clock time. Before enroll or renew,
-ensure NTP is active on server, clients, and Admin hosts (`timedatectl status`).
-If a freshly issued invitation fails as expired immediately, fix clock skew
-before regenerating keys.
+# Your own certificate for browsers (readable by the centrald user).
+tls_cert = "/etc/centrald/tls/fullchain.pem"
+tls_key = "/etc/centrald/tls/privkey.pem"
 
-## Server process identity
-
-Packaged `centrald-server.service` runs as **root**. That is required in this
-release for local-control peer-credential checks, PKI material, and the
-root-only database environment file. Do not set `User=` / `Group=` to an
-unprivileged account; listener ports stay unprivileged without
-`CAP_NET_BIND_SERVICE`. An unprivileged server user is post-0.1.0 work.
-
-## Default paths
-
-| Purpose              | Default                                              |
-| -------------------- | ---------------------------------------------------- |
-| Server config        | `/etc/centrald/server.toml`                          |
-| Database environment | `/etc/centrald/server.env`                           |
-| Server data          | `/var/lib/centrald`                                  |
-| Client data          | `/var/lib/centrald-client`                           |
-| Local server socket  | `/run/centrald/server.sock`                          |
-| Service units        | `centrald-server.service`, `centrald-client.service` |
-
-Advanced `--config` files must use a clean absolute path outside
-`/var/lib/centrald`. That data root is deliberately removed by destructive
-reset, so storing the durable server configuration beneath it would make crash
-recovery ambiguous.
-
-## Normal lifecycle
-
-```text
-sudo apt install ./centrald-server_*.deb
-sudo centrald-server initial-setup
-# enroll CentralD Admin with the printed access key
-# optional local console for health, extra invitations, and PKI:
-sudo centrald-server config
+# Rarely changed.
+data_dir = "/var/lib/centrald"
+agent_dir = "/usr/share/centrald/agents"
 ```
 
-On a packaged Ubuntu Server installation, `initial-setup` enables and starts
-`centrald-server.service` automatically after committing setup and configures
-UFW for the LAN listeners. Set `CENTRALD_SKIP_SERVICE_START=1` only for
-image-building or another deliberate advanced workflow; source/container
-installs print the exact manual start action. Set `CENTRALD_SKIP_FIREWALL=1`
-when the host firewall is managed elsewhere.
+Unknown keys are an error, so a typo stops the server instead of being ignored.
 
-Recommended local PostgreSQL setup refuses a non-empty `/var/lib/centrald`
-directory, then writes a root-only, non-secret recovery journal there before the
-first PostgreSQL mutation. The service login is always
-`NOCREATEDB NOCREATEROLE NOSUPERUSER NOREPLICATION`; a pinned local postgres
-administrator creates its one instance-bound database. The journal binds the
-attempt to the Linux boot ID, PID, and process start time. A retry never treats
-a live owner as abandoned. After an interrupted attempt, rerun
-`sudo centrald-server initial-setup`; CentralD retries deterministic cleanup of
-its generated role/database and generated files, preserving the journal until
-cleanup succeeds. Advanced external PostgreSQL setup uses the same non-secret
-recovery journal. Once the protected environment file exists, recovery will drop
-only a database carrying this exact server instance's ownership comment; a
-missing/mismatched comment fails closed.
+Each setting also has an environment variable, which wins over the file:
+`CENTRALD_LISTEN`, `CENTRALD_HOSTNAMES` (comma-separated), `CENTRALD_TLS_CERT`,
+`CENTRALD_TLS_KEY`, `CENTRALD_DATA_DIR`, and `CENTRALD_AGENT_DIR`.
+`CENTRALD_LOG` sets the log level (`info` by default; `debug` for more). Set
+them with `sudo systemctl edit centrald-server`:
 
-Use the config console to create short-lived invitations and to rotate/revoke
-Admin identities. Store the offline recovery bundle separately from the server
-data directory and back it up offline.
+```ini
+[Service]
+Environment=CENTRALD_LOG=debug
+```
 
-On a Linux client, install the package before enrollment so the `centrald`
-service account exists, then run `sudo centrald-client enroll`. Successful
-enrollment publishes the active pointer and enables/starts the client service.
-Automation on Unix may use an absolute, root-owned, private `--key-file`; every
-platform may use piped `--key-stdin`. These forms use the invitation's server
-unless `--server` is explicitly supplied and do not request a second interactive
-answer. Invitation secrets are deliberately not accepted as command-line values.
-Use `sudo centrald-client restart` for the ordinary service restart path.
+Keep the port between 1024 and 65535; the service has no privilege to bind lower
+ports. Plain `http://` requests to the port are redirected to `https://`.
 
-## Configuration recovery
+## Network and firewall
 
-`centrald-server config` reads the persisted configuration directly and does not
-require a healthy daemon. It can repair invalid listeners, database pool limits,
-runtime timing, update policy, paths, and TLS public host. It preserves a backup
-when replacing the config.
+Browsers and agents both connect to the server's one port (7443 by default).
+Agents only make outgoing connections; managed machines need no open ports.
 
-Database credentials remain in the root-only environment file named by
-`database.environment_file`; the config stores only the environment variable
-name and file path. The file carries the server instance marker. First setup
-requires a database name that does not exist and creates the database itself.
-After setup, the protected environment file is authoritative; the running daemon
-and TUI do not accept a process-level `CENTRALD_DATABASE_URL` override. Advanced
-PostgreSQL URLs require an explicit port. Non-loopback hosts require
-`sslmode=verify-full`, and query parameters may not override host/user/password/
-database identity. Ambient libpq/SQLx `PG*` connection variables are rejected. A
-TUI credential/endpoint replacement is accepted only after the target database
-proves both CentralD ownership markers for this same server instance;
-managed-local database relocation remains an explicit backup/reset/restore
-operation.
+Open the port on the server's firewall:
 
-## Admin loss
+```sh
+sudo ufw allow 7443/tcp                                    # Debian, Ubuntu
+sudo firewall-cmd --permanent --add-port=7443/tcp && sudo firewall-cmd --reload  # Fedora
+```
 
-Create and revoke Admin identities only from a root terminal on the server. The
-console refuses to revoke the last active Admin unless the explicit local force
-path is chosen. An Admin invitation is displayed once; create another if it is
-lost rather than attempting to recover it. Pending Admin invitations can be
-listed and revoked only from the local server console; pending client
-invitations can also be revoked by an enrolled Admin.
+Give the server a fixed address (a DHCP reservation, or a DNS name you list in
+`hostnames`). Agents remember the addresses from their join code. If the
+server's address changes, edit `servers` in each agent's `agent.toml` and
+restart the agent, or enroll it again.
 
-## Reset
+Keep CentralD on your LAN or VPN. To reach it from outside, use a VPN such as
+WireGuard or Tailscale rather than forwarding the port.
 
-Stop the service and run:
+## Trust the certificate
 
-```text
+CentralD creates its own certificate authority (CA) on first start and uses it
+to issue the server's certificate. Agents trust only that CA's fingerprint,
+which comes from their join code. Browsers do not know the CA, so they warn you.
+
+To stop the warning, either:
+
+- **Install the CA** on your computers: **Settings > Download CA certificate**,
+  then import it as a trusted root (Windows: double-click it, **Install
+  Certificate > Local Machine > Trusted Root Certification Authorities**; macOS:
+  Keychain Access, then set it to **Always Trust**; Firefox: **Settings >
+  Certificates > Import**). Compare the fingerprint shown in **Settings** with
+  `sudo centrald-server status` first.
+- **Use your own certificate**, for example from your home lab CA or Let's
+  Encrypt via DNS validation. Set `tls_cert` and `tls_key` and restart. Agents
+  are unaffected; they keep using CentralD's CA. After renewing the certificate,
+  restart the server (for certbot, add
+  `--deploy-hook "systemctl restart centrald-server"`).
+
+The server certificate renews itself 30 days before it expires and whenever its
+names or addresses change. The CA is valid for 20 years.
+
+## Backups
+
+Everything is in `/var/lib/centrald`. It includes the CA private key and device
+credential hashes, so store backups as carefully as the server itself.
+
+```sh
 sudo systemctl stop centrald-server
-sudo centrald-server --nuke --yes-i-want-to-do-this
+sudo tar -czf centrald-backup.tar.gz -C /var/lib centrald
+sudo systemctl start centrald-server
 ```
 
-The command first serializes setup/reset activity, acquires the daemon lock, and
-validates every target. It then requires the database comment and installation
-row plus the instance-bound managed-role marker before `DROP DATABASE`; a name
-match alone is insufficient. Reset state is journaled before the irreversible
-step. If PostgreSQL role removal or filesystem cleanup is interrupted, rerun the
-exact command and CentralD resumes. The data-root marker is retired only after
-all other children are gone, so a partial recursive cleanup retains recovery
-authority. Review the printed database name and removed paths. The command is
-intentionally not exposed through Admin or local socket RPC. Run `initial-setup`
-to create a new installation.
+To restore on the same or a new machine with the same address, install the
+server package, then:
 
-## Logs and secrets
-
-Set `RUST_LOG` for diagnostic verbosity. Do not enable logging that prints RPC
-payloads. Invitations, private keys, database URLs, future elevation proofs,
-future terminal credentials, and terminal bytes must remain redacted.
-
-## Client recovery and certificate lifetime
-
-Clients and Admin profiles renew certificates before the 30-day remaining-life
-threshold. New enrollment and renewal certificates begin pending, are published
-locally through a fixed crash-recoverable `current.pointer`, and become active
-only after the endpoint proves possession over mTLS. The previous active
-certificate remains valid through its original lifetime until activation; after
-activation it is retained only for a bounded one-hour rollback window and is
-never extended. Use:
-
-```text
-sudo centrald-client rescue
-sudo centrald-client rescue --repair
-sudo centrald-client rescue --bundle /root/centrald-rescue.json
+```sh
+sudo systemctl stop centrald-server
+sudo rm -rf /var/lib/centrald
+sudo tar -xzf centrald-backup.tar.gz -C /var/lib
+sudo chown -R centrald:centrald /var/lib/centrald
+sudo systemctl start centrald-server
 ```
 
-The bundle is redacted and contains paths/status metadata, not private keys or
-invitation values. On Windows, the network service must run as
-`NT SERVICE\CentralDClient` and the isolated privileged broker runs as
-LocalSystem (`CentralDBroker` service); on Debian/Ubuntu the broker runs as root
-through `centrald-broker.service`. Windows installs the broker as demand-start
-and Linux packages install but do not enable `centrald-broker.service`. Do not
-switch the broker to automatic start until privileged operations are an accepted
-release gate. The installer preserves the prior startup mode during upgrades.
-Debian package upgrades call `try-restart` only when the corresponding CentralD
-service was already active, so an upgraded binary takes effect without
-unexpectedly starting an inactive or unenrolled service. A first installation
-becomes delayed-auto after successful enrollment unless the operator explicitly
-used `-KeepManualStart`; that choice is persisted in the administrator-owned
-installation directory.
+Agents reconnect on their own because the CA is the same.
 
-## PKI lifetime and rotation planning
+CentralD keeps metrics for 8 days, command history for 90 days, the activity log
+for a year, and join codes for 30 days after they expire.
 
-CentralD issues the offline root for 15 years, online server/client/Admin
-issuers for 3 years, and server/client/Admin leaf certificates for 90 days. The
-server automatically renews its own leaf when 30 days or fewer remain, using
-only the online server issuer. A long-running daemon checks this condition every
-six hours and exits after durable renewal so systemd can restart it with the new
-identity. Client and Admin leaf renewal use the same 30-day threshold.
+## Upgrades
 
-Startup refuses expired root/issuer material and warns 365 days before root
-expiration and 180 days before an online issuer expires. Treat those warnings as
-a required maintenance window. Run `centrald-server config`, choose **Rotate
-online PKI issuers**, and provide the separately stored offline-root recovery
-PEM. CentralD verifies that the recovery key belongs to the configured root
-certificate, stages all three replacement issuers plus a replacement server
-leaf, and commits them as one recoverable rotation. Existing client/Admin
-certificates continue chaining to the unchanged root while new certificates use
-the new issuers. Keep the offline root private key offline except during this
-maintenance ceremony.
+**Server**: install the new package over the old one
+(`sudo apt install ./centrald-server_*.deb`,
+`sudo dnf upgrade ./centrald-server-*.rpm`, or `makepkg -si` with the new
+PKGBUILD). The service restarts by itself; the database is upgraded in place.
+The package also brings the new agent builds.
 
-A server TLS-name, leaf, or online-issuer rotation retains rollback material
-until the restarted daemon completes actual enrollment-TLS, client-mTLS, and
-Admin-mTLS probes using the configured public TLS name. Only after those
-handshakes succeed is the old private material deleted automatically.
+**Agents** installed with the web app's command: run this from **Run command**
+on all of them at once (or locally with `sudo`):
 
-Replacing the offline root is a disaster-recovery ceremony, not a routine
-rotation: it requires the current offline root recovery PEM, generates a fresh
-root, all three issuers, and a new server leaf, and writes the replacement
-recovery material to a new root-only file. Every enrolled client and Admin
-chains to the old root and must re-enroll after the ceremony. The commit is
-journaled with the same crash-recoverable rollback and post-restart TLS-probe
-retirement as issuer rotation.
-
-## Update origin
-
-`updates.manifest_url` is server-local-only. Remote Admins can enable/disable
-checks and select policy fields, but cannot turn the root-running server into an
-arbitrary HTTPS request client. For GitHub repositories, immutable artifacts and
-stable manifests stay in GitHub Releases; mutable non-stable channel manifests
-are published to the dedicated `centrald-channels` branch. Generic deployments
-may set an explicitly managed `UPDATE_BASE_URL` at build/setup time.
-
-Switch the release channel the server follows for client updates:
-
-```text
-sudo centrald-server channel beta
+```sh
+centrald-agent update
 ```
 
-This updates `updates.channel`, derives the matching `updates.manifest_url` from
-the baked CDN/GitHub layout (`alpha`, `beta`, and `stable` all resolve under
-`<CDN_BASE_URL>/<channel>` when a CDN is baked; without one, stable uses
-GitHub's latest pointer and other channels use the `centrald-channels` branch),
-and sets `allow_prerelease` for every channel except `stable`. The server
-refuses to present a release feed whose manifest channel differs from the
-configured channel, so switching channels changes what clients are offered.
-Restart the server after switching. Fresh setups already bake the detected
-channel from the installed package version.
+It downloads the agent build your server offers over the agent's verified
+connection, checks its SHA-256, makes sure it runs, swaps the program
+atomically, and restarts the service a few seconds later. If anything fails, the
+old agent stays in place.
 
-The Admin desktop app checks its own baked updater manifest URL
-(`<CDN_BASE_URL>/<channel>/centrald-admin-updater.json` when a CDN is baked) and
-does not depend on GitHub's `/latest` pointer except on no-CDN stable builds.
+**Agents** installed from a package: upgrade the package with apt, dnf, or
+pacman. On Windows, run `centrald-agent update` in an Administrator PowerShell,
+then `Restart-Service CentralDAgent`.
 
-Non-stable channel updates are monotonic by Semantic Versioning and both
-manifests move in one branch commit. A channel-only retry downloads the exact
-immutable release assets and does not regenerate them. Emergency rollback is an
-explicit operator action requiring `CENTRALD_ALLOW_CHANNEL_ROLLBACK=YES`.
+## Forgotten password
 
-## Client state coordination
+On the server:
 
-Enrollment, renewal, reenrollment, daemon pointer recovery, and privileged
-repair share one fixed cross-process client-state lock. The daemon releases this
-lock before opening its long-lived control stream. On Unix the lock inode is
-`/var/lib/centrald-client.lock`, directly below root-owned `/var/lib`, so the
-managed service account cannot unlink and replace it.
+```sh
+sudo centrald-server reset-password admin
+```
 
-Unix enrollment persistence, failed-generation cleanup, and privileged repair
-start from already-open fixed-root directory descriptors. Every state component
-is opened with no-follow semantics, ownership and modes are applied through the
-open descriptors, and regular files must have a single link. The advisory lock
-coordinates CentralD processes; the descriptor-relative traversal is the
-containment boundary against rename and symlink substitution.
+This sets a new password, turns off two-factor sign-in for that account, and
+signs it out everywhere. For scripts, pass the password on standard input with
+`--password-stdin`.
 
-Admin profile activation and renewal are serialized by a per-profile
-cross-process lock. Multiple GUI processes therefore cannot publish competing
-credential generations for the same profile.
+## Starting over
 
-Windows state ACLs remain installer-owned. `rescue --repair` refuses to rewrite
-Windows ACLs and directs the operator to rerun the signed installer as
-Administrator. The manual-start policy marker lives beneath the
-administrator-owned installation directory, not the service-writable data
-directory.
+To erase all accounts, devices, history, and the CA:
+
+```sh
+sudo systemctl stop centrald-server
+sudo rm -rf /var/lib/centrald
+sudo systemctl start centrald-server
+sudo centrald-server status      # new setup code
+```
+
+Every agent must then be enrolled again (`sudo centrald-agent leave`, then
+`enroll` with a new join code).
+
+## Uninstalling
+
+- Server: `sudo apt purge centrald-server` removes the program and all data;
+  `apt remove` keeps `/var/lib/centrald`. On Fedora and Arch, remove the
+  package, then delete `/var/lib/centrald` yourself if you want the data gone.
+- Agents: see [Removing a device](GUIDE.md#removing-a-device).
+
+## Without systemd
+
+The packages work on systems without systemd (for example inside a container),
+but nothing starts automatically:
+
+- Server: run `centrald-server run` as the `centrald` user with
+  `/var/lib/centrald` owned by that user. Started as root, it switches to the
+  data directory's owner by itself.
+- Agent: run `centrald-agent run` as root from your init system.
+
+## Troubleshooting
+
+**Logs**
+
+```sh
+journalctl -u centrald-server -f
+journalctl -u centrald-agent -f
+sudo centrald-agent status        # on a managed machine
+```
+
+On Windows, the agent service does not keep a log file yet. To watch it, run
+these in an Administrator PowerShell:
+
+```powershell
+Stop-Service CentralDAgent
+& "C:\Program Files\CentralD\centrald-agent.exe" run
+# Ctrl+C, then: Start-Service CentralDAgent
+```
+
+**A device never joins**
+
+- Run `sudo centrald-agent status` on it. It lists every server address and
+  whether it is reachable with the right certificate.
+- "cannot reach": the server address is wrong for this machine, or a firewall
+  blocks port 7443. Try `curl -k https://SERVER:7443/` from the machine.
+- "does not match the pinned fingerprint": something else answered on that
+  address, or the server was reset. Create a new join code.
+- "This join code was already used" or "expired": create a new one. Codes work
+  once and expire after 1 hour to 7 days.
+
+**A device shows offline**
+
+The agent reports every 15 seconds; after 90 seconds of silence it shows
+offline. Check `systemctl status centrald-agent` on the machine. After its
+credential is rejected (the device was removed, or the server was reset), the
+agent waits 10 minutes between attempts and logs how to enroll again.
+
+**The browser says the certificate changed**
+
+The server's address or names changed, so it issued a new certificate from the
+same CA. If you installed the CA, nothing to do. Otherwise accept the new
+certificate after checking the fingerprint in `sudo centrald-server status`.
+
+**Install command fails on the machine**
+
+- `curl: (90)` means the server's key did not match the pin in the command: you
+  are reaching a different server, or the server's certificate changed after you
+  copied the command. Create a new join code.
+- "the server may not offer a … agent": the server package has no build for that
+  architecture. **Settings** lists the builds it offers.

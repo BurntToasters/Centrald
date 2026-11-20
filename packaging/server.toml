@@ -1,0 +1,14 @@
+# CentralD server settings. Everything is optional; the defaults suit most
+# home labs. Restart after changes: sudo systemctl restart centrald-server
+#
+# Address and port of the web app and agent connections.
+# listen = "0.0.0.0:7443"
+#
+# Extra DNS names or IPs for the server certificate (LAN addresses are
+# added automatically).
+# hostnames = ["nas.home.arpa"]
+#
+# Your own certificate for browsers, readable by the centrald user.
+# Agents keep using CentralD's built-in certificate authority.
+# tls_cert = "/etc/centrald/tls/fullchain.pem"
+# tls_key = "/etc/centrald/tls/privkey.pem"

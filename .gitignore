@@ -1,25 +1,17 @@
 /target/
-/node_modules/
-**/node_modules/
+node_modules/
 /dist/
-/release/
-/coverage/
-/.env
-/.centrald-dev/
-# dotenv environment variable files
-.env
-.env.*
-!.env.example
-/apps/admin/dist/
-/apps/admin/src-tauri/target/
-# Linux `tauri build` emits this; desktop/windows schemas stay tracked.
-/apps/admin/src-tauri/gen/schemas/linux-schema.json
+/web/dist/
+/e2e-report/
+/test-results/
+/playwright-report/
 /site/dist/
 /site/.astro/
 /site/src/content/docs/
-*.pfx
-*.p12
+.env
+.env.*
 *.key
 *.pem
-!config/*.pem.example
+*.p12
+*.pfx
 .DS_Store

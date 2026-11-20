@@ -3,8 +3,8 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 ---
 
 <BaseLayout
-  title="CentralD - Security-first homelab device manager"
-  description="CentralD manages Windows and Linux devices from a single Ubuntu Server with outbound-only clients, a Tauri desktop Admin, and a typed, audited job pipeline."
+  title="CentralD - Remote management for your home lab"
+  description="CentralD shows the health of every Linux and Windows machine in your home lab and lets you run commands, open terminals, and install updates from one web app."
 >
   <main class="home-main">
     <!-- Ambient Radial Glows -->
@@ -26,21 +26,21 @@ import BaseLayout from "../layouts/BaseLayout.astro";
           >
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
           </svg>
-          Security-First Homelab Management
+          Home lab remote management
         </span>
       </div>
 
       <h1 class="hero-title">
-        One server. Every device. <span class="gradient-text"
-          >No inbound ports.</span
+        Every machine in your lab. <span class="gradient-text"
+          >One web app.</span
         >
       </h1>
 
       <p class="hero-lede">
-        CentralD is a sovereign device manager engineered for private LANs and
-        homelabs. Manage Windows and Linux nodes from a hardened Ubuntu host via
-        outbound-only mTLS clients, an audited job pipeline, and a modern
-        desktop Admin application.
+        CentralD shows the health of every Linux and Windows machine you own,
+        and lets you run commands, open a terminal, and install updates on them
+        from your browser. Install the server once, then add each machine with
+        one copied command.
       </p>
 
       <div class="hero-actions">
@@ -53,7 +53,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
               clip-rule="evenodd"></path>
           </svg>
         </a>
-        <a class="button secondary lg" href="/docs/architecture">
+        <a class="button secondary lg" href="/docs/guide">
           <svg
             class="btn-icon"
             viewBox="0 0 24 24"
@@ -63,17 +63,17 @@ import BaseLayout from "../layouts/BaseLayout.astro";
             stroke-linecap="round"
             stroke-linejoin="round"
           >
-            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-            <line x1="6" y1="6" x2="6.01" y2="6"></line>
-            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path
+              d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"
+            ></path>
           </svg>
-          <span>Architecture & Threat Model</span>
+          <span>User guide</span>
         </a>
       </div>
     </section>
 
-    <!-- Architecture & Pipeline Interactive Preview -->
+    <!-- Interactive Architecture Visualization -->
     <section class="preview-section">
       <div class="glass-card preview-card">
         <div class="preview-header">
@@ -82,76 +82,69 @@ import BaseLayout from "../layouts/BaseLayout.astro";
             <span class="dot yellow"></span>
             <span class="dot green"></span>
           </div>
-          <span class="preview-title"
-            >CentralD Protocol & Isolation Architecture</span
-          >
+          <span class="preview-title">How CentralD fits together</span>
           <div class="preview-status">
             <span class="status-indicator"></span>
-            <span>mTLS 1.3 Active</span>
+            <span>HTTPS only</span>
           </div>
         </div>
 
         <div class="architecture-diagram">
-          <!-- Desktop Admin Node -->
           <div class="arch-box node-admin">
             <div class="arch-box-header">
-              <span class="badge purple">Desktop Admin</span>
-              <span class="arch-box-sub">Tauri v2 + Rust</span>
+              <span class="badge purple">Your browser</span>
+              <span class="arch-box-sub">Any desktop or phone</span>
             </div>
             <p class="arch-box-desc">
-              Zero permanent tokens. mTLS with local certificate store.
+              Password plus optional two-factor sign-in. Nothing to install.
             </p>
-            <div class="arch-pill">Admin Port :7445</div>
+            <div class="arch-pill">Web app</div>
           </div>
 
-          <!-- Connecting arrows -->
           <div class="arch-flow">
             <div class="flow-line"><span class="flow-dot"></span></div>
-            <span class="flow-label">Encrypted mTLS</span>
+            <span class="flow-label">HTTPS</span>
           </div>
 
-          <!-- Server Core Node -->
           <div class="arch-box node-server">
             <div class="arch-box-header">
-              <span class="badge teal">Ubuntu Server Core</span>
-              <span class="arch-box-sub">Hardened Host</span>
+              <span class="badge teal">centrald-server</span>
+              <span class="arch-box-sub">Any Linux machine</span>
             </div>
             <div class="server-specs">
               <div class="spec-row">
-                <span class="spec-label">Enrollment:</span>
-                <code>0.0.0.0:7443</code>
+                <span class="spec-label">Port:</span>
+                <code>7443 (HTTPS)</code>
               </div>
               <div class="spec-row">
-                <span class="spec-label">Client mTLS:</span>
-                <code>0.0.0.0:7444</code>
+                <span class="spec-label">Runs as:</span>
+                <code>centrald (no root)</code>
               </div>
               <div class="spec-row">
-                <span class="spec-label">Local Socket:</span>
-                <code>/run/centrald/server.sock</code>
+                <span class="spec-label">Data:</span>
+                <code>SQLite, /var/lib/centrald</code>
               </div>
               <div class="spec-row">
-                <span class="spec-label">PostgreSQL:</span>
-                <code>127.0.0.1:5432 (Isolated)</code>
+                <span class="spec-label">Certificates:</span>
+                <code>own CA, pinned by agents</code>
               </div>
             </div>
           </div>
 
-          <!-- Connecting arrows -->
           <div class="arch-flow">
             <div class="flow-line reverse"><span class="flow-dot"></span></div>
-            <span class="flow-label">Outbound-Only</span>
+            <span class="flow-label">Outbound only</span>
           </div>
 
-          <!-- Managed Nodes -->
           <div class="arch-box node-client">
             <div class="arch-box-header">
-              <span class="badge amber">Managed Clients</span>
+              <span class="badge amber">centrald-agent</span>
               <span class="arch-box-sub">Linux & Windows</span>
             </div>
             <p class="arch-box-desc">
-              Unprivileged network daemon. Zero listening ports on host.
+              Connects out to the server. Opens no ports on the machine.
             </p>
-            <div class="arch-pill client-pill">0 Inbound Ports</div>
+            <div class="arch-pill client-pill">0 inbound ports</div>
           </div>
         </div>
       </div>
@@ -161,9 +154,9 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     <section class="quickstart-section">
       <div class="section-heading">
         <span class="badge teal">Quickstart</span>
-        <h2>Up and running in 3 minutes</h2>
+        <h2>Up and running in five minutes</h2>
         <p>
-          Simple package installation with no open inbound ports on clients.
+          Install one package, open the web app, copy one command per machine.
         </p>
       </div>
 
@@ -189,7 +182,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
               <line x1="6" y1="6" x2="6.01" y2="6"></line>
               <line x1="6" y1="18" x2="6.01" y2="18"></line>
             </svg>
-            <span>1. Server Host</span>
+            <span>1. Install the server</span>
           </button>
           <button
             class="tab-btn"
@@ -210,7 +203,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
               <line x1="8" y1="21" x2="16" y2="21"></line>
               <line x1="12" y1="17" x2="12" y2="21"></line>
             </svg>
-            <span>2. Enrolled Client</span>
+            <span>2. Open the web app</span>
           </button>
           <button
             class="tab-btn"
@@ -231,15 +224,14 @@ import BaseLayout from "../layouts/BaseLayout.astro";
               <path d="M2 17l10 5 10-5"></path>
               <path d="M2 12l10 5 10-5"></path>
             </svg>
-            <span>3. Desktop Admin</span>
+            <span>3. Add machines</span>
           </button>
         </div>
 
         <div class="tab-content-container">
-          <!-- Server Tab -->
           <div class="tab-content active" id="tab-server">
             <div class="code-header">
-              <span class="code-title">Ubuntu Server 24.04 First-Run</span>
+              <span class="code-title">Debian, Ubuntu, Fedora, or Arch</span>
               <button
                 class="copy-snippet-btn"
                 data-clipboard-target="#snippet-server"
@@ -263,24 +255,23 @@ import BaseLayout from "../layouts/BaseLayout.astro";
               </button>
             </div>
             <pre
-              class="code-block"><code id="snippet-server"><span class="code-comment"># Install packaged CentralD server</span>
+              class="code-block"><code id="snippet-server"><span class="code-comment"># Debian, Ubuntu, Raspberry Pi OS</span>
 sudo apt install ./centrald-server_*.deb
 
-<span class="code-comment"># Initialize PKI, PostgreSQL, and UFW firewall in one command</span>
-sudo centrald-server initial-setup
+<span class="code-comment"># Fedora</span>
+sudo dnf install ./centrald-server-*.rpm
 
-<span class="code-comment"># Service starts automatically via systemd. Check status anytime:</span>
-sudo centrald-server config</code></pre>
+<span class="code-comment"># The server starts at once. Show its address and setup code again:</span>
+sudo centrald-server status</code></pre>
           </div>
 
-          <!-- Client Tab -->
           <div class="tab-content" id="tab-client">
             <div class="code-header">
-              <span class="code-title">Managed Node (Linux / Windows)</span>
+              <span class="code-title">First sign-in</span>
               <button
                 class="copy-snippet-btn"
                 data-clipboard-target="#snippet-client"
-                aria-label="Copy client commands"
+                aria-label="Copy first sign-in steps"
               >
                 <svg
                   class="copy-icon"
@@ -300,23 +291,21 @@ sudo centrald-server config</code></pre>
               </button>
             </div>
             <pre
-              class="code-block"><code id="snippet-client"><span class="code-comment"># Install client package on Ubuntu / Debian</span>
-sudo apt install ./centrald-client_*.deb
+              class="code-block"><code id="snippet-client"><span class="code-comment"># 1. Open the address the server printed, e.g.</span>
+https://192.168.1.10:7443
 
-<span class="code-comment"># Interactive enrollment with one-time invitation token</span>
-sudo centrald-client enroll
-
-<span class="code-comment"># The client connects outbound to the server on port 7444. Zero open ports!</span></code></pre>
+<span class="code-comment"># 2. Enter the setup code from the server, e.g. K7PX-2MQD-9RTA</span>
+<span class="code-comment"># 3. Pick a username and password, then turn on two-factor</span>
+<span class="code-comment">#    sign-in under Settings</span></code></pre>
           </div>
 
-          <!-- Admin Tab -->
           <div class="tab-content" id="tab-admin">
             <div class="code-header">
-              <span class="code-title">Tauri v2 Desktop Admin Application</span>
+              <span class="code-title">Add device → copy → paste</span>
               <button
                 class="copy-snippet-btn"
                 data-clipboard-target="#snippet-admin"
-                aria-label="Copy admin instructions"
+                aria-label="Copy add device steps"
               >
                 <svg
                   class="copy-icon"
@@ -336,23 +325,24 @@ sudo centrald-client enroll
               </button>
             </div>
             <pre
-              class="code-block"><code id="snippet-admin"><span class="code-comment"># 1. Download CentralD Admin for Linux (AppImage) or Windows (NSIS)</span>
-<span class="code-comment"># 2. Launch Admin -> Click "Add Server"</span>
-<span class="code-comment"># 3. Paste the one-time Admin access key printed during initial-setup</span>
-<span class="code-comment"># 4. Admin generates a local mTLS key pair and authenticates over port 7445</span></code></pre>
+              class="code-block"><code id="snippet-admin"><span class="code-comment"># 1. In the web app select Add device, then Create join code</span>
+<span class="code-comment"># 2. Linux: paste the copied command into a terminal</span>
+<span class="code-comment">#    Windows: paste it into Terminal (Admin)</span>
+<span class="code-comment"># 3. The command checks the server's key, installs the agent,</span>
+<span class="code-comment">#    and the machine shows up as joined seconds later</span></code></pre>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Core Security Pillars Grid -->
+    <!-- Core Pillars Grid -->
     <section class="pillars-section">
       <div class="section-heading">
-        <span class="badge purple">Core Guarantees</span>
-        <h2>Engineered for Zero-Trust Homelabs</h2>
+        <span class="badge purple">What you get</span>
+        <h2>Simple to run, careful by default</h2>
         <p>
-          CentralD never compromises on security boundaries or cryptographic
-          rigor.
+          Built for a LAN or VPN, with the security of a tool that holds root on
+          your machines.
         </p>
       </div>
 
@@ -368,19 +358,18 @@ sudo centrald-client enroll
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
             </svg>
           </div>
-          <h3>Zero Inbound Client Ports</h3>
+          <h3>Live health at a glance</h3>
           <p>
-            Client daemons connect strictly outbound to the server over mTLS.
-            Managed nodes run with zero listening TCP/UDP ports, making them
-            invulnerable to inbound port scanning and lateral movement.
+            CPU, memory, disks, uptime, and addresses for every machine, plus
+            pending updates, reboot-required, and failed services on Linux.
+            Offline machines stand out right away.
           </p>
           <div class="card-tags">
-            <span class="badge">Outbound Daemon</span>
-            <span class="badge">Unprivileged User</span>
+            <span class="badge">Live dashboard</span>
+            <span class="badge">24-hour charts</span>
           </div>
         </div>
 
@@ -395,19 +384,19 @@ sudo centrald-client enroll
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-              <path d="M9 12l2 2 4-4"></path>
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
             </svg>
           </div>
-          <h3>Strict PKI & Invitations</h3>
+          <h3>Commands and a real terminal</h3>
           <p>
-            Offline root CA with dedicated online issuers. Devices enroll using
-            single-use <code>centrald-invite1</code> invitations hashed with Argon2id.
-            No permanent reusable bearer tokens exist anywhere.
+            Run a command on one machine or fifty and watch the output stream
+            in. Open a full interactive shell in the browser. Install updates
+            (apt, dnf, pacman) or reboot with one click.
           </p>
           <div class="card-tags">
-            <span class="badge teal">Argon2id</span>
-            <span class="badge teal">mTLS 1.3</span>
+            <span class="badge teal">Live output</span>
+            <span class="badge teal">Browser terminal</span>
           </div>
         </div>
 
@@ -422,18 +411,20 @@ sudo centrald-client enroll
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
           </div>
-          <h3>Typed & Audited Job Engine</h3>
+          <h3>No trust on first use</h3>
           <p>
-            No arbitrary unauthenticated bash execution. CentralD employs typed
-            jobs with explicit short-lived leases, state machine validation, and
-            hash-chained tamper-evident local audit logs.
+            Agents and install commands pin the server's key before sending
+            anything. Join codes are single-use and never appear on a command
+            line. Machines enrolled as monitor-only refuse every command
+            themselves.
           </p>
           <div class="card-tags">
-            <span class="badge amber">Hash-Chained Audit</span>
-            <span class="badge amber">PostgreSQL</span>
+            <span class="badge amber">Pinned TLS</span>
+            <span class="badge amber">Monitor-only mode</span>
           </div>
         </div>
 
@@ -448,76 +439,73 @@ sudo centrald-client enroll
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path
-                d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
-              ></path>
-              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <path d="M9 12l2 2 4-4"></path>
             </svg>
           </div>
-          <h3>Minisign-Verified Updates</h3>
+          <h3>Accounts worth trusting</h3>
           <p>
-            Immutable release binaries verified cryptographically with Minisign
-            and Tauri signatures before installation. Server, Client, and Admin
-            components update only upon explicit operator approval.
+            Argon2id passwords, two-factor sign-in, strict same-site sessions,
+            sign-in throttling, and an activity log of who did what. The server
+            itself runs without root.
           </p>
           <div class="card-tags">
-            <span class="badge">Minisign</span>
-            <span class="badge">Air-Gapped Feeds</span>
+            <span class="badge">Two-factor</span>
+            <span class="badge">Activity log</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Deep-Dive Documentation Grid -->
+    <!-- Documentation Grid -->
     <section class="docs-section">
       <div class="section-heading">
-        <span class="badge slate">Explore CentralD</span>
-        <h2>Complete Documentation & Guides</h2>
+        <span class="badge slate">Documentation</span>
+        <h2>Guides and reference</h2>
       </div>
 
       <div class="docs-grid">
-        <a class="glass-card doc-card" href="/docs/architecture">
+        <a class="glass-card doc-card" href="/docs/guide">
           <div class="doc-card-header">
-            <h3>System Architecture</h3>
+            <h3>User guide</h3>
             <span class="doc-arrow">→</span>
           </div>
           <p>
-            Learn how the 3 TLS listeners, PostgreSQL database, and
-            `/run/centrald/server.sock` local socket interact securely.
+            Everyday tasks: devices, commands, the terminal, updates, more
+            operators, and monitor-only machines.
           </p>
         </a>
 
         <a class="glass-card doc-card" href="/docs/operations">
           <div class="doc-card-header">
-            <h3>Operations Runbook</h3>
+            <h3>Operations</h3>
             <span class="doc-arrow">→</span>
           </div>
           <p>
-            Guides for client enrollment, recovery keys, service restarts,
-            database backups, and configuration management.
+            Settings, firewalls, your own certificate, backups, upgrades,
+            password resets, and troubleshooting.
           </p>
         </a>
 
         <a class="glass-card doc-card" href="/docs/threat-model">
           <div class="doc-card-header">
-            <h3>Threat Model & Security</h3>
+            <h3>Security model</h3>
             <span class="doc-arrow">→</span>
           </div>
           <p>
-            Explicit boundaries: what CentralD defends against, homelab threat
-            assumptions, and fail-closed guarantees.
+            What CentralD protects, against whom, and the limits you should know
+            about.
           </p>
         </a>
 
-        <a class="glass-card doc-card" href="/docs/releases">
+        <a class="glass-card doc-card" href="/docs/architecture">
           <div class="doc-card-header">
-            <h3>Release Pipeline & Channels</h3>
+            <h3>Architecture</h3>
             <span class="doc-arrow">→</span>
           </div>
           <p>
-            Release channels (stable, alpha, beta), signature verification,
-            reproducible builds, and manifest derivation.
+            How the server, agents, and web app talk: TLS pinning, enrollment,
+            the agent protocol, and the data model.
           </p>
         </a>
       </div>
@@ -527,10 +515,10 @@ sudo centrald-client enroll
     <section class="cta-section">
       <div class="glass-card cta-card">
         <div class="cta-content">
-          <h2>Ready to secure your homelab fleet?</h2>
+          <h2>Ready to see your whole lab?</h2>
           <p>
-            Deploy CentralD today under the GPL-3.0 license. No telemetry, no
-            cloud dependency, full sovereignty.
+            Free software under the GPL-3.0. Self-hosted, no telemetry, no cloud
+            account.
           </p>
           <div class="cta-actions">
             <a class="button primary lg" href="/docs/quickstart"

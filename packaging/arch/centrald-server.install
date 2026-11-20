@@ -1,0 +1,9 @@
+post_install() {
+  echo "Start CentralD and show the web address and setup code:"
+  echo "  sudo systemctl enable --now centrald-server"
+  echo "  sudo centrald-server status"
+}
+
+post_upgrade() {
+  systemctl try-restart centrald-server.service 2>/dev/null || true
+}

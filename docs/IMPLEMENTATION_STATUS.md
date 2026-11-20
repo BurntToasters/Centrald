@@ -1,130 +1,52 @@
-# Implementation status
+# Project status
 
-This file distinguishes working alpha paths from deliberately gated security
-boundaries. Tagging a numeric `0.1.0` (or later) means **enrollment and
-inventory are operator-stable on LAN/VPN**, not that every v1 product goal
-(jobs, shell, remote package install) is live. Gated surfaces stay fail-closed
-until their gates flip with acceptance tests.
+CentralD is pre-1.0. This page lists what works today, how it is tested, and
+what is planned.
 
-## Implemented in this hardening tree
+## Works today
 
-- Guided/non-interactive `centrald-server initial-setup` and the local
-  `centrald-server config` console. Packaged `.deb` postinst scripts print the
-  next command (`initial-setup` / `enroll`) until that step is done. The server
-  package depends on PostgreSQL so `apt install ./centrald-server_*.deb` pulls
-  it in. Unix non-interactive setup without `CENTRALD_DATABASE_URL` uses the
-  same recommended local PostgreSQL path as the wizard default. Setup suggests
-  this host's hostname as the TLS name when it is a usable DNS name. After
-  commit, packaged Ubuntu setup also enables `centrald-server.service` and
-  configures UFW for the unique non-loopback listener ports (SSH first; enable
-  is skipped when `CI` or `CENTRALD_SKIP_FIREWALL_ENABLE` is set).
-- Recommended local PostgreSQL provisioning plus an advanced external-URL path.
-  Managed local role/database names use the full server UUID, role and database
-  comments bind them to that exact instance, setup writes non-secret recovery
-  state before PostgreSQL mutation, the service login never receives `CREATEDB`,
-  and inherited libpq environment cannot redirect the pinned local
-  administrator.
-- Creation of a new dedicated PostgreSQL database only; setup refuses an
-  existing database and binds the database comment plus an internal singleton
-  row to the server instance.
-- Marker-, ownership-, and lock-protected `--nuke --yes-i-want-to-do-this` with
-  complete filesystem preflight, durable resume phases, managed-role ownership
-  verification, refusal to adopt a non-empty setup data root, and marker-last
-  data-root cleanup.
-- Offline root recovery material, role-specific online issuers, server identity,
-  guided crash-recoverable online-issuer rotation, signing-chain-bounded
-  certificate validity, startup plus six-hour server-leaf renewal checks, and
-  instance-bound root-only database environment files.
-- One `centrald-invite1` format, Argon2id storage, transactional one-time use,
-  and listing/revocation of unused invitations within the permitted role scope.
-  Server-side invitation hash/verify runs off Tokio worker threads behind a
-  shared concurrency limit (including local-control create). Interactive
-  enrollment hides the bearer token; automation accepts a protected Unix key
-  file or piped standard input rather than a public command-line value.
-- Point-of-use secure reads for root private/public server material use
-  no-follow opened-descriptor validation (`O_NOFOLLOW` + `fstat`) rather than
-  check-then-pathname reads. Packaged listener ports must be 1024-65535. Server,
-  client, and Admin install rustls `ring` as the process-level `CryptoProvider`
-  at startup so tonic `tls-ring` plus reqwest's aws-lc-rs feature cannot panic
-  packaged `run` on outbound HTTPS. HTTPS redirect policy also refuses
-  IPv4-mapped IPv6 literals and fails closed when a redirect hostname is
-  unresolvable or any resolved address is non-public. Packaged `/run/centrald`
-  is created as `root:root` `0755` by `tmpfiles.d`; the unprivileged client unit
-  does not own that directory through `RuntimeDirectory=`.
-- Client/Admin local key generation, pinned-TLS enrollment, pending identity and
-  certificate activation after durable local publication, automatic renewal
-  before expiry, per-profile Admin renewal locking, and fixed crash-recoverable
-  active-generation pointers.
-- Atomic client identity-generation persistence, Linux ownership handoff,
-  explicit Windows state/Admin-key ACLs, fail-closed Windows Known Folder
-  resolution, and a real Windows SCM service host.
-- Server-directed client heartbeat intervals.
-- Hello-first bounded control streams, periodic client and Admin-stream
-  revocation/expiry checks, delivery acknowledgements, execution-start leases,
-  job lifecycle maintenance, bounded Admin stream concurrency, and transactional
-  job-event sequence/state/output limits.
-- `centrald-client rescue` diagnostics, redacted bundle creation, Unix
-  descriptor-relative fixed-root permission repair while the service is stopped,
-  and a separately requested bounded service restart. Windows ACL repair remains
-  installer-owned and is refused by the runtime command.
-- Offline-root replacement ceremony through `centrald-server config`, authorized
-  only by the current offline root recovery key, journaled with the same
-  crash-recoverable rollback and post-restart TLS-probe retirement used by
-  issuer rotation, and writing the replacement recovery bundle to a new
-  root-only file. Every enrolled device must re-enroll after the ceremony.
-- External append-only audit export: `centrald-server config` exports the
-  verified PostgreSQL audit hash chain into root-owned
-  `centrald-audit-<from>-<to>.jsonl` files that are never rewritten; each batch
-  re-verifies `previous_hash`/`entry_hash` chaining against the previous export
-  file's tail hash and recomputes every record hash from its canonical bytes
-  (timestamps are normalized to Postgres microsecond precision at append time —
-  including local server-console audits — so read-back verification is
-  byte-stable). This is a local JSONL export, not the threat-model external
-  audit sink.
-- Basic identity/platform/version/health inventory, client/invitation lifecycle,
-  revision-checked settings, and operator-approved Tauri self-update wiring
-  (Minisign-verified updater JSON once for availability; install requires the
-  plugin feed JSON to match that verified body, then Tauri `.sig`). The WebView
-  has no `updater:default` capability. Typed job and shell RPCs exist but fail
-  closed on the wire until `PRIVILEGED_OPERATIONS_ENABLED` /
-  `TERMINAL_SESSIONS_ENABLED` are release gates. Client Hello advertises only
-  `heartbeat`. The broker verifies grants with a root/SYSTEM-owned copy of the
-  grant verifying key, not the daemon-writable identity PEM. Packaged brokers
-  stay installed but are not enabled or auto-started.
-- Linux systemd/`.deb`, Windows virtual-service-account installer/ZIP, Admin
-  AppImage/NSIS build paths, locked dependencies, immutable version publishing,
-  manifests, Tauri signatures, and Minisign metadata.
-- One-command release orchestration: `npm run release` builds every platform the
-  Windows release host can produce (Windows targets with the host toolchain and
-  Linux targets in Docker; `--all-docker` opts into the Docker Windows-engine
-  path). Linux hosts fail closed; use `npm run build:linux:x64:native` only for
-  disposable VM-test packages. The flow signs the Linux AppImage and Windows
-  NSIS installers on the host with the Tauri signer, and with
-  `CENTRALD_RELEASE_PUBLISH=YES` creates and pushes the `v<version>` tag and
-  publishes. The host and both builder images refresh to the latest stable Rust
-  (`rustup update stable`). A `release:bump` helper keeps `package.json`, the
-  workspace `Cargo.toml`, `tauri.conf.json`, and `Cargo.lock` in lockstep;
-  `.env.example` documents all release secrets.
+| Feature                                                 | Linux | Windows |
+| ------------------------------------------------------- | :---: | :-----: |
+| Install server from package; first-run setup code       |  ✓\*  |    —    |
+| One-command agent install with pinned download          |   ✓   |   ✓†    |
+| Enroll with `centrald-agent enroll` (prompt/stdin/file) |   ✓   |    ✓    |
+| Live status: CPU, memory, disks, uptime, addresses      |   ✓   |    ✓    |
+| Pending updates, reboot required, failed services       |   ✓   |    —    |
+| Run commands on many devices with live output           |   ✓   |    ✓    |
+| Cancel and time limits that stop the whole process tree |   ✓   |    ✓    |
+| Interactive terminal in the browser                     |   ✓   |   ✓†    |
+| Check/install updates (apt, dnf, pacman), reboot        |   ✓   | reboot  |
+| Monitor-only devices enforced on the machine            |   ✓   |    ✓    |
+| Agent self-update from the server                       |   ✓   |   ✓†    |
+| Operators, two-factor sign-in, activity log             |   ✓   |    —    |
+| Your own browser certificate                            |   ✓   |    —    |
 
-## Deliberately gated
+\* Server packages: Debian/Ubuntu `.deb`, Fedora `.rpm`, Arch `PKGBUILD`, and a
+tarball for other distributions.
 
-- Privileged operation execution, including remote service/machine restart, OS
-  updates, and client package installation. Protocol, broker, runner, Tauri, and
-  package-enablement paths fail closed; GUI disable flags are not the security
-  boundary.
-- PTY/ConPTY shell transport and credential saving. The Admin Terminal nav entry
-  is hidden while gated; server/broker/Tauri commands reject sessions; no
-  password is loaded from or saved to a vault.
-- Server/client package installation. Build artifacts exist for manual alpha
-  testing, but CentralD does not remotely install itself in this release.
+† Built and linted in CI on Windows, but not yet exercised end to end on a
+Windows machine by the automated tests.
 
-## Validation expectation
+## How it is tested
 
-A release candidate is not ready until CI compiles/tests the Rust workspace on
-Ubuntu and Windows, runs frontend checks, runs the PostgreSQL migrate smoke job,
-builds and installs Linux `.deb` packages in CI (file/unit smoke), verifies
-release signatures on the release path, and operators still exercise
-setup/enrollment/renewal/reset on disposable machines before the tag.
+- **End-to-end suite** (`npm run e2e`): starts the real server and real agents,
+  drives the web app in Chromium, and checks security properties with real
+  requests. It covers first-run setup, adding devices with the copied install
+  command, live status, commands with output and exit codes, cancelation, the
+  terminal, monitor-only refusal, two-factor sign-in, device removal, agent
+  self-update, cookies, cross-site requests, join-code reuse, forgery and
+  revocation, agent credentials, key pinning, security headers, and sign-in
+  throttling. It writes a report with binary hashes, screenshots, and a
+  `SHA256SUMS` to `e2e-report/`.
+- **Package smoke test** (`scripts/package-smoke.sh`, CI): installs the `.deb`
+  packages on a systemd host and walks the whole first-run path.
 
-Windows NSIS/ZIP install smoke remains a release-host / disposable-VM checklist
-item until an equivalent Windows CI job exists.
+## Not yet
+
+- Docker image for the server.
+- Windows updates from the web app (use Windows Update for now).
+- Roles or per-device permissions for operators.
+- Scheduled or saved commands.
+- Alerts (email, push) when a device goes offline or a disk fills up.
+- macOS agent.
+- Desktop app (the web app works on any desktop browser).

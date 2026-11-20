@@ -1,12 +1,8 @@
 [workspace]
 members = [
-  "apps/admin/src-tauri",
-  "crates/centrald-protocol",
-  "crates/centrald-common",
-  "crates/centrald-pki",
-  "crates/centrald-platform",
+  "crates/centrald-proto",
   "crates/centrald-server",
-  "crates/centrald-client",
+  "crates/centrald-agent",
 ]
 resolver = "2"
 
@@ -15,68 +11,56 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/BurntToasters/centrald"
+homepage = "https://centrald.dev"
+authors = ["CentralD contributors"]
 rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
 argon2 = "0.5"
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio", "ws"] }
 base64 = "0.22"
-bytes = "1"
-chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-console = "0.16"
-dialoguer = "0.12"
-ed25519-dalek = { version = "2", features = ["pem", "pkcs8", "rand_core"] }
-fs2 = "0.4"
+data-encoding = "2"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hex = "0.4"
-hostname = "0.4"
-humantime = "2"
-minisign = "0.7"
-pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
-prost = "0.14"
-prost-types = "0.14"
+hmac = "0.12"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server-auto", "service", "tokio"] }
+if-addrs = "0.15"
+mime_guess = "2"
+nix = { version = "0.31", features = ["fs", "process", "signal", "user"] }
 portable-pty = "0.9"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.9"
-rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
-rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 rpassword = "7"
-rustix = { version = "1.1.4", features = ["fs"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-secrecy = { version = "0.10", features = ["serde"] }
-semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.10"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate"] }
+subtle = "2"
+sysinfo = { version = "0.38", default-features = false, features = ["disk", "network", "system"] }
 thiserror = "2"
-time = { version = "0.3", features = ["serde"] }
+time = "0.3"
 tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
 toml = "0.9"
-tauri = "2.11.5"
-tauri-build = "2.4.1"
-tauri-plugin-updater = "=2.10.1"
-tonic = { version = "0.14", features = ["tls-ring"] }
-tonic-build = "0.14"
-tonic-prost = "0.14"
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-uuid = { version = "1", features = ["v4", "v7", "serde"] }
-url = "2"
-zip = { version = "4", default-features = false, features = ["deflate"] }
-zeroize = { version = "1", features = ["derive"] }
-x509-parser = "0.18"
-pam_unix = "0.3.1"
-zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+windows-service = "0.8"
 
-centrald-common = { path = "crates/centrald-common" }
-centrald-pki = { path = "crates/centrald-pki" }
-centrald-platform = { path = "crates/centrald-platform" }
-centrald-protocol = { path = "crates/centrald-protocol" }
+centrald-proto = { path = "crates/centrald-proto" }
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
@@ -84,9 +68,22 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
+# Pedantic lints that only add noise to application code.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
 
 [profile.release]
 panic = "abort"
 strip = true
 lto = "thin"
 codegen-units = 16
+opt-level = "s"
+
+[profile.dev]
+# Line tables keep backtraces useful; full debug info made builds ~100 MB.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

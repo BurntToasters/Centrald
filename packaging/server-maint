@@ -1,0 +1,49 @@
+#!/bin/sh
+# Package hooks for centrald-server, shared by the .deb and .rpm.
+# Usage: server-maint configure <install|upgrade> | remove
+set -e
+
+has_systemd() { [ -d /run/systemd/system ]; }
+
+case "$1" in
+configure)
+	if ! getent passwd centrald >/dev/null; then
+		systemd-sysusers centrald.conf 2>/dev/null ||
+			useradd --system --home-dir /var/lib/centrald --no-create-home \
+				--shell /usr/sbin/nologin centrald
+	fi
+	has_systemd || {
+		echo "CentralD: no systemd; start 'centrald-server run' as the centrald user."
+		exit 0
+	}
+	systemctl daemon-reload
+	systemctl enable centrald-server.service >/dev/null 2>&1
+	if [ "$2" = upgrade ]; then
+		systemctl try-restart centrald-server.service
+		exit 0
+	fi
+	systemctl start centrald-server.service
+	# Wait briefly for the first-run setup code, then show where to go.
+	i=0
+	while [ $i -lt 20 ] && ! centrald-server status 2>/dev/null | grep -q 'Setup code: [A-Z0-9]'; do
+		sleep 0.5
+		i=$((i + 1))
+	done
+	echo
+	centrald-server status 2>/dev/null || true
+	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+		echo
+		echo "UFW is active. Let devices and browsers reach CentralD with:"
+		echo "  sudo ufw allow 7443/tcp"
+	elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+		echo
+		echo "firewalld is active. Let devices and browsers reach CentralD with:"
+		echo "  sudo firewall-cmd --permanent --add-port=7443/tcp && sudo firewall-cmd --reload"
+	fi
+	;;
+remove)
+	if has_systemd; then
+		systemctl disable --now centrald-server.service >/dev/null 2>&1 || true
+	fi
+	;;
+esac

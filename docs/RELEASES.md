@@ -1,309 +1,92 @@
 # Releases
 
-## Release channels
+How CentralD is built, packaged, signed, and verified.
 
-Every build bakes one channel into its binaries; an install only follows its own
-channel and promotion is a new build: an alpha install never auto-upgrades into
-beta, and beta into stable. CentralD serves exactly three channels — `stable`,
-`alpha`, and `beta` — enforced in the build tooling, the server update feed,
-manifest validation, and the operator CLI. The channel is auto-detected from the
-package version: no prerelease suffix means `stable`, `-alpha.*` means `alpha`,
-`-beta.*` means `beta`, and any other prerelease identifier is rejected. Version
-precedence uses strict SemVer, so `0.2.0-alpha.1`, `0.2.0-beta.1`, and `0.2.0`
-are monotonic within their channels.
+## What a release contains
 
-Override the detected channel for a specific build from one tree without
-touching the tracked configuration:
+| File                                       | For                                  |
+| ------------------------------------------ | ------------------------------------ |
+| `centrald-server_<v>_{amd64,arm64}.deb`    | Debian, Ubuntu, Raspberry Pi OS      |
+| `centrald-agent_<v>_{amd64,arm64}.deb`     | Managed Debian-family machines       |
+| `centrald-{server,agent}-<v>-1.<arch>.rpm` | Fedora and other RPM distributions   |
+| `centrald-<v>-linux-<arch>.tar.gz`         | Any Linux; also the Arch source      |
+| `PKGBUILD`, `*.install`                    | Arch Linux (`makepkg -si`)           |
+| `centrald-agent-<v>-windows-<arch>.exe`    | Windows agent, if installing by hand |
+| `SHA256SUMS`, `SHA256SUMS.minisig`         | Verification                         |
 
-```text
-npm run release -- --channel beta
-```
+Linux binaries are static (musl), so one build runs on every distribution. The
+server packages include the agent builds for every platform, which is what the
+web app's install commands download.
 
-The `--channel` flag (or `CENTRALD_RELEASE_CHANNEL`) overrides the tracked
-`centrald.config`, which in turn overrides version auto-detection. The Rust
-build script bakes the same resolved channel into the binaries.
+## Verifying a download
 
-## Channel hosting
-
-Artifacts always live at immutable GitHub release tag URLs. The mutable
-per-channel manifests (the yml/json files that point at the latest tag) live on
-the `centrald-channels` branch, served through raw.githubusercontent.com. With
-`CDN_BASE_URL=https://updated.centrald.dev` set in `centrald.config`, every
-channel instead resolves `<CDN_BASE_URL>/<channel>` — a unified `/stable/`,
-`/beta/`, `/alpha/` layout on an S3-compatible bucket — and the release flow
-mirrors the signed manifests to the bucket automatically as the last publish
-step (DigitalOcean Spaces or any S3 endpoint; requires the `aws` CLI and the S3
-values in `.env`). The GitHub branch remains the source of truth; the bucket is
-a mirror of the same bytes.
-
-The Admin desktop app follows the same layout: its updater endpoint is baked at
-build time as `<CDN_BASE_URL>/<channel>/centrald-admin-updater.json`, so it
-checks the CDN (or the channel branch) for its channel — not GitHub's `/latest`
-pointer. Only no-CDN stable builds bake the GitHub `/releases/latest/download`
-endpoint.
-
-Without `CDN_BASE_URL`, stable keeps serving from GitHub's immutable
-`/releases/latest/download` pointer and non-stable channels keep serving from
-the channel branch.
-
-## Docker setup
-
-One command prepares everything the release flow needs on a Windows host:
+Every file is listed in `SHA256SUMS`, which is signed with this Minisign key:
 
 ```text
-npm run setup:docker
+RWRNjmoIyXcnKU2YVT/YXlUwEjmsMgJpfPv6N1t9uTjBzlWy9xozbca8
 ```
 
-It installs Docker Desktop through winget when missing, starts it, verifies the
-Linux/WSL engine, and pre-pulls the Linux builder base images. Windows artifacts
-build with the host MSVC toolchain by default, so normal setup does not require
-the Windows `Containers` feature or an engine switch. Native Windows builds
-still need Visual Studio Build Tools with the MSVC v143 toolset for both x64 and
-ARM64 plus the Windows SDK; `setup:docker` does not install those. Add `--yes`
-to also upgrade npm when it is older than the required 12.2.1, `--build-images`
-to warm the Linux builder image, or `--skip-images` to skip pulls.
-`--all-docker` opts into Windows-container setup: it enables/checks the Windows
-`Containers` feature, verifies both engine modes, and includes the Windows
-base/builder image. A reboot may be required once.
-
-## npm supply-chain policy
-
-`.npmrc` (repository root and `site/`) sets `min-release-age=3`: npm refuses to
-install any package version published less than three days ago. The builder
-images copy the policy file before `npm ci`, so containers enforce it too.
-Install scripts are allowed inside the builder images (`--ignore-scripts=false`)
-with the allowlist managed in `package.json` (`allowScripts`). Both projects
-require `npm >= 12.2.1`.
-
-The pinned Node.js toolchain is `.node-version` at the repository root
-(currently `26.13.0`), while `engines.node` accepts `^24.22.1 || >=26.13.0`.
-GitHub Actions CI and release workflows read `.node-version` via
-`node-version-file`. `npm run setup` installs `OpenJS.NodeJS.LTS` (Node 26 LTS)
-and accepts Node 24 LTS (`24.22.1+`) or `.node-version` (`26.13.0+`). The Linux
-builder image installs `libatomic1` because official Node 25+ Linux binaries
-link libatomic and the Dockerfile copies only `/usr/local` from the Node base
-image onto Ubuntu.
-
-## Release environment
-
-Copy `.env.example` to `.env` and fill in the secrets. The release and build
-scripts load `.env` automatically through `node --env-file-if-exists=.env`, so
-no shell exports are needed. `.env` is gitignored.
-
-## Public configuration
-
-Before signed releases, set both public verification keys in `centrald.config`:
-
-```text
-TAURI_UPDATER_PUBKEY=<public Tauri updater key>
-MINISIGN_PUBLIC_KEY=<RW... Minisign public key>
+```sh
+minisign -Vm SHA256SUMS -P RWRNjmoIyXcnKU2YVT/YXlUwEjmsMgJpfPv6N1t9uTjBzlWy9xozbca8
+sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-Do not put private keys or passwords in the tracked file.
+The key is also in `packaging/minisign.json`.
 
-## Signing keys
+## Building from source
 
-Generate the Tauri updater key pair once:
+Requirements: Rust (stable, via `rustup`), Node.js 24.22.1+ or 26.13.0+ with npm
+12+, and on Linux `musl-tools`, `dpkg-dev`, and optionally `rpm`.
 
-```text
-npx tauri signer generate -w ~/.tauri/centrald.key
+```sh
+npm ci
+npm run build:web
+rustup target add x86_64-unknown-linux-musl
+CENTRALD_REQUIRE_UI=1 cargo build --release --locked \
+  --target x86_64-unknown-linux-musl -p centrald-server -p centrald-agent
+npm run package
 ```
 
-`~/.tauri/centrald.key.pub` contents go into `centrald.config` as
-`TAURI_UPDATER_PUBKEY`; the private key goes into `.env` as
-`TAURI_SIGNING_PRIVATE_KEY` (content, not a path).
+Packages land in `dist/`. `npm run package` packages whatever builds exist under
+`target/`; add `--require-all` to insist on every platform. Builds are
+reproducible: archive timestamps come from the last commit
+(`SOURCE_DATE_EPOCH`).
 
-Generate the Minisign key pair once:
+For development, `npm run dev:server` runs the server from source and
+`npm run dev:web` serves the web app with live reload, proxying the API to
+`https://127.0.0.1:7443`.
 
-```text
-minisign -G -s ~/.config/centrald/minisign.key -p ~/.config/centrald/minisign.pub
-```
+## Publishing a release
 
-The public key (`RW...`) goes into `centrald.config` as `MINISIGN_PUBLIC_KEY`;
-the private key path goes into `.env` as `MINISIGN_SECRET_KEY_FILE`. Leave
-`CENTRALD_MINISIGN_UNPROTECTED_KEY` commented unless you are signing with an
-ephemeral unprotected CI key; copying `.env.example` must not enable Minisign
-`-W`.
+1. Set the version in `package.json`, the workspace `Cargo.toml`, and
+   `Cargo.lock` (via `cargo update --workspace --offline`).
+2. Commit, then push a tag `v<version>`.
+3. The `Release` workflow builds Linux (x86_64 and ARM64, static musl) and the
+   Windows agent (x86_64 and ARM64), packages everything, signs `SHA256SUMS`,
+   and opens a **draft** GitHub release.
+4. Review the draft and publish it.
 
-## Artifact layout
+The workflow needs two repository secrets: `MINISIGN_SECRET_KEY_B64` (the secret
+key file, base64-encoded) and `MINISIGN_PASSWORD` (empty for an unencrypted
+key).
 
-Canonical artifacts are named:
+## Dependency policy
 
-```text
-centrald-server_<version>_linux_x86_64.deb
-centrald-client_<version>_linux_x86_64.deb
-centrald-client_<version>_windows_x86_64.zip
-centrald-client_<version>_windows_aarch64.zip
-centrald-admin_<version>_linux_x86_64.AppImage
-centrald-admin_<version>_windows_x86_64.exe
-centrald-admin_<version>_windows_aarch64.exe
-```
+- npm packages must be at least three days old (`min-release-age=3` in
+  `.npmrc`).
+- Cargo dependencies must be at least 72 hours old. Update them with
+  `npm run deps:rust:update`, which resolves in a copy of the workspace and
+  refuses younger crates. `npm run check:cargo-update-policy` keeps other
+  scripts from calling `cargo update` directly.
 
-Every file has `<artifact>.minisig`. Admin updater artifacts also have
-`<artifact>.sig` generated by Tauri.
+## Continuous integration
 
-The immutable version release is created as a draft, accepts each asset exactly
-once, is verified, and is then published without `--clobber`. It contains
-artifacts, signatures, and both manifests. For GitHub repositories, non-stable
-channel manifests such as `alpha` or `beta` are published together in one Git
-commit on the dedicated `centrald-channels` branch and read through
-`raw.githubusercontent.com`; immutable version artifacts remain in GitHub
-Releases. The branch ref is updated non-forced, so a racing publisher must
-rebuild from the new head instead of overwriting it. Channel versions are
-compared using strict Semantic Versioning precedence. A normal publish cannot
-point a channel backward or replace different bytes at the same version. A
-deliberate emergency rollback additionally requires
-`CENTRALD_ALLOW_CHANNEL_ROLLBACK=YES`. Generic HTTPS/S3 deployments can provide
-their own mutable `UPDATE_BASE_URL`.
+Every pull request runs:
 
-## Local commands
-
-Bump the version in lockstep (package.json, workspace `Cargo.toml`,
-`tauri.conf.json`, and `Cargo.lock`) before releasing:
-
-```text
-npm run release:bump -- 0.1.0-alpha.2
-```
-
-The helper rejects invalid SemVer, refuses to bump to a version whose tag
-already exists on `origin`, and refuses to touch a tree whose version fields
-disagree. `Cargo.lock` workspace package versions are updated with
-`cargo update --workspace --offline` so a bump cannot re-resolve young registry
-crates.
-
-One command builds every platform the current host can produce, assembles the
-artifacts, signs them, generates the manifests, and verifies the complete signed
-set **before** creating an immutable `v<package-version>` tag. When `.env` sets
-both release gates to exactly `YES`, it then pushes that tag, uploads the
-release, and publishes channel manifests:
-
-```text
-npm run release
-```
-
-A Windows host builds Windows x64/ARM64 with the host MSVC/Rust toolchain and
-builds Linux x64 in Docker by default:
-
-- The **Linux engine** builds the Linux artifacts
-  (`docker/linux-builder.Dockerfile`); the Docker-built Linux AppImage is then
-  Tauri-signed on the host, keeping the signing key out of Docker build
-  arguments.
-- The host builds both Windows targets and Tauri-signs their NSIS installers.
-
-To isolate Windows builds in Docker later, opt in explicitly. Docker Desktop
-supports one engine mode at a time, so this path switches between Linux and
-Windows engines and requires its privileged helper plus Windows `Containers`
-feature:
-
-```text
-npm run setup:docker -- --all-docker
-npm run release -- --all-docker
-```
-
-A Linux host builds the Linux x64 artifacts natively; it cannot build the
-Windows artifacts. `npm run release` therefore fails closed on Linux: a complete
-signed release (all seven canonical artifacts) must be produced on the Windows
-release host. Use `npm run build:linux:x64:native` on Linux only for disposable
-VM-test packages.
-
-Both container images and the host refresh to the latest stable Rust before
-building, matching the `stable` channel in `rust-toolchain.toml`:
-
-```text
-rustup update stable
-```
-
-The individual steps are also available:
-
-```text
-npm run release:prepare
-npm run release:build
-npm run release:assemble
-npm run release:sign
-npm run release:manifests
-npm run release:verify
-```
-
-Direct container builds (without the full release flow):
-
-```text
-npm run build:all:container   # Linux + Windows x64 + Windows ARM64 in Docker
-npm run build:win:container   # Windows x64 (and ARM64 image) in Docker
-```
-
-`release:sign` reads the private key path from `MINISIGN_SECRET_KEY_FILE`. An
-interactive encrypted key is supported locally. CI may materialize an ephemeral
-unprotected key and set `CENTRALD_MINISIGN_UNPROTECTED_KEY=YES`; the file must
-be mode `0600` and removed afterward.
-
-Tauri signing reads `TAURI_SIGNING_PRIVATE_KEY` and, when needed,
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` from the process environment. Both the
-Windows NSIS installers and the Docker-built Linux AppImage are signed from the
-host so the key is never a command-line value or Docker build argument.
-
-Publishing requires GitHub CLI authentication (or `GH_TOKEN` in `.env`), a clean
-source tree, and git push credentials (set up with `gh auth setup-git` or your
-normal git credential helper). The publish gates
-(`CENTRALD_RELEASE_PUBLISH=YES`, `CENTRALD_GITHUB_IMMUTABLE_RELEASES=YES`) come
-from `.env`, so the plain command works on any host:
-
-```text
-npm run release
-```
-
-Without `.env`, export the gates for one command instead (PowerShell):
-
-```text
-$env:CENTRALD_RELEASE_PUBLISH = "YES"
-$env:CENTRALD_GITHUB_IMMUTABLE_RELEASES = "YES"
-npm run release
-```
-
-`npm run release` creates and pushes the exact `v<package-version>` Git tag at
-HEAD when it does not exist, refusing to move an existing tag that points
-elsewhere. To publish a previously built, verified artifact set without
-rebuilding, run:
-
-```text
-npm run release:publish
-```
-
-This requires the exact `v<package-version>` tag to already exist at HEAD.
-Because `CDN_BASE_URL` is baked, publish also fails closed unless
-`CENTRALD_S3_ENDPOINT`, `CENTRALD_S3_BUCKET`, and AWS credentials are set. That
-check runs before the version tag is created so a GitHub-only publish cannot
-leave the CDN feed empty.
-
-If the immutable version release already published successfully but channel
-publication failed, retry only the mutable pointer step. The retry downloads the
-two manifests from the immutable version release, verifies their GitHub SHA-256
-digests and described artifact set, and publishes those exact bytes:
-
-```text
-npm run release:publish-channel
-```
-
-Release tooling derives `generated_at`/`pub_date` from the release commit unless
-`CENTRALD_RELEASE_TIMESTAMP` or `SOURCE_DATE_EPOCH` is supplied. This keeps
-verification reproducible and prevents a retry from changing manifests merely
-because wall-clock time advanced.
-
-## CI secrets
-
-The release workflow expects:
-
-- `TAURI_SIGNING_PRIVATE_KEY`;
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` when the key is encrypted;
-- `MINISIGN_SECRET_KEY_B64`, the base64 encoding of the ephemeral unprotected
-  Minisign secret-key file used only by the final signing job;
-- `CENTRALD_S3_ENDPOINT`, `CENTRALD_S3_BUCKET`, optional `CENTRALD_S3_REGION`,
-  `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` so the fallback publish can
-  mirror signed channel manifests to the baked CDN. Without them the job fails
-  closed instead of shipping binaries that point at an empty feed.
-
-The workflow is a manual fallback, not a tag-push trigger. Dispatch it
-explicitly at the existing `v<package-version>` tag; this prevents it from
-racing the local `npm run release` flow that creates the tag and GitHub release
-itself. It builds platform artifacts in native jobs, signs general artifacts
-only after assembly, cryptographically verifies every Minisign signature, runs
-repository QA, and publishes last.
+- formatting, ESLint, Clippy (`-D warnings`), and TypeScript checks;
+- the Windows agent build and Clippy;
+- the end-to-end suite (real server, agents, and Chromium), which uploads its
+  report as the `e2e-report` artifact;
+- the package smoke test: installs the `.deb` packages on the runner, completes
+  setup, enrolls a machine with the web app's install command, runs a command,
+  switches to the packaged agent, and purges everything.

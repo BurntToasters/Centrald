@@ -1,0 +1,43 @@
+[Unit]
+Description=CentralD server
+Documentation=https://centrald.dev/docs/operations
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=centrald
+Group=centrald
+ExecStart=/usr/bin/centrald-server run
+Restart=on-failure
+RestartSec=5
+StateDirectory=centrald
+StateDirectoryMode=0700
+UMask=0077
+
+# The server only needs its data directory and the network.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

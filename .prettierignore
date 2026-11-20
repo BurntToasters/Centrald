@@ -2,7 +2,9 @@ Cargo.lock
 target
 node_modules
 dist
-release
-coverage
-apps/admin/src-tauri/gen
+web/dist
+e2e-report
+test-results
+site/src/content/docs
+site/.astro
 AGENTS.md

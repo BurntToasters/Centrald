@@ -20,10 +20,10 @@ const documents = [
     order: 10,
   },
   {
-    source: "TUTORIAL.md",
+    source: "GUIDE.md",
     sourceDir: repoDocs,
-    slug: "tutorial",
-    title: "Tutorial",
+    slug: "guide",
+    title: "User guide",
     group: "Getting started",
     order: 15,
   },
@@ -71,11 +71,22 @@ const documents = [
     source: "IMPLEMENTATION_STATUS.md",
     sourceDir: repoDocs,
     slug: "implementation-status",
-    title: "Implementation status",
+    title: "Project status",
     group: "Project",
     order: 60,
   },
 ];
+
+/** Rewrites links between Markdown files to their site routes. */
+function rewriteLinks(body) {
+  return body.replaceAll(
+    /\]\((?:\.\.\/|docs\/)?([A-Z_]+)\.md(#[^)]*)?\)/g,
+    (match, name, anchor = "") => {
+      const target = documents.find((d) => d.source === `${name}.md`);
+      return target ? `](/docs/${target.slug}${anchor})` : match;
+    },
+  );
+}
 
 function frontmatter(value) {
   const escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
@@ -126,7 +137,7 @@ for (const document of documents) {
     `group: ${frontmatter(document.group)}`,
     "---",
     "",
-    body.trimEnd(),
+    rewriteLinks(body).trimEnd(),
     "",
   ].join("\n");
   await writeFile(path.join(outputDir, `${document.slug}.md`), content, "utf8");

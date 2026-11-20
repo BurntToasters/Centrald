@@ -1,0 +1,18 @@
+[Unit]
+Description=CentralD agent
+Documentation=https://centrald.dev/docs/operations
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/centrald/agent.toml
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/centrald-agent run
+Restart=always
+RestartSec=5
+# Commands an operator started (such as package upgrades) keep running if
+# the agent itself restarts.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

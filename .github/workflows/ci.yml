@@ -12,9 +12,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  linux:
-    name: Linux QA
+  checks:
+    name: Format, lint, types, unit policy
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,111 +25,82 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.2.1)
+      - name: Install latest npm
         run: |
           npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
           echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libayatana-appindicator3-dev \
-            libclang-dev \
-            libpam0g-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            protobuf-compiler
-      - name: Install JavaScript dependencies
-        run: npm ci
-      - name: Install documentation site dependencies
-        run: npm ci --prefix site
-      - name: Verify tracked build configuration
-        run: npm run config:check
-      - name: Run repository QA
-        run: npm run qa
-
-  postgres-smoke:
-    name: PostgreSQL migrate smoke
-    runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 5s
-          --health-timeout 5s --health-retries 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libpam0g-dev \
-            libssl-dev \
-            protobuf-compiler
-      - name: Run PostgreSQL migrate smoke
-        env:
-          CENTRALD_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-        run:
-          cargo test -p centrald-server --locked --test postgres_migrate_smoke
-          -- --nocapture
-
-  linux-package-smoke:
-    name: Linux package install smoke
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - name: Install npm 12 (project requires >= 12.2.1)
-        run: |
-          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
-          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            dpkg-dev \
-            libclang-dev \
-            libpam0g-dev \
-            libssl-dev \
-            protobuf-compiler
-      - name: Install JavaScript dependencies
-        run: npm ci
-      - name: Build, pack, and install Linux .deb packages
-        run: node scripts/ci-linux-package-smoke.js
+      - run: npm ci
+      - run: npm run build:web
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:rust
+      - run: npm run check:cargo-update-policy
 
   windows:
-    name: Windows compile checks
-    runs-on: windows-2022
+    name: Windows agent
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run:
+          cargo clippy -p centrald-agent --all-targets --locked -- -D warnings
+      - run: cargo build -p centrald-agent --release --locked
+
+  e2e:
+    name: End-to-end (browser, server, agents)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: npm
-      - name: Install npm 12 (project requires >= 12.2.1)
-        shell: pwsh
+      - name: Install latest npm
         run: |
-          $prefix = Join-Path $env:RUNNER_TEMP 'npm-latest'
-          npm install -g --prefix $prefix npm@latest
-          $prefix | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Install JavaScript dependencies
-        run: npm ci
-      - name: Install Rust targets
-        shell: pwsh
-        run: rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
-      - name: Check Windows x64 workspace
-        run: cargo check --workspace --locked --target x86_64-pc-windows-msvc
-      - name: Run workspace unit tests on Windows
-        run: cargo test --workspace --locked
-      - name: Check managed client and Admin on Windows ARM64
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - name: Upload the end-to-end report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-report
+          path: e2e-report/
+          if-no-files-found: warn
+
+  package:
+    name: Packages and install smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install latest npm
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools rpm jq
+          rustup target add x86_64-unknown-linux-musl
+      - run: npm ci
+      - run: npm run build:web
+      - name: Build static Linux binaries
+        env:
+          CENTRALD_REQUIRE_UI: "1"
         run:
-          cargo check --locked --target aarch64-pc-windows-msvc -p
-          centrald-client -p centrald-admin
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p
+          centrald-server -p centrald-agent
+      - run: npm run package
+      - name: Install, enroll, run a command, and purge
+        run: scripts/package-smoke.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-linux-x86_64
+          path: dist/

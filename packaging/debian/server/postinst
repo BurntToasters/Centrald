@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+	if [ -n "$2" ]; then mode=upgrade; else mode=install; fi
+	/usr/lib/centrald/server-maint configure "$mode"
+fi

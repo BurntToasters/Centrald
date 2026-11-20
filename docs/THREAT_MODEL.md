@@ -1,114 +1,95 @@
 # Threat model
 
-## Protected assets
+CentralD gives operators root on every full-control machine. This page says what
+it protects, against whom, and where its limits are.
 
-- Offline root, online issuer, grant-signing, Tauri, and Minisign private keys.
-- PostgreSQL identity/job/audit state and its credentials.
-- Client and Admin private identities.
-- Admin elevation keys and future saved OS credentials.
-- Privileged broker authority.
-- Interactive terminal data.
-- Release manifests and distributable binaries.
+## What matters
 
-## Assumed environment
+1. **Root on managed machines.** Anyone who can drive a full-control agent owns
+   that machine.
+2. **Operator accounts and sessions**, which grant (1).
+3. **Device tokens**, which let something pose as a machine.
+4. **The server's CA key**, which agents trust.
+5. **Command output and history**, which can contain secrets.
 
-- The server is operated by a trusted root user on Ubuntu Server. Packaged
-  first-run enables UFW for the CentralD listeners after allowing SSH;
-  hypervisor and cloud filters remain operator-owned.
-- Client/Admin invitations are delivered over a trusted out-of-band channel.
-- LAN/VPN peers are not automatically trusted; an attacker may observe, block,
-  replay, redirect, or modify network traffic.
-- A compromised managed client must not grant authority over other clients or
-  the server.
-- A compromised Admin identity is full-access in v1 until it is revoked.
+## Trust boundaries
 
-## Principal threats and controls
+- **Browser ↔ server**: HTTPS with the server's own CA or your certificate.
+  Sessions are cookies the page's scripts cannot read.
+- **Agent ↔ server**: the agent trusts only the CA fingerprint from its join
+  code. The server trusts only a device ID plus a token whose hash it stored.
+- **Server process ↔ host**: the server runs as the unprivileged `centrald` user
+  under a hardened systemd unit with no capabilities. It never runs commands
+  itself.
+- **Agent ↔ host**: the agent is root by design. Its monitor-only setting is
+  enforced on the machine itself.
 
-### Stolen or raced invitation
+## Attackers and defenses
 
-An invitation is short-lived, role-bound, one-time, revocable before use, and
-stored as an Argon2id hash. Enrollment locks and consumes it transactionally.
-Remote Argon2 work runs off the async executor and is fail-fast
-concurrency-bounded so invitation checking cannot monopolize the server's Tokio
-workers or memory. Theft before use can still authorize the thief; trusted
-delivery and short TTL are required.
+### Someone on your network without an account
 
-### Network redirection during enrollment
+- Every page and API call needs a session; there is no unauthenticated data
+  besides the sign-in page, the installer scripts, and agent downloads (which
+  are public builds).
+- Sign-in and first-run setup back off after five failures per address and per
+  username, up to 15 minutes. Unknown usernames take as long as known ones.
+- First-run setup needs a setup code printed only on the server, so the first
+  account cannot be claimed by whoever finds the page first.
+- Join codes are single-use, expire within 7 days, can be revoked, and are
+  stored as hashes. Agent enrollment is rate-limited per address.
+- An attacker who answers on the server's address cannot fool an agent or an
+  install command: both pin the server's key or CA.
 
-The invitation embeds the CA and exact TLS name. A destination override does not
-change TLS verification. The CSR and bearer secret are sent only after the TLS
-handshake validates that trust.
+### A malicious web page in an operator's browser
 
-### Forged client/Admin identity
+- `SameSite=Strict` cookies, an `Origin` check on every write and WebSocket
+  upgrade, and a CSP without inline scripts block cross-site requests and
+  injected scripts. Framing is denied.
 
-Every mTLS request validates chain, role-specific issuer, certificate validity,
-identity revocation, and the exact presented-certificate fingerprint against the
-certificate registry. Enrollment and renewal certificates remain pending until
-the endpoint durably publishes the private key and proves possession over mTLS.
-Control streams require one bounded Hello first and periodically reauthorize the
-certificate. Admin job-stream concurrency is capped, and certificate issuance
-never grants validity beyond the shortest-lived parent in the signing chain.
-Protocol major versions are checked at enrollment and control boundaries.
+### A stolen operator password
 
-### Privileged-operation replay or substitution
+- Two-factor sign-in (TOTP) stops password-only attacks. Codes cannot be
+  replayed.
+- Changing a password ends that operator's other sessions; removing an operator
+  ends all of theirs, including open terminals within 30 seconds.
+- **Activity** records sign-ins, failures, commands, terminals, and device
+  changes with the source address.
 
-The planned broker accepts only signed typed grants bound to a device,
-job/session, operation, exact parameter hash, nonce, and short validity window.
-Consumed grant IDs are replay-protected. No generic shell command is a durable
-job.
+### A compromised server
 
-### Terminal abuse
+The server can tell every full-control agent to run anything as root. This is
+the core trade-off of a remote management tool. Mitigations:
 
-PTY/ConPTY traffic must be bounded, sequenced, non-persistent, and protected by
-idle/absolute limits. The UI must treat terminal escape sequences as untrusted.
-Credentials are never sent to the server for storage and may be saved only in an
-OS vault. This subsystem is currently disabled.
+- Machines that must never be controlled remotely should be enrolled as
+  **monitor-only**: their agent refuses commands, actions, terminals, and the
+  server cannot change that.
+- The server runs unprivileged and hardened, holds no agent credentials in
+  usable form (token hashes only), and does not keep terminal transcripts.
+- Keep the server on a trusted, patched machine, and back up its data directory
+  securely (it contains the CA key).
 
-### Update-feed or artifact substitution
+### A compromised managed machine
 
-Channel manifests are mutable but signed artifacts use immutable URLs. The
-shared manifest records digest, size, and Minisign signature URL; Admin updater
-artifacts additionally carry Tauri signatures. Installation requires explicit
-approval. Public verification keys are compiled from tracked configuration.
+- Its token is only good for that one device. It can send false status or output
+  for itself, and cannot see or affect other devices: the server accepts output
+  and terminal data only for sessions it started on that device.
+- Removing the device on the server revokes the token immediately.
 
-### Destructive path or database confusion
+### Network attackers between agent and server
 
-Repository cleanup is allowlisted and marker-protected. Server reset rejects
-symlinks and shallow/root paths, serializes against setup, holds the daemon
-lock, and requires the instance-bound data/environment markers, database comment
-and installation row, plus any managed-role marker. It journals authorization
-before the database drop and keeps the data-root marker until all other children
-are removed, allowing an exact retry after partial cleanup. Generated-looking
-PostgreSQL names alone are never trusted, and setup never adopts an existing
-database.
+- All traffic is TLS 1.2+ with the pinned CA. There is no plaintext protocol and
+  no trust-on-first-use.
 
-### Local secret-file tampering
+## Limits and non-goals
 
-The server revalidates private keys and the database credential file at each
-runtime read. They must remain root-owned, single-linked regular files with no
-group/other permissions and bounded size. Package-managed paths and ancestor
-checks prevent configuration from redirecting these reads.
-
-### Stale or conflicting configuration writes
-
-Admin updates carry an expected revision. The server rejects stale changes,
-validates the complete candidate, atomically replaces the file, preserves a
-backup, and reports restart requirements. Sensitive trust settings remain local.
-
-### Database-only audit tampering
-
-Database audit metadata is useful but does not protect against a server-root or
-PostgreSQL-superuser compromise. An external append-only audit sink is a future
-hardening item.
-
-## Required negative tests before stable
-
-Malformed/oversized/revoked invitation, wrong role, expired/consumed key,
-concurrent consumption, invalid CSR, unknown/expired/pending certificate,
-renewal publication failure, wrong certificate role, revoked identity, protocol
-mismatch, invalid heartbeat interval, non-monotonic job events, invalid terminal
-state transitions, output-limit overflow, stale configuration revision, manifest
-path/URL substitution, digest/signature mismatch, broker replay, symlink/path
-escape, existing/wrongly owned database, channel downgrade/same-version
-replacement, client pointer/enrollment races, secret debug leakage, and partial
-setup/reset failure.
+- **Not for the public Internet.** CentralD is built for a LAN or VPN. Put a VPN
+  in front of it rather than forwarding its port.
+- **All operators are equal.** There are no roles or per-device permissions yet.
+- **No HSTS.** Browsers would refuse to let you past the warning for the
+  built-in CA. Install the CA or use your own certificate instead.
+- **Command output is stored** (up to 1 MiB per device per run, 90 days). Do not
+  print secrets in commands, or delete the run history if you do.
+- **Join codes are bearer secrets** until used. Anyone who sees one first can
+  enroll a machine. Use short expiry times and revoke unused codes.
+- **Agent builds are as trustworthy as the server package** that ships them;
+  release packages are signed (see [Releases](RELEASES.md)).

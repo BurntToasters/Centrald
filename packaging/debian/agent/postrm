@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if [ "$1" = purge ]; then
+	# The device credential; the server keeps the device until removed there.
+	rm -f /etc/centrald/agent.toml
+	rmdir /etc/centrald 2>/dev/null || true
+fi
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+fi

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+if [ "$1" = purge ]; then
+	# Devices, accounts, history, and the certificate authority.
+	rm -rf /var/lib/centrald
+fi
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+fi

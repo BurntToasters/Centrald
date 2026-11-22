@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The dependency policy compares Cargo.lock with the base commit.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
@@ -36,7 +39,27 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:rust
-      - run: npm run check:cargo-update-policy
+      - name: New crates in Cargo.lock are at least 72 hours old
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run:
+          node scripts/check-cargo-update-policy.mjs --base
+          "${PR_BASE:-$PUSH_BASE}"
+      - run: npm run site:install
+      - run: npm run site:check
+      - run: npm run site:build
+
+  msrv:
+    name: Minimum supported Rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check with the rust-version from Cargo.toml
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+$msrv" check --workspace --all-targets --locked
 
   windows:
     name: Windows agent

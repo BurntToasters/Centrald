@@ -56,8 +56,12 @@ enum Command {
     Status,
     /// Disconnect from the server and remove the agent service.
     Leave,
-    /// Replace this agent with the version your server offers.
-    Update,
+    /// Replace this agent with the newer, signed version your server offers.
+    Update {
+        /// Also install a signed build that is not newer than this one.
+        #[arg(long)]
+        allow_downgrade: bool,
+    },
     /// Run the agent in the foreground (what the service does).
     #[command(hide = true)]
     Run,
@@ -78,7 +82,9 @@ fn main() -> std::process::ExitCode {
         } => enroll(key_file, key_stdin, server, monitor_only),
         Command::Status => status(),
         Command::Leave => leave(),
-        Command::Update => require_admin().and_then(|()| update::run()),
+        Command::Update { allow_downgrade } => {
+            require_admin().and_then(|()| update::run(allow_downgrade))
+        }
         Command::Run => run(),
         #[cfg(windows)]
         Command::Service => winservice::start(),
@@ -86,20 +92,62 @@ fn main() -> std::process::ExitCode {
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("centrald-agent: {error:#}");
+            // Error text can carry join-code or server bytes.
+            eprintln!("centrald-agent: {}", printable(&format!("{error:#}")));
             std::process::ExitCode::FAILURE
         }
     }
 }
 
+/// Replaces control and bidirectional-override characters so text from a
+/// join code or a server cannot drive the operator's terminal.
+pub(crate) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            let bidi = matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+            if (c.is_control() && c != '\n') || bidi {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// HTTP and WebSocket libraries log request headers, including the device
+/// credential, below `info`; their detail never reaches the log.
+fn quiet_library(metadata: &tracing::Metadata<'_>) -> bool {
+    const LIBRARIES: [&str; 6] = [
+        "tungstenite",
+        "tokio_tungstenite",
+        "hyper",
+        "hyper_util",
+        "h2",
+        "http",
+    ];
+    let target = metadata.target();
+    let library = LIBRARIES.iter().any(|name| {
+        target
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+    });
+    !library || *metadata.level() <= tracing::Level::INFO
+}
+
 fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     let filter = tracing_subscriber::EnvFilter::try_from_env("CENTRALD_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        // No color codes in journald or redirected logs.
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::filter::filter_fn(quiet_library))
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                // No color codes in journald or redirected logs.
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout())),
+        )
         .init();
 }
 
@@ -115,15 +163,7 @@ fn run() -> Result<()> {
     let config = AgentConfig::load()?.context(
         "this machine is not enrolled yet; run `sudo centrald-agent enroll` with a join code from the web app",
     )?;
-    runtime()?.block_on(async move {
-        tokio::select! {
-            result = connection::run(config) => result,
-            () = shutdown_signal() => {
-                tracing::info!("stopping");
-                Ok(())
-            }
-        }
-    })
+    runtime()?.block_on(connection::run(config, shutdown_signal()))
 }
 
 async fn shutdown_signal() {
@@ -223,7 +263,7 @@ fn enroll(
     let response = runtime()?.block_on(async {
         let mut failures = Vec::new();
         for server in &servers {
-            println!("Contacting {server} ...");
+            println!("Contacting {} ...", printable(server));
             match net::post_json(server, fingerprint, "/api/agent/enroll", body.clone()).await {
                 Ok((200, body)) => {
                     return serde_json::from_slice::<EnrollResponse>(&body)
@@ -249,7 +289,7 @@ fn enroll(
         allow_commands: !monitor_only,
     };
     config.save()?;
-    println!("Enrolled as \"{}\".", response.name);
+    println!("Enrolled as \"{}\".", printable(&response.name));
     if monitor_only {
         println!("Monitor-only: this machine reports status but refuses commands and terminals.");
     }
@@ -302,7 +342,7 @@ fn status() -> Result<()> {
     });
     println!("Servers:");
     for line in reachable {
-        println!("{line}");
+        println!("{}", printable(&line));
     }
     Ok(())
 }

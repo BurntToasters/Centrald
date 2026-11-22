@@ -1,4 +1,10 @@
 //! Operator commands and built-in actions, streamed back as they run.
+//!
+//! Each step runs in its own process group (Unix). A run is not over until
+//! that group is gone: timeout and cancel send SIGTERM to the group, then
+//! SIGKILL after a grace period whatever the direct child did, and
+//! background processes left behind by a finished command are stopped too.
+//! A process that calls `setsid` leaves the group and is out of reach.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -6,24 +12,43 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use centrald_proto::limits::{MAX_CHUNK_BYTES, MAX_CONCURRENT_EXECS};
-use centrald_proto::wire::{Action, AgentMessage, ExecOutcome, ExecSpec, ExecState};
+use centrald_proto::wire::{Action, AgentMessage, ExecOutcome, ExecSpec, ExecState, valid_id};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::{Child, Command};
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
-use crate::process::{base_environment, work_directory};
+use crate::process::{clean_environment, work_directory};
 use crate::status::{Manager, SharedUpdates, check_updates};
 
 /// Output past this is not sent (the server keeps 1 MiB anyway).
 const MAX_SENT_OUTPUT: usize = 2 * 1024 * 1024;
 /// Grace between a polite stop and a forced kill.
 const KILL_GRACE: Duration = Duration::from_secs(10);
+/// Output still read after the main process exits.
+const DRAIN: Duration = Duration::from_secs(2);
+/// Grace for background processes a finished command left behind.
+const LEFTOVER_GRACE: Duration = Duration::from_secs(2);
+/// Grace for commands when the agent itself stops.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+/// How long a killed group may take to disappear.
+const REAP_WAIT: Duration = Duration::from_secs(5);
+
+/// Process group (Unix) or process id (Windows) of the step running now.
+type GroupSlot = Arc<Mutex<Option<u32>>>;
+
+#[derive(Debug)]
+struct Running {
+    cancel: Option<oneshot::Sender<()>>,
+    group: GroupSlot,
+    /// Operator shell commands stop with the agent; package actions finish.
+    shell: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct Executor {
     allow_commands: bool,
-    permits: Arc<Semaphore>,
-    running: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    running: Arc<Mutex<HashMap<String, Running>>>,
     updates: SharedUpdates,
 }
 
@@ -38,41 +63,110 @@ impl Executor {
     pub fn new(allow_commands: bool, updates: SharedUpdates) -> Self {
         Self {
             allow_commands,
-            permits: Arc::new(Semaphore::new(MAX_CONCURRENT_EXECS)),
             running: Arc::new(Mutex::new(HashMap::new())),
             updates,
         }
     }
 
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Running>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Ids of commands still running, reported in `Hello`.
+    pub fn running_ids(&self) -> Vec<String> {
+        self.lock().keys().cloned().collect()
+    }
+
     pub fn cancel(&self, id: &str) {
-        if let Some(cancel) = self
-            .running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id)
-        {
+        if let Some(cancel) = self.lock().get_mut(id).and_then(|r| r.cancel.take()) {
             let _ = cancel.send(());
         }
     }
 
-    /// Starts work in the background; the result arrives as `ExecExit`.
+    /// Checks the request, then starts it in the background; the result
+    /// arrives as `ExecExit`. Refusals never spawn a task, and never wait on
+    /// a full connection.
     pub fn start(
         &self,
         id: String,
         spec: ExecSpec,
         timeout_seconds: u32,
-        out: mpsc::Sender<AgentMessage>,
+        out: &mpsc::Sender<AgentMessage>,
     ) {
+        if !valid_id(&id) {
+            tracing::warn!("ignoring a command with an invalid id");
+            return;
+        }
+        let refuse = |message: &str| {
+            let _ = out.try_send(AgentMessage::ExecExit {
+                id: id.clone(),
+                outcome: refused(message),
+            });
+        };
+        if !self.allow_commands {
+            refuse("This device is monitor-only and does not run commands.");
+            return;
+        }
+        let group = GroupSlot::default();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        {
+            let mut running = self.lock();
+            if running.contains_key(&id) {
+                // Replacing it would orphan the first command.
+                tracing::warn!(exec = %id, "ignoring a duplicate command id");
+                return;
+            }
+            if running.len() >= MAX_CONCURRENT_EXECS {
+                drop(running);
+                refuse("The device is already running the maximum number of commands.");
+                return;
+            }
+            running.insert(
+                id.clone(),
+                Running {
+                    cancel: Some(cancel_tx),
+                    group: group.clone(),
+                    shell: matches!(spec, ExecSpec::Shell { .. }),
+                },
+            );
+        }
         let executor = self.clone();
+        let out = out.clone();
         tokio::spawn(async move {
-            let outcome = executor.execute(&id, spec, timeout_seconds, &out).await;
-            executor
-                .running
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id);
+            let outcome = executor
+                .execute(&id, spec, timeout_seconds, cancel_rx, &group, &out)
+                .await;
+            executor.lock().remove(&id);
             let _ = out.send(AgentMessage::ExecExit { id, outcome }).await;
         });
+    }
+
+    /// Stops every operator shell command; used when the agent stops.
+    /// Package actions are left to finish so a package manager is not cut
+    /// off mid-transaction (for example while upgrading this agent).
+    pub async fn shutdown(&self) {
+        let groups: Vec<u32> = self
+            .lock()
+            .values()
+            .filter(|r| r.shell)
+            .filter_map(|r| *r.group.lock().unwrap_or_else(PoisonError::into_inner))
+            .collect();
+        if groups.is_empty() {
+            return;
+        }
+        tracing::info!(count = groups.len(), "stopping running commands");
+        for group in &groups {
+            signal_group(*group, Stop::Polite).await;
+        }
+        let until = Instant::now() + SHUTDOWN_GRACE;
+        while groups.iter().any(|g| group_alive(*g)) && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        for group in &groups {
+            if group_alive(*group) {
+                signal_group(*group, Stop::Force).await;
+            }
+        }
     }
 
     async fn execute(
@@ -80,26 +174,17 @@ impl Executor {
         id: &str,
         spec: ExecSpec,
         timeout_seconds: u32,
+        mut cancel: oneshot::Receiver<()>,
+        group: &GroupSlot,
         out: &mpsc::Sender<AgentMessage>,
     ) -> ExecOutcome {
-        if !self.allow_commands {
-            return refused("This device is monitor-only and does not run commands.");
-        }
-        let Ok(_permit) = self.permits.clone().try_acquire_owned() else {
-            return refused("The device is already running the maximum number of commands.");
-        };
-        let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        self.running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id.to_owned(), cancel_tx);
-
         let steps = match plan(&spec) {
             Ok(steps) => steps,
             Err(message) => return refused(message),
         };
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(u64::from(timeout_seconds));
+        let shell = matches!(spec, ExecSpec::Shell { .. });
+        let deadline = Instant::now() + Duration::from_secs(u64::from(timeout_seconds));
+        let mut cancel = Some(&mut cancel);
         let mut sent = 0_usize;
         let mut last = ExecOutcome {
             state: ExecState::Succeeded,
@@ -107,7 +192,14 @@ impl Executor {
             error: None,
         };
         for step in steps {
-            last = run_step(id, &step, deadline, &mut cancel_rx, out, &mut sent).await;
+            let context = StepContext {
+                id,
+                deadline,
+                group,
+                out,
+                kill_on_drop: shell,
+            };
+            last = run_step(&context, &step, &mut cancel, &mut sent).await;
             if last.state != ExecState::Succeeded {
                 break;
             }
@@ -271,25 +363,42 @@ async fn send_output(id: &str, data: &[u8], out: &mpsc::Sender<AgentMessage>, se
     }
 }
 
+struct StepContext<'a> {
+    id: &'a str,
+    deadline: Instant,
+    group: &'a GroupSlot,
+    out: &'a mpsc::Sender<AgentMessage>,
+    /// False for package actions, which outlive an agent restart.
+    kill_on_drop: bool,
+}
+
+/// Resolves when an operator cancels; never resolves once it has fired.
+async fn canceled(cancel: &mut Option<&mut oneshot::Receiver<()>>) -> bool {
+    match cancel {
+        Some(receiver) => (&mut **receiver).await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 async fn run_step(
-    id: &str,
+    context: &StepContext<'_>,
     step: &Step,
-    deadline: tokio::time::Instant,
-    cancel: &mut oneshot::Receiver<()>,
-    out: &mpsc::Sender<AgentMessage>,
+    cancel: &mut Option<&mut oneshot::Receiver<()>>,
     sent: &mut usize,
 ) -> ExecOutcome {
+    let (id, out) = (context.id, context.out);
     let mut command = Command::new(&step.program);
     command
         .args(&step.args)
         .current_dir(work_directory())
+        .env_clear()
+        .envs(clean_environment())
+        .envs(step.env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    for (key, value) in base_environment().into_iter().chain(step.env.clone()) {
-        command.env(key, value);
-    }
+        .kill_on_drop(context.kill_on_drop);
     #[cfg(unix)]
     command.process_group(0);
     let mut child = match command.spawn() {
@@ -305,6 +414,9 @@ async fn run_step(
             };
         }
     };
+    // The group id equals the child's pid (process_group(0)).
+    let group = child.id();
+    *context.group.lock().unwrap_or_else(PoisonError::into_inner) = group;
 
     let (chunks_tx, mut chunks) = mpsc::channel::<Vec<u8>>(64);
     if let Some(stdout) = child.stdout.take() {
@@ -315,10 +427,14 @@ async fn run_step(
     }
     drop(chunks_tx);
 
+    let never = Instant::now() + Duration::from_secs(365 * 24 * 60 * 60);
     let mut stopped: Option<(ExecState, &'static str)> = None;
+    let mut kill_at: Option<Instant> = None;
+    let mut killed = false;
     let mut status = None;
+    let mut drain_until: Option<Instant> = None;
     let mut output_open = true;
-    loop {
+    while status.is_none() || output_open {
         tokio::select! {
             chunk = chunks.recv(), if output_open => match chunk {
                 Some(chunk) => send_output(id, &chunk, out, sent).await,
@@ -326,46 +442,57 @@ async fn run_step(
             },
             result = child.wait(), if status.is_none() => {
                 status = Some(result);
+                // A background process may hold the pipes open; read what
+                // is left for a moment, then stop the rest of the group.
+                drain_until = Some(Instant::now() + DRAIN);
             }
-            () = tokio::time::sleep_until(deadline), if stopped.is_none() && status.is_none() => {
+            () = tokio::time::sleep_until(context.deadline), if stopped.is_none() && status.is_none() => {
                 stopped = Some((ExecState::TimedOut, "The command ran past its time limit and was stopped."));
-                terminate(&mut child).await;
+                kill_at = Some(Instant::now() + KILL_GRACE);
+                signal_any(group, Stop::Polite).await;
             }
-            _ = &mut *cancel, if stopped.is_none() && status.is_none() => {
-                stopped = Some((ExecState::Canceled, "Canceled by an operator."));
-                terminate(&mut child).await;
+            fired = canceled(cancel), if stopped.is_none() && status.is_none() && cancel.is_some() => {
+                *cancel = None;
+                if fired {
+                    stopped = Some((ExecState::Canceled, "Canceled by an operator."));
+                    kill_at = Some(Instant::now() + KILL_GRACE);
+                    signal_any(group, Stop::Polite).await;
+                }
             }
-        }
-        if status.is_some() && !output_open {
-            break;
-        }
-        // A background grandchild may hold the pipes open; do not wait on
-        // it forever once the main process is gone.
-        if status.is_some() {
-            match tokio::time::timeout(Duration::from_secs(2), chunks.recv()).await {
-                Ok(Some(chunk)) => send_output(id, &chunk, out, sent).await,
-                Ok(None) | Err(_) => break,
+            // Escalate whatever the direct child did.
+            () = tokio::time::sleep_until(kill_at.unwrap_or(never)), if kill_at.is_some() && !killed => {
+                killed = true;
+                signal_any(group, Stop::Force).await;
             }
+            () = tokio::time::sleep_until(drain_until.unwrap_or(never)), if drain_until.is_some() => break,
         }
     }
 
+    let all_gone = finish_group(group, kill_at, killed).await;
+    *context.group.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    let leftover = (!all_gone).then(|| "Some of its processes could not be stopped.".to_owned());
+
     if let Some((state, message)) = stopped {
+        let message = match leftover {
+            Some(note) => format!("{message} {note}"),
+            None => message.to_owned(),
+        };
         return ExecOutcome {
             state,
             exit_code: None,
-            error: Some(message.to_owned()),
+            error: Some(message),
         };
     }
     match status {
         Some(Ok(status)) if status.success() => ExecOutcome {
             state: ExecState::Succeeded,
             exit_code: Some(0),
-            error: None,
+            error: leftover,
         },
         Some(Ok(status)) => ExecOutcome {
             state: ExecState::Failed,
             exit_code: status.code(),
-            error: signal_description(status),
+            error: signal_description(status).or(leftover),
         },
         Some(Err(error)) => ExecOutcome {
             state: ExecState::Failed,
@@ -378,6 +505,108 @@ async fn run_step(
             error: Some("the process ended without a status".to_owned()),
         },
     }
+}
+
+/// Waits for the group to disappear, stopping what is left: by the pending
+/// forced kill after a timeout or cancel, or politely and then by force for
+/// leftovers of a command that finished. Returns false if any survive.
+async fn finish_group(group: Option<u32>, kill_at: Option<Instant>, killed: bool) -> bool {
+    let Some(group) = group else {
+        return true;
+    };
+    if !group_alive(group) {
+        return true;
+    }
+    if !killed {
+        let until = if let Some(at) = kill_at {
+            at
+        } else {
+            signal_group(group, Stop::Polite).await;
+            Instant::now() + LEFTOVER_GRACE
+        };
+        while group_alive(group) && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if group_alive(group) {
+            signal_group(group, Stop::Force).await;
+        }
+    }
+    let until = Instant::now() + REAP_WAIT;
+    while group_alive(group) && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let gone = !group_alive(group);
+    if !gone {
+        tracing::warn!(group, "processes of a command survived SIGKILL");
+    }
+    gone
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Stop {
+    Polite,
+    Force,
+}
+
+async fn signal_any(group: Option<u32>, stop: Stop) {
+    if let Some(group) = group {
+        signal_group(group, stop).await;
+    }
+}
+
+/// SIGTERM or SIGKILL to the whole process group.
+#[cfg(unix)]
+#[allow(clippy::unused_async)]
+async fn signal_group(group: u32, stop: Stop) {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+    let Ok(raw) = i32::try_from(group) else {
+        return;
+    };
+    let signal = match stop {
+        Stop::Polite => Signal::SIGTERM,
+        Stop::Force => Signal::SIGKILL,
+    };
+    let _ = killpg(Pid::from_raw(raw), signal);
+}
+
+/// `taskkill /T` stops the process tree, `/F` forces it.
+#[cfg(windows)]
+async fn signal_group(pid: u32, stop: Stop) {
+    let Some(taskkill) = crate::process::system32("taskkill.exe") else {
+        return;
+    };
+    let pid = pid.to_string();
+    let mut args = vec!["/T"];
+    if matches!(stop, Stop::Force) {
+        args.push("/F");
+    }
+    args.extend(["/PID", &pid]);
+    let _ = Command::new(&taskkill)
+        .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
+/// True while any process (including an unreaped zombie) is in the group.
+#[cfg(unix)]
+fn group_alive(group: u32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+    let Ok(raw) = i32::try_from(group) else {
+        return false;
+    };
+    !matches!(killpg(Pid::from_raw(raw), None), Err(Errno::ESRCH))
+}
+
+/// Windows has no process groups here; `taskkill /T` already walked the
+/// tree, and only the direct child can be tracked.
+#[cfg(windows)]
+fn group_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -404,49 +633,6 @@ async fn pump(mut reader: impl AsyncRead + Unpin, chunks: mpsc::Sender<Vec<u8>>)
                 }
             }
         }
-    }
-}
-
-/// Stops the whole process tree: politely, then by force after a grace
-/// period (package managers get a chance to release their locks).
-async fn terminate(child: &mut Child) {
-    let Some(pid) = child.id() else {
-        return;
-    };
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{Signal, killpg};
-        use nix::unistd::Pid;
-        let Ok(raw) = i32::try_from(pid) else {
-            return;
-        };
-        let group = Pid::from_raw(raw);
-        let _ = killpg(group, Signal::SIGTERM);
-        if tokio::time::timeout(KILL_GRACE, child.wait())
-            .await
-            .is_err()
-        {
-            let _ = killpg(group, Signal::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Some(taskkill) = crate::process::system32("taskkill.exe") {
-            let _ = Command::new(&taskkill)
-                .args(["/T", "/PID", &pid.to_string()])
-                .status()
-                .await;
-            if tokio::time::timeout(KILL_GRACE, child.wait())
-                .await
-                .is_err()
-            {
-                let _ = Command::new(&taskkill)
-                    .args(["/T", "/F", "/PID", &pid.to_string()])
-                    .status()
-                    .await;
-            }
-        }
-        let _ = child.start_kill();
     }
 }
 

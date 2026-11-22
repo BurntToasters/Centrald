@@ -33,6 +33,15 @@ sha256sum --ignore-missing -c SHA256SUMS
 
 The key is also in `packaging/minisign.json`.
 
+Each agent build is also signed on its own. The signature's trusted comment is
+`centrald-agent <version> <os>-<arch>` (for example
+`centrald-agent 0.2.0 linux-aarch64`), and server packages ship it next to the
+agent as `centrald-agent-<os>-<arch>[.exe].minisig`. `centrald-agent update`
+refuses a build unless this signature verifies against the key built into the
+agent, names its own platform, and names a newer version. A server without the
+`.minisig` files (for example one installed from hand-built binaries) cannot
+update agents.
+
 ## Building from source
 
 Requirements: Rust (stable, via `rustup`), Node.js 24.22.1+ or 26.13.0+ with npm
@@ -62,13 +71,14 @@ For development, `npm run dev:server` runs the server from source and
    `Cargo.lock` (via `cargo update --workspace --offline`).
 2. Commit, then push a tag `v<version>`.
 3. The `Release` workflow builds Linux (x86_64 and ARM64, static musl) and the
-   Windows agent (x86_64 and ARM64), packages everything, signs `SHA256SUMS`,
-   and opens a **draft** GitHub release.
+   Windows agent (x86_64 and ARM64), signs each agent build, packages
+   everything, signs `SHA256SUMS`, and opens a **draft** GitHub release.
 4. Review the draft and publish it.
 
 The workflow needs two repository secrets: `MINISIGN_SECRET_KEY_B64` (the secret
 key file, base64-encoded) and `MINISIGN_PASSWORD` (empty for an unencrypted
-key).
+key). Never set `CENTRALD_UPDATE_PUBKEY` for a release build: it replaces the
+update key built into the agent and exists for development and E2E only.
 
 ## Dependency policy
 

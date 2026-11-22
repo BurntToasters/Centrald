@@ -6,6 +6,11 @@
 // - status never arrives (no CPU/memory on the device page)
 // - command output is lost, mangled, or the exit code/state is wrong
 // - cancel leaves the run running
+// - a timeout or cancel leaves processes behind: a background child, or a
+//   child that ignores SIGTERM after its parent shell exits
+// - a background child that keeps the output pipe open disarms the timeout
+//   or outlives a finished run
+// - commands inherit the agent's own environment instead of a clean one
 // - the terminal does not echo input or relay output
 // - a monitor-only device accepts commands or offers a terminal
 // - two-factor setup does not persist, or sign-in skips the code
@@ -166,6 +171,83 @@ test("a running command can be canceled", async () => {
   await expect(page.getByTestId("run-output")).toContainText("started");
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByText("Canceled", { exact: true })).toBeVisible();
+});
+
+/** Starts a command on lab-box through the API and returns the run id. */
+async function apiRun(command: string, timeoutSeconds = 300) {
+  const response = await page.request.post("/api/runs", {
+    headers: { Origin: BASE },
+    data: {
+      deviceIds: [deviceUrl.split("/").pop()],
+      command,
+      timeoutSeconds,
+    },
+  });
+  expect(response.status()).toBe(201);
+  return (await response.json()).id as string;
+}
+
+async function target(runId: string) {
+  const run = await (await page.request.get(`/api/runs/${runId}`)).json();
+  const first = run.targets[0];
+  return {
+    state: first.state as string,
+    output: Buffer.from(first.output ?? "", "base64").toString(),
+  };
+}
+
+/** True while any process on this machine has `pattern` in its arguments. */
+function running(pattern: string) {
+  return spawnSync("pgrep", ["-f", pattern]).status === 0;
+}
+
+test("timeouts and cancel stop every process a command started", async () => {
+  await test.step("a timeout stops the command and its background child", async () => {
+    const run = await apiRun("sleep 31301 & echo started; sleep 31302", 2);
+    await expect
+      .poll(async () => (await target(run)).state, { timeout: 20_000 })
+      .toBe("timed_out");
+    expect(running("sleep 3130[12]")).toBe(false);
+  });
+
+  await test.step("a background child holding the output open ends with the run", async () => {
+    const run = await apiRun("sleep 31303 & echo started", 300);
+    await expect
+      .poll(async () => (await target(run)).state, { timeout: 15_000 })
+      .toBe("succeeded");
+    expect((await target(run)).output).toContain("started");
+    expect(running("sleep 31303")).toBe(false);
+  });
+
+  await test.step("cancel stops a child that ignores SIGTERM", async () => {
+    const run = await apiRun(
+      `sh -c 'trap "" TERM; echo started; sleep 31304' & wait`,
+    );
+    await expect
+      .poll(async () => (await target(run)).output, { timeout: 15_000 })
+      .toContain("started");
+    const cancel = await page.request.post(`/api/runs/${run}/cancel`, {
+      headers: { Origin: BASE },
+    });
+    expect(cancel.ok()).toBe(true);
+    await expect
+      .poll(async () => (await target(run)).state, { timeout: 30_000 })
+      .toBe("canceled");
+    expect(running("sleep 31304")).toBe(false);
+  });
+});
+
+test("commands start from a clean environment", async () => {
+  const run = await apiRun("env");
+  await expect
+    .poll(async () => (await target(run)).state, { timeout: 15_000 })
+    .toBe("succeeded");
+  const env = (await target(run)).output;
+  expect(env).toContain("PATH=/usr/local/sbin:/usr/local/bin:");
+  expect(env).toContain("LANG=C.UTF-8");
+  // The agent runs with these; commands must not see them.
+  expect(env).not.toContain("CENTRALD_AGENT_CONFIG");
+  expect(env).not.toContain("CENTRALD_SKIP_SERVICE");
 });
 
 test("the terminal relays keystrokes and output", async () => {

@@ -1,8 +1,13 @@
 //! `centrald-agent update`: replace this binary with the build the enrolled
-//! server offers, fetched over the pinned connection and checked by SHA-256.
+//! server offers, fetched over the pinned connection.
+//!
+//! The server is not trusted to choose the code: the build must carry a
+//! Minisign signature from the release key, signed for this platform and a
+//! newer version, before it is written to disk. Nothing downloaded is run.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -13,8 +18,67 @@ use crate::net;
 
 /// Larger than any real agent build; bounds memory if a server misbehaves.
 const MAX_BINARY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SIGNATURE_BYTES: usize = 4096;
+/// The release signing key, the one `SHA256SUMS` is signed with.
+const RELEASE_KEY_JSON: &str = include_str!("../../../packaging/minisign.json");
+/// Development builds (E2E) may trust another key; release builds never set
+/// this.
+const DEV_KEY: Option<&str> = option_env!("CENTRALD_UPDATE_PUBKEY");
 
-pub fn run() -> Result<()> {
+/// What a valid signature says about the build.
+#[derive(Debug, PartialEq, Eq)]
+struct Signed {
+    version: semver::Version,
+    target: String,
+}
+
+/// `linux-x86_64`, `windows-aarch64`, ...: the name in the trusted comment.
+fn this_target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn public_key() -> Result<minisign_verify::PublicKey> {
+    let encoded = if let Some(key) = DEV_KEY.filter(|key| !key.is_empty()) {
+        key.to_owned()
+    } else {
+        let json: serde_json::Value = serde_json::from_str(RELEASE_KEY_JSON)?;
+        json.get("publicKey")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("the built-in release key is missing"))?
+            .to_owned()
+    };
+    minisign_verify::PublicKey::from_base64(&encoded)
+        .map_err(|e| anyhow!("the built-in update key is invalid: {e}"))
+}
+
+/// Verifies the signature over `binary` and reads its trusted comment,
+/// `centrald-agent <version> <target>`.
+fn verify(binary: &[u8], signature: &str) -> Result<Signed> {
+    let signature = minisign_verify::Signature::decode(signature)
+        .map_err(|_| anyhow!("the build's signature is malformed; nothing was changed"))?;
+    public_key()?
+        .verify(binary, &signature, false)
+        .map_err(|_| {
+            anyhow!(
+                "the build's signature is not from the CentralD release key; nothing was changed"
+            )
+        })?;
+    let comment = signature.trusted_comment();
+    let mut words = comment.split(' ');
+    let (Some("centrald-agent"), Some(version), Some(target), None) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        bail!("the build's signature does not describe an agent build; nothing was changed");
+    };
+    let version = semver::Version::parse(version)
+        .map_err(|_| anyhow!("the build's signature has no valid version; nothing was changed"))?;
+    Ok(Signed {
+        version,
+        target: target.to_owned(),
+    })
+}
+
+pub fn run(allow_downgrade: bool) -> Result<()> {
     let config = AgentConfig::load()?
         .ok_or_else(|| anyhow!("not enrolled; run `centrald-agent enroll` first"))?;
     let exe = std::env::current_exe().context("cannot find this program's path")?;
@@ -23,6 +87,9 @@ pub fn run() -> Result<()> {
             "this agent was installed by your package manager; update it with apt, dnf, or pacman instead"
         );
     }
+    if DEV_KEY.is_some_and(|key| !key.is_empty()) {
+        println!("Note: this is a development build that trusts a development update key.");
+    }
     let fingerprint = config.fingerprint()?;
     let path = format!(
         "/download/agent/{}/{}",
@@ -30,11 +97,11 @@ pub fn run() -> Result<()> {
         std::env::consts::ARCH
     );
 
-    let binary = crate::runtime()?.block_on(async {
+    let (binary, signature) = crate::runtime()?.block_on(async {
         let mut last_error = anyhow!("no server address is configured");
         for server in &config.servers {
             match download(server, fingerprint, &path).await {
-                Ok(binary) => return Ok(binary),
+                Ok(found) => return Ok(found),
                 Err(error) => last_error = error.context(format!("from {server}")),
             }
         }
@@ -47,26 +114,36 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Everything is checked before a single byte is written.
+    let signed = verify(&binary, &signature)?;
+    let target = this_target();
+    if signed.target != target {
+        bail!(
+            "the build is signed for {}, not {target}; nothing was changed",
+            signed.target
+        );
+    }
+    let running = semver::Version::parse(centrald_proto::VERSION)?;
+    if signed.version <= running && !allow_downgrade {
+        bail!(
+            "the server offers version {}, which is not newer than {running}; nothing was changed (pass --allow-downgrade to install it anyway)",
+            signed.version
+        );
+    }
+
     let staged = stage(&exe, &binary)?;
-    let version = match check_version(&staged) {
-        Ok(version) => version,
-        Err(error) => {
-            let _ = std::fs::remove_file(&staged);
-            return Err(error);
-        }
-    };
     install(&exe, &staged)?;
     println!(
         "Updated the agent from {} to {}.",
         centrald_proto::VERSION,
-        version
+        signed.version
     );
     restart();
     Ok(())
 }
 
-/// Fetches the build and its published checksum; both must agree.
-async fn download(server: &str, fingerprint: [u8; 32], path: &str) -> Result<Vec<u8>> {
+/// Fetches the build and its detached signature.
+async fn download(server: &str, fingerprint: [u8; 32], path: &str) -> Result<(Vec<u8>, String)> {
     let (status, binary) = net::get(server, fingerprint, path, MAX_BINARY_BYTES).await?;
     if status == 404 {
         bail!(
@@ -78,20 +155,22 @@ async fn download(server: &str, fingerprint: [u8; 32], path: &str) -> Result<Vec
     if status != 200 {
         bail!("download failed: {}", net::error_message(&binary));
     }
-    let (status, expected) = net::get(server, fingerprint, &format!("{path}.sha256"), 128).await?;
+    let (status, signature) = net::get(
+        server,
+        fingerprint,
+        &format!("{path}.minisig"),
+        MAX_SIGNATURE_BYTES,
+    )
+    .await?;
     if status != 200 {
         bail!(
-            "cannot fetch the checksum: {}",
-            net::error_message(&expected)
+            "the server offers no signature for its agent build; nothing was changed ({})",
+            net::error_message(&signature)
         );
     }
-    let expected = String::from_utf8_lossy(&expected)
-        .trim()
-        .to_ascii_lowercase();
-    if hex::encode(Sha256::digest(&binary)) != expected {
-        bail!("the downloaded agent does not match its checksum; nothing was changed");
-    }
-    Ok(binary)
+    let signature = String::from_utf8(signature)
+        .map_err(|_| anyhow!("the build's signature is malformed; nothing was changed"))?;
+    Ok((binary, signature))
 }
 
 /// Writes the new build next to the current one so the final rename is atomic.
@@ -121,19 +200,6 @@ fn stage(exe: &Path, binary: &[u8]) -> Result<PathBuf> {
         return Err(error);
     }
     Ok(staged)
-}
-
-/// Runs the new build once; it must identify itself as `centrald-agent`.
-fn check_version(staged: &Path) -> Result<String> {
-    let output = Command::new(staged)
-        .arg("--version")
-        .output()
-        .context("the downloaded agent does not run on this machine; nothing was changed")?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    match text.trim().strip_prefix("centrald-agent ") {
-        Some(version) if output.status.success() && !version.is_empty() => Ok(version.to_owned()),
-        _ => bail!("the downloaded file is not a CentralD agent; nothing was changed"),
-    }
 }
 
 #[cfg(unix)]

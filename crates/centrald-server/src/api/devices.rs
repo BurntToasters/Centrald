@@ -317,7 +317,12 @@ async fn relay(
                         );
                     }
                 }
-                Some(Ok(Message::Close(_)) | Err(_)) | None => break None,
+                Some(Err(error)) => {
+                    let close = Message::Close(Some(super::read_error_close(&error)));
+                    let _ = send_frame(&mut socket, close).await;
+                    return;
+                }
+                Some(Ok(Message::Close(_))) | None => break None,
                 Some(Ok(_)) => {}
             },
             _ = idle_check.tick() => {

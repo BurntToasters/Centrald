@@ -9,6 +9,8 @@ export class RawSocket {
   private messages: string[] = [];
   private waiters: (() => void)[] = [];
   closed = false;
+  /** Close code the peer sent, if any. */
+  closeCode?: number;
 
   private constructor(private socket: tls.TLSSocket) {
     socket.on("data", (chunk: Buffer) => {
@@ -93,7 +95,10 @@ export class RawSocket {
       this.buffer = this.buffer.subarray(offset + length);
       if (opcode === 1) this.messages.push(payload.toString("utf8"));
       else if (opcode === 9) this.frame(10, payload);
-      else if (opcode === 8) this.socket.end();
+      else if (opcode === 8) {
+        if (payload.length >= 2) this.closeCode = payload.readUInt16BE(0);
+        this.socket.end();
+      }
       this.wake();
     }
   }

@@ -179,3 +179,19 @@ async fn security_headers(request: Request, next: Next) -> Response {
     );
     response
 }
+
+/// Close frame for a failed browser socket read: 1009 when the peer sent
+/// more than the size limit, 1002 for other protocol errors.
+fn read_error_close(error: &axum::Error) -> axum::extract::ws::CloseFrame {
+    // axum hides the tungstenite error type; its message names the limit.
+    let text = error.to_string();
+    let code = if text.contains("too long") || text.contains("Space limit") {
+        1009
+    } else {
+        1002
+    };
+    axum::extract::ws::CloseFrame {
+        code,
+        reason: "".into(),
+    }
+}

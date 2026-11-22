@@ -10,6 +10,7 @@
 // - a device stores hidden characters (bidi, zero-width, escapes) in its
 //   name, status, or error text, or unbounded counts the dashboard renders
 // - a device floods status faster than the server can use it
+// - an over-size browser WebSocket frame closes without saying why (1009)
 // - a device that stops reading stays online and parks the operator's
 //   terminal instead of being disconnected
 // - the install command downloads from a server with a different key
@@ -429,6 +430,18 @@ test("a hostile device cannot plant hidden text, flood, or stall", async ({
     terminal.socket?.close();
     agent.close();
   });
+});
+
+test("over-size browser frames close with 1009", async () => {
+  const events = await RawSocket.open("/api/events", {
+    Cookie: cookie,
+    Origin: BASE,
+  });
+  expect(events.status).toBe(101);
+  const socket = events.socket as RawSocket;
+  socket.sendBinary(Buffer.alloc(64 * 1024, 0x61));
+  await expect.poll(() => socket.closeCode, { timeout: 10_000 }).toBe(1009);
+  socket.close();
 });
 
 test("install commands only trust this server's key", async () => {

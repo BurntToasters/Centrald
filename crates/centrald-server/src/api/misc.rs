@@ -50,7 +50,12 @@ async fn stream_events(state: Shared, user: CurrentUser, mut socket: WebSocket) 
                 }
             }
             incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                Some(Err(error)) => {
+                    let close = Message::Close(Some(super::read_error_close(&error)));
+                    let _ = tokio::time::timeout(SOCKET_SEND_TIMEOUT, socket.send(close)).await;
+                    return;
+                }
+                Some(Ok(Message::Close(_))) | None => return,
                 Some(Ok(_)) => {}
             },
             () = session.ended() => {

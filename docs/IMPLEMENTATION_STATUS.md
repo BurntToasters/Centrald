@@ -17,7 +17,7 @@ what is planned.
 | Interactive terminal in the browser                     |   ✓   |   ✓†    |
 | Check/install updates (apt, dnf, pacman), reboot        |   ✓   | reboot  |
 | Monitor-only devices enforced on the machine            |   ✓   |    ✓    |
-| Agent self-update from the server                       |   ✓   |   ✓†    |
+| Signed agent self-update from the server                |   ✓   |   ✓†    |
 | Operators, two-factor sign-in, activity log             |   ✓   |    —    |
 | Your own browser certificate                            |   ✓   |    —    |
 
@@ -32,12 +32,15 @@ Windows machine by the automated tests.
 - **End-to-end suite** (`npm run e2e`): starts the real server and real agents,
   drives the web app in Chromium, and checks security properties with real
   requests. It covers first-run setup, adding devices with the copied install
-  command, live status, commands with output and exit codes, cancelation, the
-  terminal, monitor-only refusal, two-factor sign-in, device removal, agent
-  self-update, cookies, cross-site requests, join-code reuse, forgery and
-  revocation, agent credentials, key pinning, security headers, and sign-in
-  throttling. It writes a report with binary hashes, screenshots, and a
-  `SHA256SUMS` to `e2e-report/`.
+  command, live status, commands with output and exit codes, cancelation and
+  time limits that leave no processes behind, a clean command environment,
+  stopping commands the server forgot after a restart, the terminal,
+  monitor-only refusal, two-factor sign-in, device removal, signed agent
+  self-update (unsigned, tampered, wrong-key, wrong-platform, and downgrade
+  builds refused before anything runs), cookies, cross-site requests, join-code
+  reuse, forgery and revocation, agent credentials, key pinning, security
+  headers, and sign-in throttling. It writes a report with binary hashes,
+  screenshots, and a `SHA256SUMS` to `e2e-report/`.
 - **Package smoke test** (`scripts/package-smoke.sh`, CI): installs the `.deb`
   packages on a systemd host and walks the whole first-run path.
 

@@ -64,6 +64,13 @@ migration code for them.
   "command" feature uses `/bin/sh -c` or PowerShell.
 - Do not store terminal bytes. Command output is stored, capped at 1 MiB per
   device per run.
+- Do not write or execute a downloaded agent update before its Minisign
+  signature, target, and version are verified (`update.rs`). Never set
+  `CENTRALD_UPDATE_PUBKEY` for a release build; never commit a secret key.
+- Do not let commands inherit the agent's environment: `exec.rs` and
+  `terminal.rs` call `env_clear()` and use `process::clean_environment()`.
+- Do not log the agent's bearer credential. `main.rs` drops debug/trace from
+  tungstenite, hyper, h2, and http (`quiet_library`); keep that filter.
 - Do not put secrets in tracked files, Docker build args, command-line
   values, or generated packages.
 - Do not hardcode `C:\ProgramData`. The agent reads `%ProgramData%` and fails
@@ -156,9 +163,11 @@ and a full-debug agent (~107 MB) breaks the E2E update test.
   `/api/agent/`, `/download/agent/`); `json_errors` turns non-JSON API
   errors (axum rejections, 405) into `{ "error" }`.
 - `downloads.rs` — `/install.sh`, `/install.ps1`, `/download/agent/{os}/
-  {arch}` and `.sha256`. Builds the copy-paste install commands from the
-  address the operator typed (URL single-quoted for IPv6/zsh). Downloads
-  stream from disk (`stream_file`); never buffer whole binaries.
+  {arch}` with `.sha256` and `.minisig` (the release signature, read from
+  `<agent>.minisig` next to the build; 404 if absent). Builds the copy-paste
+  install commands from the address the operator typed (URL single-quoted
+  for IPv6/zsh). Downloads stream from disk (`stream_file`); never buffer
+  whole binaries.
 - `ui.rs` — rust-embed of `web/dist`. `CENTRALD_REQUIRE_UI=1` makes the build
   fail if the UI is missing (used by `npm run e2e` and release builds).
   Fallback: `/api*` -> 404 JSON, non-GET/HEAD -> 405, else the SPA.
@@ -166,18 +175,28 @@ and a full-debug agent (~107 MB) breaks the E2E update test.
 ## Agent map (`crates/centrald-agent/src/`)
 
 Public commands: `enroll [--key-stdin|--key-file] [--server] [--monitor-only]`,
-`status`, `leave`, `update`. Hidden: `run` (the service), `service` (Windows
-SCM entry). All but `status` require root/Administrator.
+`status`, `leave`, `update [--allow-downgrade]`. Hidden: `run` (the service),
+`service` (Windows SCM entry). All but `status` require root/Administrator.
 
 - `config.rs` — `/etc/centrald/agent.toml` (root 0600) or
   `%ProgramData%\CentralD\agent.toml` (Administrators/SYSTEM ACL).
   `deny_unknown_fields`. `CENTRALD_AGENT_CONFIG` overrides (tests).
-- `connection.rs` — `wss://…/api/agent/connect`, `Hello`/`Welcome` within
-  10 s, status every 15 s, 90 s silence ends it, jittered 1–60 s backoff,
-  10 min backoff after a rejected credential.
-- `exec.rs`, `process.rs` — commands in their own process group, clean env;
-  timeout/cancel: SIGTERM, 10 s, SIGKILL (`taskkill /T`, then `/T /F`).
-  At most 8 execs and 4 terminals.
+- `connection.rs` — `wss://…/api/agent/connect`; TCP + TLS + upgrade +
+  `Hello`/`Welcome` share one 30 s timeout. `Hello.runningExecs` lists live
+  exec ids; the server (`api/agent.rs` `cancel_forgotten`) cancels ones it
+  does not track. Status every 15 s, 90 s silence ends it, outgoing queue 256
+  with a 60 s send deadline, jittered 1–60 s backoff, 10 min backoff after a
+  rejected credential. On SIGTERM: close terminals, `Executor::shutdown`.
+- `exec.rs`, `process.rs` — commands in their own process group, env cleared.
+  A run ends only when its group is gone: timeout/cancel SIGTERM the group,
+  SIGKILL 10 s later regardless of the direct child; after the main process
+  exits, 2 s of output drain, then leftovers get SIGTERM, 2 s, SIGKILL.
+  Agent shutdown kills shell-command groups (3 s grace) but leaves package
+  actions running (`kill_on_drop(false)`) so dpkg is not cut mid-upgrade.
+  `setsid` escapes the group (documented limit). Windows: `taskkill /T`,
+  then `/T /F`, direct child only. Refusals, caps (8 execs, 4 terminals),
+  duplicate ids, and id validity (`wire::valid_id`, 64 bytes) are checked
+  before spawning; refusals use `try_send`.
 - `terminal.rs` — portable-pty (openpty / ConPTY).
 - `status.rs` — sysinfo plus Linux failed units, reboot-required, pending
   updates (apt-get -s, dnf check-update, pacman -Qu) every 6 h. Skips
@@ -185,10 +204,13 @@ SCM entry). All but `status` require root/Administrator.
 - `service.rs`, `winservice.rs` — systemd unit / Windows service
   `CentralDAgent`. `CENTRALD_SKIP_SERVICE=1` skips service install/restart
   (tests).
-- `update.rs` — downloads the server's build over the pinned connection,
-  verifies `.sha256`, runs `--version`, renames into place. Refuses
-  package-managed `/usr/bin` installs. Linux restart via
-  `systemd-run --on-active=5`.
+- `update.rs` — downloads the build and `.minisig` over the pinned
+  connection, verifies with `minisign-verify` against the key in
+  `packaging/minisign.json` (or build-time `CENTRALD_UPDATE_PUBKEY`), checks
+  the trusted comment `centrald-agent <version> <os>-<arch>` (own target,
+  newer semver unless `--allow-downgrade`), then writes and renames. Never
+  executes the download. Refuses package-managed `/usr/bin` installs. Linux
+  restart via `systemd-run --on-active=5`.
 
 ## Join codes
 
@@ -228,9 +250,12 @@ and 32-byte token; the server stores only its SHA-256. Agents send
   prints `centrald-server status`, and prints firewall hints (never changes
   the firewall).
 - `.github/workflows/release.yml` (tag `v*`): musl Linux on x86_64/ARM64,
-  MSVC Windows on x86_64/ARM64, then signs `SHA256SUMS` with Minisign
-  (secrets `MINISIGN_SECRET_KEY_B64`, `MINISIGN_PASSWORD`) and opens a draft
-  release. Public key in `packaging/minisign.json`.
+  MSVC Windows on x86_64/ARM64, then signs each agent build (trusted comment
+  `centrald-agent <version> <os>-<arch>`, `<bin>.minisig`), packages, signs
+  `SHA256SUMS` with Minisign (secrets `MINISIGN_SECRET_KEY_B64`,
+  `MINISIGN_PASSWORD`) and opens a draft release. Public key in
+  `packaging/minisign.json`. `package.mjs` ships each `.minisig` next to its
+  agent (0644); `--require-all` fails on an unsigned agent.
 - Actions in workflows are pinned by commit SHA.
 
 ## Testing
@@ -247,6 +272,15 @@ security with curl. Two Playwright projects: `flow` (`flow.spec.ts`) and
   `SHA256SUMS`. CI uploads it as the `e2e-report` artifact.
 - `CENTRALD_E2E_INSTALL=1` as root runs the real `curl … | sh` install
   one-liner; otherwise the test enrolls with `--key-stdin`.
+- Update signing: `tests/e2e/minisign.ts` makes a throwaway key in
+  `target/e2e-update-key.json`; `npm run e2e` builds with
+  `CENTRALD_UPDATE_PUBKEY=$(node tests/e2e/minisign.ts)`. Global setup
+  refuses an agent binary without that key and signs the served agent
+  (`signBuild` in `harness.ts`). A plain `cargo build` drops the key, so run
+  E2E through `npm run e2e`.
+- `startServer(dir)` in `harness.ts` (re)starts the server; the security
+  spec kills it with SIGKILL and restarts it to test reconciliation. Every
+  pid goes to `<run dir>/pids` for teardown.
 - `CENTRALD_E2E_PORT` (default 17443) and `CENTRALD_E2E_BIN_DIR` (default
   `target/debug`) override the harness.
 - `scripts/package-smoke.sh` (CI) installs the debs on a systemd runner and

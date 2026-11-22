@@ -24,6 +24,15 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Retry delay after the server rejects this device's credential.
 const REJECTED_BACKOFF: Duration = Duration::from_secs(10 * 60);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// TCP, TLS, upgrade, `Hello`, and `Welcome` together must finish in this.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+/// A server that does not take one message for this long is stuck.
+const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Messages waiting for the server; senders wait when it is full.
+const OUTGOING_QUEUE: usize = 256;
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 
 enum Ended {
     /// The session ran and then closed; reconnect soon.
@@ -32,8 +41,9 @@ enum Ended {
     Rejected,
 }
 
-/// Runs forever, keeping one connection to the first reachable server.
-pub async fn run(config: AgentConfig) -> Result<()> {
+/// Keeps one connection to the first reachable server until `shutdown`
+/// resolves, then stops running commands and terminals.
+pub async fn run(config: AgentConfig, shutdown: impl Future<Output = ()>) -> Result<()> {
     let fingerprint = config.fingerprint()?;
     let updates: SharedUpdates = Arc::new(Mutex::new(None));
     tokio::spawn(update_checker(updates.clone()));
@@ -47,6 +57,25 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         "CentralD agent {} starting",
         centrald_proto::VERSION
     );
+    let connect = connect_forever(&config, fingerprint, &executor, &terminals, &collector);
+    tokio::select! {
+        () = connect => Ok(()),
+        () = shutdown => {
+            tracing::info!("stopping");
+            terminals.close_all();
+            executor.shutdown().await;
+            Ok(())
+        }
+    }
+}
+
+async fn connect_forever(
+    config: &AgentConfig,
+    fingerprint: [u8; 32],
+    executor: &Executor,
+    terminals: &Terminals,
+    collector: &Arc<Mutex<Collector>>,
+) {
     let mut backoff = Duration::from_secs(1);
     // Start with whichever address worked last time.
     let mut preferred = 0_usize;
@@ -55,15 +84,7 @@ pub async fn run(config: AgentConfig) -> Result<()> {
         let count = config.servers.len();
         for index in (0..count).map(|offset| (preferred + offset) % count) {
             let server = &config.servers[index];
-            let result = session(
-                server,
-                fingerprint,
-                &config,
-                &executor,
-                &terminals,
-                &collector,
-            )
-            .await;
+            let result = session(server, fingerprint, config, executor, terminals, collector).await;
             terminals.close_all();
             match result {
                 Ok(Ended::Closed { lasted }) => {
@@ -116,14 +137,14 @@ fn package_managed() -> bool {
     std::env::current_exe().is_ok_and(|path| path.starts_with("/usr/bin"))
 }
 
-async fn session(
+/// Connects, upgrades, and trades `Hello` for `Welcome`. `None` means the
+/// server rejected this device's credential.
+async fn handshake(
     server: &str,
     fingerprint: [u8; 32],
     config: &AgentConfig,
     executor: &Executor,
-    terminals: &Terminals,
-    collector: &Arc<Mutex<Collector>>,
-) -> Result<Ended> {
+) -> Result<Option<(Socket, u32)>> {
     let stream = crate::net::connect(server, fingerprint).await?;
     let url = format!("wss://{}/api/agent/connect", centrald_proto::AGENT_TLS_NAME);
     let mut request = url.into_client_request()?;
@@ -136,16 +157,14 @@ async fn session(
     let ws_config = WebSocketConfig::default()
         .max_message_size(Some(MAX_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_MESSAGE_BYTES));
-    let socket =
+    let mut socket =
         match tokio_tungstenite::client_async_with_config(request, stream, Some(ws_config)).await {
             Ok((socket, _)) => socket,
             Err(tungstenite::Error::Http(response)) if response.status() == 401 => {
-                return Ok(Ended::Rejected);
+                return Ok(None);
             }
             Err(error) => return Err(anyhow!("WebSocket handshake failed: {error}")),
         };
-    let started = tokio::time::Instant::now();
-    let (mut sink, mut source) = socket.split();
 
     let hello = AgentMessage::Hello(Hello {
         protocol: PROTOCOL_VERSION,
@@ -154,29 +173,52 @@ async fn session(
         os: os_info(),
         allow_commands: config.allow_commands,
         package_managed: package_managed(),
+        running_execs: executor.running_ids(),
     });
-    sink.send(Message::text(serde_json::to_string(&hello)?))
+    socket
+        .send(Message::text(serde_json::to_string(&hello)?))
         .await?;
-    let welcome = tokio::time::timeout(Duration::from_secs(10), source.next())
-        .await
-        .map_err(|_| anyhow!("the server did not answer"))?;
-    let interval = match welcome {
+    let interval = match socket.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<ServerMessage>(&text) {
             Ok(ServerMessage::Welcome(welcome)) => welcome.status_interval_seconds.clamp(5, 300),
             _ => bail!("unexpected first message from the server"),
         },
         _ => bail!("the server closed the connection during the handshake"),
     };
-    tracing::info!(%server, "connected");
+    Ok(Some((socket, interval)))
+}
 
-    let (out, mut outgoing) = mpsc::channel::<AgentMessage>(256);
-    let writer = tokio::spawn(async move {
+async fn session(
+    server: &str,
+    fingerprint: [u8; 32],
+    config: &AgentConfig,
+    executor: &Executor,
+    terminals: &Terminals,
+    collector: &Arc<Mutex<Collector>>,
+) -> Result<Ended> {
+    let handshake = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        handshake(server, fingerprint, config, executor),
+    )
+    .await
+    .map_err(|_| anyhow!("the server did not complete the connection in time"))??;
+    let Some((socket, interval)) = handshake else {
+        return Ok(Ended::Rejected);
+    };
+    tracing::info!(%server, "connected");
+    let started = tokio::time::Instant::now();
+    let (mut sink, mut source) = socket.split();
+
+    let (out, mut outgoing) = mpsc::channel::<AgentMessage>(OUTGOING_QUEUE);
+    let mut writer = tokio::spawn(async move {
         while let Some(message) = outgoing.recv().await {
             let Ok(text) = serde_json::to_string(&message) else {
                 continue;
             };
-            if sink.send(Message::text(text)).await.is_err() {
-                return;
+            tracing::trace!(kind = sent_kind(&message), bytes = text.len(), "to server");
+            match tokio::time::timeout(SEND_TIMEOUT, sink.send(Message::text(text))).await {
+                Ok(Ok(())) => {}
+                _ => return,
             }
         }
     });
@@ -187,12 +229,19 @@ async fn session(
     ));
 
     let result = loop {
-        let Ok(next) = tokio::time::timeout(SILENCE_LIMIT, source.next()).await else {
+        let next = tokio::select! {
+            next = tokio::time::timeout(SILENCE_LIMIT, source.next()) => next,
+            _ = &mut writer => break Err(anyhow!("the server stopped accepting messages")),
+        };
+        let Ok(next) = next else {
             break Err(anyhow!("the server stopped responding"));
         };
         match next {
             Some(Ok(Message::Text(text))) => match serde_json::from_str::<ServerMessage>(&text) {
-                Ok(message) => dispatch(message, executor, terminals, &out),
+                Ok(message) => {
+                    tracing::trace!(kind = received_kind(&message), "from server");
+                    dispatch(message, executor, terminals, &out);
+                }
                 Err(error) => tracing::warn!(%error, "ignoring an unknown server message"),
             },
             Some(Ok(Message::Close(_))) | None => {
@@ -251,7 +300,7 @@ fn dispatch(
             id,
             spec,
             timeout_seconds,
-        } => executor.start(id, spec, timeout_seconds, out.clone()),
+        } => executor.start(id, spec, timeout_seconds, out),
         ServerMessage::ExecCancel { id } => executor.cancel(&id),
         ServerMessage::TermOpen { id, columns, rows } => {
             terminals.open(id, columns, rows, out);
@@ -259,5 +308,29 @@ fn dispatch(
         ServerMessage::TermInput { id, data } => terminals.input(&id, data),
         ServerMessage::TermResize { id, columns, rows } => terminals.resize(&id, columns, rows),
         ServerMessage::TermClose { id } => terminals.close(&id),
+    }
+}
+
+/// Message names for trace logs; payloads are never logged.
+fn sent_kind(message: &AgentMessage) -> &'static str {
+    match message {
+        AgentMessage::Hello(_) => "hello",
+        AgentMessage::Status(_) => "status",
+        AgentMessage::ExecOutput { .. } => "exec_output",
+        AgentMessage::ExecExit { .. } => "exec_exit",
+        AgentMessage::TermOutput { .. } => "term_output",
+        AgentMessage::TermExit { .. } => "term_exit",
+    }
+}
+
+fn received_kind(message: &ServerMessage) -> &'static str {
+    match message {
+        ServerMessage::Welcome(_) => "welcome",
+        ServerMessage::ExecStart { .. } => "exec_start",
+        ServerMessage::ExecCancel { .. } => "exec_cancel",
+        ServerMessage::TermOpen { .. } => "term_open",
+        ServerMessage::TermInput { .. } => "term_input",
+        ServerMessage::TermResize { .. } => "term_resize",
+        ServerMessage::TermClose { .. } => "term_close",
     }
 }

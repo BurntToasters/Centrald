@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use centrald_proto::limits::{
     MAX_CHUNK_BYTES, MAX_CONCURRENT_TERMINALS, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_ROWS,
 };
-use centrald_proto::wire::AgentMessage;
+use centrald_proto::wire::{AgentMessage, valid_id};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc;
 
-use crate::process::{base_environment, work_directory};
+use crate::process::{clean_environment, work_directory};
 
 struct Session {
     input: std::sync::mpsc::SyncSender<Vec<u8>>,
@@ -82,19 +82,34 @@ impl Terminals {
                 message: message.to_owned(),
             });
         };
+        if !valid_id(&id) {
+            tracing::warn!("ignoring a terminal with an invalid id");
+            return;
+        }
         if !self.allow_commands {
             refuse("This device is monitor-only, so terminals are turned off.");
             return;
         }
-        if self.lock().len() >= MAX_CONCURRENT_TERMINALS {
+        // Check and insert under one lock so neither the cap nor an
+        // existing session can be bypassed.
+        let mut sessions = self.lock();
+        if sessions.contains_key(&id) {
+            tracing::warn!(terminal = %id, "ignoring a duplicate terminal id");
+            return;
+        }
+        if sessions.len() >= MAX_CONCURRENT_TERMINALS {
+            drop(sessions);
             refuse("Too many terminals are open on this device.");
             return;
         }
         match self.spawn(&id, columns, rows, out.clone()) {
             Ok(session) => {
-                self.lock().insert(id, session);
+                sessions.insert(id, session);
             }
-            Err(error) => refuse(&format!("Could not start a shell: {error}")),
+            Err(error) => {
+                drop(sessions);
+                refuse(&format!("Could not start a shell: {error}"));
+            }
         }
     }
 
@@ -108,7 +123,8 @@ impl Terminals {
         let pair = native_pty_system().openpty(size(columns, rows))?;
         let mut command = shell();
         command.cwd(work_directory());
-        for (key, value) in base_environment() {
+        command.env_clear();
+        for (key, value) in clean_environment() {
             command.env(key, value);
         }
         command.env("TERM", "xterm-256color");

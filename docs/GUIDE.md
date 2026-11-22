@@ -41,6 +41,10 @@ Select **Run command**, pick one or more devices, type a command, and select
   out, CentralD stops the command and everything it started: it asks politely
   first, then forces it 10 seconds later.
 - **Cancel** stops a running command the same way.
+- A command cannot leave processes behind. Background jobs it started are
+  stopped when it finishes; use a systemd service for anything long-running.
+- Commands start with a clean environment: a standard `PATH`, `HOME`, and
+  `LANG=C.UTF-8`, not the agent's own settings.
 - Commands cannot ask questions. Use non-interactive flags, such as
   `apt-get -y`. For anything interactive, use the terminal.
 
@@ -55,6 +59,9 @@ The result for each device is one of:
 | Refused     | The device is monitor-only, or already running 8 commands.   |
 | Offline     | The device was offline when you ran it.                      |
 | Interrupted | The device disconnected or the server restarted mid-command. |
+
+When an interrupted device reconnects, the server tells it to stop the command,
+so nothing keeps running unseen.
 
 **History** lists every run. Open one to see the output again, or select **Run
 again** to reuse the command.
@@ -148,7 +155,7 @@ The agent has a few commands of its own:
 sudo centrald-agent status    # enrolled? connected? which server?
 sudo centrald-agent enroll    # join a server (asks for the join code)
 sudo centrald-agent leave     # disconnect and remove the service
-sudo centrald-agent update    # install the agent version your server offers
+sudo centrald-agent update    # install the newer, signed agent your server offers
 ```
 
 `enroll --server 192.168.1.10:7443` tries that address first, which helps when

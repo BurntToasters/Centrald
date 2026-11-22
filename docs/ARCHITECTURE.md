@@ -109,7 +109,10 @@ Administrators, then installs and starts its service.
 
 The agent opens `wss://…/api/agent/connect` with
 `Authorization: Bearer <device>.<token>`, sends `Hello` (versions, OS, hostname,
-mode), and expects `Welcome` within 10 seconds. It then sends `Status` every 15
+mode, and the ids of commands it is still running), and expects `Welcome`. TCP,
+TLS, the upgrade, and `Welcome` must all finish within 30 seconds. The server
+cancels any reported command it no longer tracks (it marked it lost after a
+restart or a dropped connection). The agent then sends `Status` every 15
 seconds. Both sides ping; 90 seconds of silence ends the connection. The agent
 reconnects with jittered backoff from 1 to 60 seconds, trying the last good
 address first. A rejected credential backs off for 10 minutes.
@@ -134,17 +137,36 @@ hours or on request.
 `exec_start` carries either a shell command or a fixed action:
 
 - **Command**: `/bin/sh -c` on Linux, PowerShell on Windows, in its own process
-  group with a clean environment. At most 8 at once.
+  group. The environment is rebuilt from scratch (`HOME`, `USER`, `LOGNAME`,
+  `SHELL`, a fixed `PATH`, `LANG=C.UTF-8`; on Windows only the system location
+  variables), never inherited from the agent. At most 8 at once.
 - **Action**: a fixed list of programs with fixed arguments (apt-get, dnf, or
   pacman to check or install updates; reboot). No shell is involved.
 
 Output streams back in chunks; the agent sends at most 2 MiB and the server
-keeps at most 1 MiB per device. On timeout or cancel the whole process group
-gets SIGTERM, then SIGKILL 10 seconds later (`taskkill /T`, then `/T /F` on
-Windows). The server also stops waiting 30 seconds after the time limit.
+keeps at most 1 MiB per device. A run ends only when its process group is gone.
+On timeout or cancel the whole group gets SIGTERM, then SIGKILL 10 seconds later
+whether or not the direct child already exited (`taskkill /T`, then `/T /F` on
+Windows). When the main process exits, output is read for 2 more seconds and any
+background processes left in the group are stopped the same way (2 second
+grace). A process that calls `setsid` leaves the group and is out of reach; on
+Windows only the tree under the direct child is reachable. The server also stops
+waiting 30 seconds after the time limit.
+
+When the agent stops, it stops running shell commands (SIGTERM, SIGKILL after 3
+seconds). Package actions are left to finish so an upgrade, including one of the
+agent itself, is not cut off mid-transaction.
 
 A monitor-only agent answers every `exec_start` and `term_open` with a refusal,
-whatever the server asks.
+whatever the server asks. Refusals, the concurrency caps, duplicate ids, and id
+length (at most 64 printable ASCII bytes) are checked before anything is
+spawned, and refusals never wait on a full connection. Outgoing messages queue
+at most 256 deep; a server that does not take a message for 60 seconds ends the
+connection.
+
+The agent never logs its credential: debug and trace events from the HTTP and
+WebSocket libraries (which print request headers) are dropped whatever
+`CENTRALD_LOG` says.
 
 ### Terminal
 
@@ -157,12 +179,22 @@ for 5 seconds.
 
 ### Self-update
 
-`centrald-agent update` downloads `/download/agent/{os}/{arch}` and its
-`.sha256` over the pinned connection, compares them, runs the new file with
-`--version`, and renames it over the current binary. On Linux a transient
-systemd timer restarts the service 5 seconds later so a running command can
-report back. Package-managed agents (`/usr/bin`) refuse and defer to the package
-manager.
+`centrald-agent update` downloads `/download/agent/{os}/{arch}` and its detached
+Minisign signature (`….minisig`) over the pinned connection. Before anything is
+written or run, it verifies the signature against the release key built into the
+agent (`packaging/minisign.json`) and reads the signed trusted comment,
+`centrald-agent <version> <os>-<arch>`: the platform must be its own and the
+version newer than the running one (`--allow-downgrade` accepts the same or an
+older signed version). Only then is the file written next to the current binary
+and renamed over it. The downloaded file is never executed, so a compromised
+server cannot run code through an update, monitor-only devices included. On
+Linux a transient systemd timer restarts the service 5 seconds later so a
+running command can report back. Package-managed agents (`/usr/bin`) refuse and
+defer to the package manager.
+
+Development builds can trust another key: `CENTRALD_UPDATE_PUBKEY` at build time
+replaces the release key (`npm run e2e` uses a throwaway key in
+`target/e2e-update-key.json`). Release builds never set it.
 
 ## Data model
 

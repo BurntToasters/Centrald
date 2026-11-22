@@ -220,6 +220,14 @@ impl Hub {
         self.emit_device(device_id).await;
     }
 
+    /// True while `exec_id` is a command this server runs on `device_id`.
+    pub fn tracks_exec(&self, device_id: &str, exec_id: &str) -> bool {
+        self.lock()
+            .execs
+            .get(exec_id)
+            .is_some_and(|track| track.device_id == device_id)
+    }
+
     /// Drops the live connection of a removed device.
     pub fn disconnect(&self, device_id: &str) {
         self.lock().agents.remove(device_id);

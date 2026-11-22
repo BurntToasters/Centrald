@@ -2,7 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{MAX_ADDRESSES, MAX_DISKS, MAX_FAILED_UNITS, MAX_TEXT_BYTES};
+use crate::limits::{
+    MAX_ADDRESSES, MAX_CONCURRENT_EXECS, MAX_DISKS, MAX_FAILED_UNITS, MAX_TEXT_BYTES,
+};
+
+/// Longest exec or terminal id either side accepts (ids are UUIDs).
+pub const MAX_ID_BYTES: usize = 64;
 
 /// Agent to server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +89,10 @@ pub struct Hello {
     pub allow_commands: bool,
     /// True when the agent binary is owned by a system package manager.
     pub package_managed: bool,
+    /// Commands still running on the device; the server cancels any it no
+    /// longer tracks (for example after it restarted).
+    #[serde(default)]
+    pub running_execs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +235,14 @@ impl Hello {
         clamp(&mut self.os.version);
         clamp(&mut self.os.kernel);
         clamp(&mut self.os.arch);
+        self.running_execs.truncate(MAX_CONCURRENT_EXECS);
+        self.running_execs.retain(|id| valid_id(id));
     }
+}
+
+/// Ids are short, printable ASCII; anything else is refused.
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_ID_BYTES && id.bytes().all(|b| b.is_ascii_graphic())
 }
 
 impl Status {

@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use centrald_proto::join::{JoinCode, validate_server_address};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::AsyncReadExt;
 
 use crate::db::{self, now};
 use crate::downloads;
@@ -238,11 +239,14 @@ pub async fn install_ps1(
     ))
 }
 
-/// `/download/agent/{os}/{arch}` and `…/{arch}.sha256`.
+/// `/download/agent/{os}/{arch}`, `….sha256`, and `….minisig`.
 pub async fn agent_binary(
     State(state): State<Shared>,
     Path((os, arch)): Path<(String, String)>,
 ) -> ApiResult<Response> {
+    if let Some(arch) = arch.strip_suffix(".minisig") {
+        return agent_signature(&state, &os, arch).await;
+    }
     let (arch, checksum) = match arch.strip_suffix(".sha256") {
         Some(arch) => (arch.to_owned(), true),
         None => (arch, false),
@@ -274,4 +278,24 @@ pub async fn agent_binary(
         body,
     )
         .into_response())
+}
+
+/// The detached signature agents verify before installing an update.
+async fn agent_signature(state: &Shared, os: &str, arch: &str) -> ApiResult<Response> {
+    let missing = || {
+        ApiError::not_found(format!(
+            "This server has no signature for its {os} {arch} agent, so agents will not update from it."
+        ))
+    };
+    let build = state.builds.find(os, arch).ok_or_else(missing)?;
+    let mut signature = Vec::new();
+    tokio::fs::File::open(downloads::signature_path(&build.path))
+        .await
+        .map_err(|_| missing())?
+        .take(4096)
+        .read_to_end(&mut signature)
+        .await
+        .map_err(|e| anyhow::anyhow!("read signature: {e}"))?;
+    let signature = String::from_utf8(signature).map_err(|_| missing())?;
+    Ok(text("text/plain; charset=utf-8", signature))
 }

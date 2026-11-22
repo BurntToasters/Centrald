@@ -36,6 +36,13 @@ pub fn file_name(os: &str, arch: &str) -> String {
     format!("centrald-agent-{os}-{arch}{extension}")
 }
 
+/// The release Minisign signature shipped next to an agent build.
+pub fn signature_path(build: &Path) -> PathBuf {
+    let mut path = build.as_os_str().to_owned();
+    path.push(".minisig");
+    PathBuf::from(path)
+}
+
 impl AgentBuilds {
     pub fn new(directory: PathBuf) -> Self {
         Self {

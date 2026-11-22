@@ -1,5 +1,4 @@
 // Starts one real server on a throwaway data directory for the whole run.
-import { spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -11,21 +10,30 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  AGENT_ARCH,
   AGENT_BIN,
   BASE,
-  PORT,
   REPORT_DIR,
   SERVER_BIN,
   readLog,
+  signBuild,
+  startServer,
 } from "./harness";
+import { updateKey } from "./minisign";
 
 export default async function globalSetup() {
   for (const binary of [SERVER_BIN, AGENT_BIN]) {
     if (!existsSync(binary)) {
       throw new Error(
-        `${binary} is missing. Run \`npm run build:web && CENTRALD_REQUIRE_UI=1 cargo build --workspace --locked\` first.`,
+        `${binary} is missing. Run \`npm run e2e\` (it builds with the E2E update key).`,
       );
     }
+  }
+  // Update tests sign builds with a throwaway key the agent must trust.
+  if (!readFileSync(AGENT_BIN).includes(updateKey().publicKey)) {
+    throw new Error(
+      `${AGENT_BIN} was not built with the E2E update key. Run \`npm run e2e\`.`,
+    );
   }
   rmSync(REPORT_DIR, { recursive: true, force: true });
   mkdirSync(path.join(REPORT_DIR, "screenshots"), { recursive: true });
@@ -33,27 +41,11 @@ export default async function globalSetup() {
   const dir = mkdtempSync(path.join(tmpdir(), "centrald-e2e-"));
   const agents = path.join(dir, "agents");
   mkdirSync(agents);
-  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  copyFileSync(AGENT_BIN, path.join(agents, `centrald-agent-linux-${arch}`));
+  const served = path.join(agents, `centrald-agent-linux-${AGENT_ARCH}`);
+  copyFileSync(AGENT_BIN, served);
+  signBuild(served);
 
-  // The server never creates its data directory (systemd does).
-  mkdirSync(path.join(dir, "data"), { mode: 0o700 });
-  const log = path.join(dir, "server.log");
-  const server = spawn(
-    "sh",
-    ["-c", 'exec "$0" run >"$1" 2>&1', SERVER_BIN, log],
-    {
-      env: {
-        ...process.env,
-        CENTRALD_DATA_DIR: path.join(dir, "data"),
-        CENTRALD_AGENT_DIR: agents,
-        CENTRALD_LISTEN: `127.0.0.1:${PORT}`,
-        CENTRALD_LOG: "info",
-      },
-      stdio: "ignore",
-    },
-  );
-
+  const { server, log } = startServer(dir);
   let code = "";
   for (let i = 0; i < 100 && !code; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -69,6 +61,7 @@ export default async function globalSetup() {
   process.env.CENTRALD_E2E_SETUP_CODE = code;
 
   return async () => {
+    // Every agent and server pid, including servers restarted by tests.
     const pids = path.join(dir, "pids");
     if (existsSync(pids)) {
       for (const pid of readFileSync(pids, "utf8").split("\n")) {
@@ -82,7 +75,12 @@ export default async function globalSetup() {
     server.kill();
     await new Promise((resolve) => setTimeout(resolve, 300));
     // Keep logs with the report so failures can be diagnosed later.
-    for (const file of ["server.log", "agent-full.log", "agent-monitor.log"]) {
+    for (const file of [
+      "server.log",
+      "agent-full.log",
+      "agent-monitor.log",
+      "agent-reconcile.log",
+    ]) {
       const source = path.join(dir, file);
       if (existsSync(source)) {
         copyFileSync(source, path.join(REPORT_DIR, file));

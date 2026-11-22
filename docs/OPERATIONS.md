@@ -166,9 +166,12 @@ centrald-agent update
 ```
 
 It downloads the agent build your server offers over the agent's verified
-connection, checks its SHA-256, makes sure it runs, swaps the program
-atomically, and restarts the service a few seconds later. If anything fails, the
-old agent stays in place.
+connection and checks its release signature, platform, and version before
+writing anything; it never runs the download. Then it swaps the program
+atomically and restarts the service a few seconds later. If anything fails, the
+old agent stays in place. It only moves to a newer version; add
+`--allow-downgrade` to install an older signed build. Servers installed from
+hand-built binaries have no signatures, so agents will not update from them.
 
 **Agents** installed from a package: upgrade the package with apt, dnf, or
 pacman. On Windows, run `centrald-agent update` in an Administrator PowerShell,

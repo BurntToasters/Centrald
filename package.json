@@ -20,7 +20,7 @@
     "typecheck": "tsc -p web/tsconfig.json --noEmit && tsc -p tests/e2e/tsconfig.json --noEmit",
     "test": "node --test scripts/cargo-safe-update.test.mjs scripts/check-cargo-update-policy.test.mjs",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
-    "e2e": "npm run build:web && CENTRALD_REQUIRE_UI=1 cargo build --workspace --locked && playwright test --config tests/e2e/playwright.config.ts",
+    "e2e": "npm run build:web && CENTRALD_UPDATE_PUBKEY=$(node tests/e2e/minisign.ts) CENTRALD_REQUIRE_UI=1 cargo build --workspace --locked && playwright test --config tests/e2e/playwright.config.ts",
     "test:rust": "cargo test --workspace --locked",
     "check:cargo-update-policy": "node scripts/check-cargo-update-policy.mjs",
     "deps:rust:update": "node scripts/cargo-safe-update.mjs --manifest-path Cargo.toml",

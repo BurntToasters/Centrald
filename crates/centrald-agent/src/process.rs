@@ -49,9 +49,10 @@ pub fn run_capture(program: &str, args: &[&str], timeout: Duration) -> Option<Ca
     })
 }
 
-/// Environment every operator command and terminal starts from, so commands
-/// behave the same whether the agent runs under systemd or by hand.
-pub fn base_environment() -> Vec<(String, String)> {
+/// The whole environment operator commands and terminals start from. Callers
+/// clear the inherited environment first, so nothing from the agent's own
+/// environment (service settings, credentials paths) leaks into commands.
+pub fn clean_environment() -> Vec<(String, String)> {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut env = Vec::new();
     #[cfg(unix)]
@@ -64,12 +65,44 @@ pub fn base_environment() -> Vec<(String, String)> {
         env.push(("HOME".to_owned(), home.to_owned()));
         env.push(("USER".to_owned(), "root".to_owned()));
         env.push(("LOGNAME".to_owned(), "root".to_owned()));
+        env.push(("SHELL".to_owned(), "/bin/sh".to_owned()));
         env.push((
             "PATH".to_owned(),
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_owned(),
         ));
-        if std::env::var_os("LANG").is_none() {
-            env.push(("LANG".to_owned(), "C.UTF-8".to_owned()));
+        env.push(("LANG".to_owned(), "C.UTF-8".to_owned()));
+    }
+    #[cfg(windows)]
+    {
+        // Windows programs need these system locations to work at all.
+        const KEEP: [&str; 22] = [
+            "ALLUSERSPROFILE",
+            "APPDATA",
+            "COMPUTERNAME",
+            "ComSpec",
+            "CommonProgramFiles",
+            "CommonProgramFiles(x86)",
+            "CommonProgramW6432",
+            "LOCALAPPDATA",
+            "NUMBER_OF_PROCESSORS",
+            "OS",
+            "PATH",
+            "PATHEXT",
+            "PROCESSOR_ARCHITECTURE",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "PSModulePath",
+            "SystemDrive",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+        ];
+        for key in KEEP.into_iter().chain(["USERPROFILE", "windir"]) {
+            if let Some(value) = std::env::var_os(key) {
+                env.push((key.to_owned(), value.to_string_lossy().into_owned()));
+            }
         }
     }
     env

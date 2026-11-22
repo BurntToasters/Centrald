@@ -62,6 +62,7 @@ pub async fn enroll(
         os: std::mem::take(&mut body.os),
         allow_commands: body.allow_commands,
         package_managed: body.package_managed,
+        running_execs: Vec::new(),
     };
     hello.sanitize();
 
@@ -240,6 +241,7 @@ async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, 
     }
     hello.sanitize();
     let allow_commands = hello.allow_commands;
+    let reported = std::mem::take(&mut hello.running_execs);
     let id = device_id.clone();
     let seen_address = address.clone();
     let stored = state
@@ -273,7 +275,9 @@ async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, 
         server_version: centrald_proto::VERSION.to_owned(),
         status_interval_seconds: STATUS_INTERVAL_SECONDS,
     });
-    if send(&mut socket, &welcome).await {
+    if send(&mut socket, &welcome).await
+        && cancel_forgotten(&state, &device_id, &mut socket, reported).await
+    {
         state.hub.emit_device(&device_id).await;
         run_session(&state, &device_id, &mut socket, &mut outgoing).await;
     }
@@ -290,6 +294,26 @@ async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, 
         })
         .await;
     tracing::info!(device = %device_id, "agent disconnected");
+}
+
+/// Stops commands the device still runs but this server no longer tracks
+/// (it marked them lost after a restart or a dropped connection).
+async fn cancel_forgotten(
+    state: &Shared,
+    device_id: &str,
+    socket: &mut WebSocket,
+    reported: Vec<String>,
+) -> bool {
+    for id in reported {
+        if state.hub.tracks_exec(device_id, &id) {
+            continue;
+        }
+        tracing::warn!(device = %device_id, exec = %id, "stopping a command the server no longer tracks");
+        if !send(socket, &ServerMessage::ExecCancel { id }).await {
+            return false;
+        }
+    }
+    true
 }
 
 async fn run_session(

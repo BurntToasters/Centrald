@@ -3,7 +3,9 @@
 //   target/<arch>-unknown-linux-musl/release/centrald-{server,agent}
 //   target/<arch>-pc-windows-{msvc,gnu}/release/centrald-agent.exe
 // Writes dist/: .deb, .rpm, Linux tarballs, Windows agents, Arch PKGBUILD,
-// SHA256SUMS. Fixed argument lists only; no shells.
+// SHA256SUMS. Each agent's detached signature (<binary>.minisig, written by
+// the release workflow) ships next to it so agents can verify updates.
+// Fixed argument lists only; no shells.
 //
 // Usage: node scripts/package.mjs [--require-all] [--no-rpm]
 import { execFileSync, spawnSync } from "node:child_process";
@@ -104,6 +106,14 @@ function agentBuilds() {
   return builds;
 }
 
+/** Copies an agent build and its signature, if any, into `dir`. */
+function installAgent(file, dir, name) {
+  install(file, path.join(dir, name), 0o755);
+  if (existsSync(`${file}.minisig`)) {
+    install(`${file}.minisig`, path.join(dir, `${name}.minisig`), 0o644);
+  }
+}
+
 /** Lays out the files of one package under `root` (a filesystem image). */
 function stageServer(root, agents, serverBin) {
   install(serverBin, path.join(root, "usr/bin/centrald-server"), 0o755);
@@ -128,7 +138,7 @@ function stageServer(root, agents, serverBin) {
     0o644,
   );
   for (const [name, file] of Object.entries(agents)) {
-    install(file, path.join(root, "usr/share/centrald/agents", name), 0o755);
+    installAgent(file, path.join(root, "usr/share/centrald/agents"), name);
   }
   install(
     path.join(ROOT, "LICENSE"),
@@ -302,7 +312,7 @@ function buildTarball(arch, agents, serverBin, agentBin) {
     );
   }
   for (const [agent, file] of Object.entries(agents)) {
-    install(file, path.join(root, "agents", agent), 0o755);
+    installAgent(file, path.join(root, "agents"), agent);
   }
   install(path.join(ROOT, "LICENSE"), path.join(root, "LICENSE"), 0o644);
   writeFileSync(
@@ -406,6 +416,14 @@ function main() {
   const missing = expected.filter((name) => !agents[name]);
   if (missing.length) {
     const message = `agent builds missing: ${missing.join(", ")}`;
+    if (requireAll) throw new Error(message);
+    console.warn(`warning: ${message}`);
+  }
+  const unsigned = Object.entries(agents)
+    .filter(([, file]) => !existsSync(`${file}.minisig`))
+    .map(([name]) => name);
+  if (unsigned.length) {
+    const message = `agent builds without a .minisig (agents will not update from them): ${unsigned.join(", ")}`;
     if (requireAll) throw new Error(message);
     console.warn(`warning: ${message}`);
   }

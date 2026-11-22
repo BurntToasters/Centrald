@@ -29,6 +29,13 @@ CentralD is pre-1.0. Only the latest release receives fixes.
 - Monitor-only machines enforce their mode locally, regardless of the server.
 - Terminal sessions are relayed, never recorded.
 - Release packages and binaries are listed in a Minisign-signed `SHA256SUMS`.
+- Agents update only to a build signed with the release key for their platform
+  and a newer version, checked before the file is written or run. A compromised
+  server cannot push code through an update.
+- Commands start from a clean environment and are stopped as a whole process
+  group on timeout, cancel, and when the agent stops. Commands the server no
+  longer tracks after a restart are canceled when the agent reconnects.
+- The agent never logs its device credential, at any log level.
 - Every external program the agent runs for actions uses a fixed path and fixed
   arguments.
 - The server never replaces its CA or database on its own; damaged or missing

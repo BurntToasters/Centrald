@@ -13,6 +13,12 @@
 // - pages lack the security headers that block framing and injection
 // - `centrald-agent update` installs a build that fails its checks, or
 //   leaves a half-written binary behind
+// - `centrald-agent update` writes or runs a build before verifying its
+//   Minisign signature: unsigned, tampered, signed by another key, signed
+//   for another platform, or not newer than the running agent (without
+//   --allow-downgrade)
+// - a command the server forgot (crash, restart) keeps running on the device
+// - the agent logs its bearer credential, even at trace level
 // - password guessing is not slowed down
 // - parallel wrong passwords are all checked before any is counted
 // - a client that hangs up mid-hash leaves no audit row or limiter count
@@ -51,13 +57,19 @@ import { connect as netConnect } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import path from "node:path";
 import {
+  AGENT_ARCH,
   AGENT_BIN,
   BASE,
   PORT,
   SERVER_BIN,
   agentEnv,
+  agentVersion,
   enroll,
+  readLog,
   runDir,
+  signBuild,
+  startAgent,
+  startServer,
   totp,
 } from "./harness";
 
@@ -297,20 +309,95 @@ test("plain HTTP is redirected and pages carry security headers", async ({
   expect(apiResponse.headers()["cache-control"]).toContain("no-store");
 });
 
-test("agents update only to a verified build from their server", async () => {
-  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  const served = path.join(runDir(), "agents", `centrald-agent-linux-${arch}`);
+test("a server restart stops commands it no longer tracks", async () => {
+  const created = await api.post("/api/join-tokens", {
+    data: { name: "reconcile", serverAddress: `127.0.0.1:${PORT}` },
+  });
+  expect(created.status()).toBe(201);
+  expect(enroll((await created.json()).code, "agent-reconcile").status).toBe(0);
+  // Trace level: the credential must not reach the log even here.
+  const { log } = startAgent("agent-reconcile", AGENT_BIN, {
+    CENTRALD_LOG: "trace",
+  });
+  const device = async () =>
+    (await (await api.get("/api/devices")).json()).find(
+      (d: { name: string }) => d.name === "reconcile",
+    );
+  await expect
+    .poll(async () => (await device())?.online, { timeout: 20_000 })
+    .toBe(true);
+  const deviceId = (await device()).id;
+
+  const started = await api.post("/api/runs", {
+    data: { deviceIds: [deviceId], command: "echo started; sleep 31310" },
+  });
+  expect(started.status()).toBe(201);
+  const runId = (await started.json()).id;
+  const running = () => spawnSync("pgrep", ["-f", "sleep 31310"]).status === 0;
+  await expect.poll(running, { timeout: 15_000 }).toBe(true);
+
+  await test.step("kill -9 the server and start it again", async () => {
+    const pid = Number(readFileSync(path.join(runDir(), "server.pid"), "utf8"));
+    process.kill(pid, "SIGKILL");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    startServer(runDir());
+    await expect
+      .poll(() => curl([`${BASE}/api/state`]).status, { timeout: 15_000 })
+      .toBe(200);
+  });
+
+  await test.step("the agent reconnects and the forgotten command stops", async () => {
+    await expect.poll(running, { timeout: 45_000 }).toBe(false);
+    const run = await (await api.get(`/api/runs/${runId}`)).json();
+    expect(run.targets[0].state).toBe("lost");
+  });
+
+  await test.step("the trace log never shows the credential", async () => {
+    const config = readFileSync(
+      path.join(runDir(), "agent-reconcile.toml"),
+      "utf8",
+    );
+    const token = /token\s*=\s*"([^"]+)"/.exec(config)?.[1] ?? "";
+    expect(token.length).toBeGreaterThan(20);
+    const text = readLog(log);
+    expect(text).toContain("TRACE");
+    expect(text).not.toContain(token);
+    expect(text).not.toMatch(/Bearer [^ ]/);
+  });
+});
+
+test("agents update only to a verified, newer build from their server", async () => {
+  const served = path.join(
+    runDir(),
+    "agents",
+    `centrald-agent-linux-${AGENT_ARCH}`,
+  );
   const installed = path.join(runDir(), "bin", "centrald-agent");
+  const canary = path.join(runDir(), "update-canary");
   mkdirSync(path.dirname(installed), { recursive: true });
   copyFileSync(AGENT_BIN, installed);
   const hash = (file: string) =>
     createHash("sha256").update(readFileSync(file)).digest("hex");
-  const update = () =>
-    spawnSync(installed, ["update"], {
+  const update = (...flags: string[]) =>
+    spawnSync(installed, ["update", ...flags], {
       env: agentEnv("agent-monitor"),
       encoding: "utf8",
       timeout: 60_000,
     });
+  const version = agentVersion();
+  const [major, minor, patch] = version.split(/[.-]/).map(Number);
+  const newer = `${major}.${minor}.${patch + 1}`;
+  // A "build" that proves it ran by leaving a file behind.
+  const hostile = () =>
+    writeFileSync(
+      served,
+      `#!/bin/sh\ntouch '${canary}'\necho centrald-agent ${newer}\n`,
+    );
+  /** Trailing bytes change the hash but keep the program runnable. */
+  const rebuilt = (marker: string) => {
+    copyFileSync(AGENT_BIN, served);
+    appendFileSync(served, Buffer.from(marker));
+  };
 
   try {
     await test.step("an identical build is left alone", async () => {
@@ -319,29 +406,99 @@ test("agents update only to a verified build from their server", async () => {
       expect(result.status).toBe(0);
     });
 
-    await test.step("a newer build replaces the binary", async () => {
-      // Trailing bytes change the hash but keep the program runnable.
-      appendFileSync(served, Buffer.from("centrald-e2e"));
+    const before = hash(installed);
+    const refusals: [string, () => void, RegExp][] = [
+      [
+        "an unsigned build",
+        () => {
+          hostile();
+          rmSync(`${served}.minisig`, { force: true });
+        },
+        /signature/,
+      ],
+      [
+        "a build signed by another key",
+        () => {
+          hostile();
+          signBuild(
+            served,
+            newer,
+            undefined,
+            path.join(runDir(), "other.json"),
+          );
+        },
+        /signature/,
+      ],
+      [
+        "a build signed for another platform",
+        () => {
+          hostile();
+          signBuild(served, newer, `windows-${AGENT_ARCH}`);
+        },
+        /windows/,
+      ],
+      [
+        "a build changed after signing",
+        () => {
+          hostile();
+          signBuild(served, newer);
+          appendFileSync(served, "\n");
+        },
+        /signature/,
+      ],
+      [
+        "a build with the same version",
+        () => {
+          hostile();
+          signBuild(served, version);
+        },
+        /not newer|allow-downgrade/,
+      ],
+      [
+        "an older build",
+        () => {
+          hostile();
+          signBuild(served, "0.0.1");
+        },
+        /allow-downgrade/,
+      ],
+    ];
+    for (const [name, prepare, reason] of refusals) {
+      await test.step(`${name} is refused before anything runs`, async () => {
+        prepare();
+        const result = update();
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("nothing was changed");
+        expect(result.stderr).toMatch(reason);
+        expect(spawnSync("test", ["-e", canary]).status).not.toBe(0);
+        expect(hash(installed)).toBe(before);
+        const leftovers = spawnSync("ls", ["-A", path.dirname(installed)], {
+          encoding: "utf8",
+        }).stdout.trim();
+        expect(leftovers).toBe("centrald-agent");
+      });
+    }
+
+    await test.step("a signed, newer build replaces the binary", async () => {
+      rebuilt("centrald-e2e-newer");
+      signBuild(served, newer);
       const result = update();
-      expect(result.stdout).toContain("Updated the agent");
+      expect(result.stdout).toContain(`to ${newer}`);
       expect(result.status).toBe(0);
       expect(hash(installed)).toBe(hash(served));
     });
 
-    await test.step("a build that does not run is refused", async () => {
-      const before = hash(installed);
-      writeFileSync(served, "this is not a program");
-      const result = update();
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("nothing was changed");
-      expect(hash(installed)).toBe(before);
-      const leftovers = spawnSync("ls", ["-A", path.dirname(installed)], {
-        encoding: "utf8",
-      }).stdout.trim();
-      expect(leftovers).toBe("centrald-agent");
+    await test.step("--allow-downgrade installs a signed older build", async () => {
+      rebuilt("centrald-e2e-older");
+      signBuild(served, "0.0.1");
+      const result = update("--allow-downgrade");
+      expect(result.stdout).toContain("to 0.0.1");
+      expect(result.status).toBe(0);
+      expect(hash(installed)).toBe(hash(served));
     });
   } finally {
     copyFileSync(AGENT_BIN, served);
+    signBuild(served);
   }
 });
 

@@ -60,13 +60,11 @@ fn run_service() -> Result<()> {
         let stop = tokio::task::spawn_blocking(move || {
             let _ = stop_rx.recv();
         });
-        tokio::select! {
-            result = crate::connection::run(config) => {
-                if let Err(error) = result {
-                    tracing::error!(error = %format!("{error:#}"), "agent stopped");
-                }
-            }
-            _ = stop => {}
+        let stop = async {
+            let _ = stop.await;
+        };
+        if let Err(error) = crate::connection::run(config, stop).await {
+            tracing::error!(error = %format!("{error:#}"), "agent stopped");
         }
     });
     report(ServiceState::Stopped, ServiceControlAccept::empty());

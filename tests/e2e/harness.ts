@@ -1,8 +1,15 @@
 // Shared helpers for the E2E suite. Real binaries, real TLS, real SQLite.
 import { spawn, spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
+import { minisign, updateKey } from "./minisign";
 
 export const ROOT = path.resolve(import.meta.dirname, "../..");
 export const PORT = Number(process.env.CENTRALD_E2E_PORT ?? 17443);
@@ -38,25 +45,83 @@ export function enroll(code: string, name: string, monitorOnly = false) {
   });
 }
 
-export function agentEnv(name: string): NodeJS.ProcessEnv {
+export function agentEnv(
+  name: string,
+  extra: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
   return {
     ...process.env,
     CENTRALD_AGENT_CONFIG: path.join(runDir(), `${name}.toml`),
     CENTRALD_SKIP_SERVICE: "1",
     CENTRALD_LOG: "info",
+    ...extra,
   };
 }
 
 /** Starts `centrald-agent run`; global teardown kills every recorded pid. */
-export function startAgent(name: string, binary = AGENT_BIN) {
+export function startAgent(
+  name: string,
+  binary = AGENT_BIN,
+  extra: NodeJS.ProcessEnv = {},
+) {
   const log = path.join(runDir(), `${name}.log`);
   const child = spawn("sh", ["-c", 'exec "$0" run >>"$1" 2>&1', binary, log], {
-    env: agentEnv(name),
+    env: agentEnv(name, extra),
     stdio: "ignore",
     detached: false,
   });
   if (child.pid) appendFileSync(path.join(runDir(), "pids"), `${child.pid}\n`);
   return { child, log };
+}
+
+/** Starts the server on `dir`; its pid goes to `dir/server.pid`. */
+export function startServer(dir: string) {
+  // The server never creates its data directory (systemd does).
+  mkdirSync(path.join(dir, "data"), { recursive: true, mode: 0o700 });
+  const log = path.join(dir, "server.log");
+  const server = spawn(
+    "sh",
+    ["-c", 'exec "$0" run >>"$1" 2>&1', SERVER_BIN, log],
+    {
+      env: {
+        ...process.env,
+        CENTRALD_DATA_DIR: path.join(dir, "data"),
+        CENTRALD_AGENT_DIR: path.join(dir, "agents"),
+        CENTRALD_LISTEN: `127.0.0.1:${PORT}`,
+        CENTRALD_LOG: "info",
+      },
+      stdio: "ignore",
+    },
+  );
+  if (server.pid) {
+    writeFileSync(path.join(dir, "server.pid"), `${server.pid}`);
+    appendFileSync(path.join(dir, "pids"), `${server.pid}\n`);
+  }
+  return { server, log };
+}
+
+export const AGENT_ARCH = process.arch === "arm64" ? "aarch64" : "x86_64";
+/** The update target the agent expects in a signature's trusted comment. */
+export const AGENT_TARGET = `linux-${AGENT_ARCH}`;
+
+/** Version the built agent reports, such as `0.1.0`. */
+export function agentVersion(): string {
+  const result = spawnSync(AGENT_BIN, ["--version"], { encoding: "utf8" });
+  return result.stdout.trim().replace(/^centrald-agent /, "");
+}
+
+/** Writes `<file>.minisig` the way the release workflow signs agents. */
+export function signBuild(
+  file: string,
+  version = agentVersion(),
+  target = AGENT_TARGET,
+  keyFile?: string,
+) {
+  const key = updateKey(keyFile, keyFile !== undefined);
+  writeFileSync(
+    `${file}.minisig`,
+    minisign(readFileSync(file), `centrald-agent ${version} ${target}`, key),
+  );
 }
 
 export function readLog(file: string): string {

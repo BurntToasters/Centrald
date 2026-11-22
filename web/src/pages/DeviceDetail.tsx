@@ -14,6 +14,7 @@ import {
   duration,
   osLabel,
   percent,
+  short,
   stateLabels,
   stateTones,
 } from "../format";
@@ -388,11 +389,12 @@ function HealthPanel({ device }: { device: Device }) {
           <Badge tone="good">All running</Badge>
         ) : (
           <span className="badges" style={{ justifyContent: "flex-end" }}>
-            {failed.map((unit) => (
+            {failed.slice(0, 10).map((unit) => (
               <Badge key={unit} tone="bad">
-                {unit}
+                {short(unit)}
               </Badge>
             ))}
+            {failed.length > 10 && <Badge>{failed.length - 10} more</Badge>}
           </span>
         )}
       </li>

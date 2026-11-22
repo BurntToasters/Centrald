@@ -284,6 +284,7 @@ pub async fn logout(
                 Ok(())
             })
             .await?;
+        state.hub.end_session(&hash);
     }
     Ok(([session::clear_cookie()], Json(json!({ "ok": true }))))
 }
@@ -342,6 +343,7 @@ pub async fn change_password(
         address,
         ..
     } = user;
+    let user_id = id.clone();
     state
         .db
         .call(move |c| {
@@ -366,6 +368,7 @@ pub async fn change_password(
             Ok(())
         })
         .await?;
+    state.hub.end_user_sessions(&user_id, Some(&session_hash));
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -598,17 +601,35 @@ pub async fn delete_user(
     if id == user.id {
         return Err(ApiError::bad_request("You cannot remove your own account."));
     }
+    let target = id.clone();
     let removed = state
         .db
         .call(move |c| {
             let tx = c.transaction()?;
+            // Checked inside the transaction: two operators removing each
+            // other at once must not leave zero accounts.
+            let actor: bool = tx
+                .query_row("SELECT 1 FROM users WHERE id = ?1", [&user.id], |_| Ok(()))
+                .optional()?
+                .is_some();
+            if !actor {
+                return Ok(Err(ApiError::unauthorized(
+                    "Your account was removed. Sign in with another account.",
+                )));
+            }
+            let count: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
+            if count <= 1 {
+                return Ok(Err(ApiError::conflict(
+                    "The last account cannot be removed.",
+                )));
+            }
             let name: Option<String> = tx
                 .query_row("SELECT username FROM users WHERE id = ?1", [&id], |r| {
                     r.get(0)
                 })
                 .optional()?;
             let Some(name) = name else {
-                return Ok(false);
+                return Ok(Ok(false));
             };
             tx.execute("DELETE FROM users WHERE id = ?1", [&id])?;
             db::audit(
@@ -620,11 +641,12 @@ pub async fn delete_user(
                 &user.address,
             )?;
             tx.commit()?;
-            Ok(true)
+            Ok(Ok(true))
         })
-        .await?;
+        .await??;
     if !removed {
         return Err(ApiError::not_found("That operator no longer exists."));
     }
+    state.hub.end_user_sessions(&target, None);
     Ok(Json(json!({ "ok": true })))
 }

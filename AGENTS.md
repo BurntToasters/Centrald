@@ -118,9 +118,31 @@ and a full-debug agent (~107 MB) breaks the E2E update test.
 - `auth.rs`, `session.rs` — Argon2id (max 2 concurrent), `__Host-centrald`
   cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), Origin check on every
   write and WebSocket upgrade, TOTP with replay guard, rate limiter (5 free
-  failures, then 30 s doubling to 15 min).
+  failures, then 30 s doubling to 15 min). Agent connect failures are keyed
+  `agent:<ip>:<device>` and checked only after a credential fails, so a
+  valid credential always connects; malformed requests use `agent:<ip>`.
+- `delete_user` checks inside its transaction that the actor still exists
+  and that another account remains.
 - `hub.rs` — in-memory live state: agents, runs, terminals, browser event
-  broadcast.
+  broadcast, browser sockets per session. Rules that keep revocation real:
+  - Nothing outside the hub holds an agent `mpsc::Sender`; terminal input is
+    routed per message by terminal id to the device's current connection.
+  - `disconnect` (device removal) queues `exec_cancel`/`term_close`, signals
+    the connection's `closed` watch, marks runs `lost`, ends terminals. A
+    newer connection for the same device closes the older one.
+  - The agent socket closes through `close_gracefully` (flush queue, Close
+    frame, read until the agent's Close). Dropping it with unread input
+    sends a TCP reset and the agent loses the queued cancels.
+  - Browser sockets hold a `SessionWatch`; `end_session`/`end_user_sessions`
+    fire on logout, password change, user delete. A 1 s read-only poll of
+    `sessions` catches console `reset-password` and expiry. Never call
+    `load_session` from a socket loop: it slides `last_seen_at`.
+  - Every socket send has `SOCKET_SEND_TIMEOUT` (10 s). Status closer than
+    5 s apart is dropped; live status is written at most once a minute and
+    overlaid by `decorate`.
+  - A result whose write fails stays in `unsaved`, is retried every 5 s, and
+    is overlaid on run views. `cancel_run` closes untracked "running"
+    targets older than 5 s.
 - `api/` — `account`, `devices`, `join`, `runs`, `agent`, `misc`. WebSocket
   routes are registered with `.get(...).connect(...)`; Chromium uses HTTP/2
   extended CONNECT, so dropping `.connect()` gives 405.
@@ -262,3 +284,10 @@ the E2E selectors together. Prettier uses `proseWrap: always` on markdown.
 - Use `nowSeconds()` from `web/src/format.ts`, not `Date.now()` in render.
 - Match arms with block bodies need trailing semicolons for clippy pedantic.
 - Tracing uses ANSI only when stdout is a terminal; keep logs grep-able.
+- Device-supplied text goes through `centrald_proto::text` (`is_hidden`,
+  `clean`) or `wire::clamp`: controls, ESC/BEL, bidi, zero-width are
+  stripped. Device names use the same filter in `devices::clean_name`.
+- `tests/e2e/rawws.ts` is a bare TLS WebSocket client for tests that act as
+  a hostile or stalled peer (custom headers, raw frames, `pause()`).
+- Commands an E2E test leaves running survive agent teardown; give them a
+  unique argument per run (see the removal test) before matching with pgrep.

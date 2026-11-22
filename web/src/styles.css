@@ -635,6 +635,16 @@ tr.clickable:hover td {
   color: var(--muted);
 }
 
+/* Device-supplied text can be long; keep rows one line high. */
+.truncate {
+  display: block;
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mini-meter {
   min-width: 90px;
 }

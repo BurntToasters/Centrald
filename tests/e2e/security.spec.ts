@@ -6,6 +6,12 @@
 // - the session cookie is readable by scripts or sent over plain HTTP
 // - a join code works twice, after revocation, or after tampering
 // - an agent connects with a guessed or wrong credential
+// - bad credentials sent from the agent's address lock the real agent out
+// - a device stores hidden characters (bidi, zero-width, escapes) in its
+//   name, status, or error text, or unbounded counts the dashboard renders
+// - a device floods status faster than the server can use it
+// - a device that stops reading stays online and parks the operator's
+//   terminal instead of being disconnected
 // - the install command downloads from a server with a different key
 // - the served agent does not match its published checksum
 // - a monitor-only device opens a terminal
@@ -25,7 +31,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { AGENT_BIN, BASE, PORT, agentEnv, enroll, runDir } from "./harness";
+import {
+  AGENT_BIN,
+  BASE,
+  PORT,
+  REPORT_DIR,
+  agentEnv,
+  enroll,
+  runDir,
+} from "./harness";
+import { RawSocket } from "./rawws";
 
 test.describe.configure({ mode: "serial" });
 
@@ -185,6 +200,196 @@ test("agents need their exact credential", async () => {
     url,
   ]);
   expect(wrong.status).toBe(401);
+});
+
+/** Reads `device_id` and `token` from an isolated agent config file. */
+function credentialOf(name: string) {
+  const config = readFileSync(path.join(runDir(), `${name}.toml`), "utf8");
+  const device = /device_id\s*=\s*"([^"]+)"/.exec(config)?.[1] ?? "";
+  const token = /token\s*=\s*"([^"]+)"/.exec(config)?.[1] ?? "";
+  expect(device && token).toBeTruthy();
+  return { device, token };
+}
+
+/** GET a JSON API path with the operator session. */
+async function getJson(url: string) {
+  return (await api.get(url)).json();
+}
+
+test("bad credentials from the agent's address do not lock it out", async () => {
+  const url = `${BASE}/api/agent/connect`;
+  const { device, token } = credentialOf("agent-monitor");
+  const statuses: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    statuses.push(curl([...WS_HEADERS, url]).status);
+    const wrong = `Authorization: Bearer ${device}.${"B".repeat(42)}${i}`;
+    statuses.push(curl([...WS_HEADERS, "-H", wrong, url]).status);
+  }
+  expect(statuses.every((s) => s === 401 || s === 429)).toBe(true);
+  expect(statuses).toContain(429);
+  // No Hello is sent, so the real agent's connection is left alone.
+  const real = await RawSocket.open("/api/agent/connect", {
+    Authorization: `Bearer ${device}.${token}`,
+  });
+  expect(real.status).toBe(101);
+  real.socket?.close();
+});
+
+test("a hostile device cannot plant hidden text, flood, or stall", async ({
+  browser,
+}) => {
+  const created = await api.post("/api/join-tokens", {
+    data: { name: "hostile\u202eevil", serverAddress: `127.0.0.1:${PORT}` },
+  });
+  expect(created.status()).toBe(201);
+  const enrolled = enroll((await created.json()).code, "hostile");
+  expect(enrolled.status).toBe(0);
+  const { device, token } = credentialOf("hostile");
+  const opened = await RawSocket.open("/api/agent/connect", {
+    Authorization: `Bearer ${device}.${token}`,
+  });
+  expect(opened.status).toBe(101);
+  const agent = opened.socket as RawSocket;
+  // Controls, zero-width, bidi overrides and isolates, BOM.
+  const hidden =
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/;
+  const status = (cpuPercent: number) => ({
+    type: "status",
+    uptimeSeconds: 100,
+    cpuPercent,
+    cpuCount: 4,
+    load: [0.1, 0.1, 0.1],
+    memory: { totalBytes: 100, usedBytes: 1000 },
+    swap: { totalBytes: 0, usedBytes: 0 },
+    disks: Array.from({ length: 64 }, (_, i) => ({
+      mount: `/d${i}\u202e`,
+      filesystem: "ext4",
+      totalBytes: 100,
+      usedBytes: 99,
+    })),
+    addresses: ["10.9.9.9\u200b"],
+    updates: {
+      manager: "apt",
+      pending: 4294967295,
+      rebootRequired: true,
+      checkedAt: 0,
+    },
+    failedUnits: Array.from(
+      { length: 64 },
+      (_, i) => `unit-${i}\u2066.service`,
+    ),
+  });
+
+  await test.step("hello and status text is cleaned and bounded", async () => {
+    agent.send({
+      type: "hello",
+      protocol: 1,
+      agentVersion: "0.1.0",
+      hostname: `evil\u202egnp.exe\u200b\u001b[31m${"x".repeat(1000)}`,
+      os: {
+        family: "linux",
+        id: "debian",
+        name: "Debian\u2066 hidden",
+        version: "12",
+        kernel: "6",
+        arch: "x86_64",
+      },
+      allowCommands: true,
+      packageManaged: false,
+    });
+    expect(await agent.next((m) => m.type === "welcome")).not.toBeNull();
+    agent.send(status(11));
+    // Too soon after the first report, so it is ignored.
+    agent.send(status(77));
+    agent.send({ type: "exec_output", id: "x".repeat(100_000), data: "" });
+    await expect
+      .poll(
+        async () =>
+          (await getJson(`/api/devices/${device}`)).status?.cpuPercent,
+      )
+      .toBe(11);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const view = await getJson(`/api/devices/${device}`);
+    expect(view.online).toBe(true);
+    expect(view.status.cpuPercent).toBe(11);
+    expect(view.hostname).not.toMatch(hidden);
+    expect(Buffer.byteLength(view.hostname)).toBeLessThanOrEqual(256);
+    expect(view.name).toBe("hostileevil");
+    expect(view.os.name).not.toMatch(hidden);
+    expect(view.status.updates.pending).toBeLessThanOrEqual(100_000);
+    expect(view.status.failedUnits.length).toBeLessThanOrEqual(32);
+    expect(view.status.memory.usedBytes).toBeLessThanOrEqual(
+      view.status.memory.totalBytes,
+    );
+    for (const text of [
+      ...view.status.failedUnits,
+      ...view.status.addresses,
+      ...view.status.disks.map((d: { mount: string }) => d.mount),
+    ])
+      expect(text).not.toMatch(hidden);
+  });
+
+  await test.step("the device list stays readable", async () => {
+    const viewer = await browser.newPage({
+      storageState: path.join(runDir(), "operator.json"),
+    });
+    await viewer.goto("/");
+    const row = viewer
+      .getByTestId("device-row")
+      .filter({ hasText: "hostileevil" });
+    await expect(row).toBeVisible();
+    expect(await row.locator(".badge").count()).toBeLessThanOrEqual(6);
+    const box = await row.boundingBox();
+    expect(box?.height ?? 0).toBeLessThan(160);
+    await viewer.screenshot({
+      path: path.join(REPORT_DIR, "screenshots", "security-hostile-device.png"),
+      fullPage: true,
+    });
+    await viewer.close();
+  });
+
+  await test.step("error text from the device is cleaned", async () => {
+    const run = await api.post("/api/runs", {
+      data: { deviceIds: [device], command: "true" },
+    });
+    expect(run.status()).toBe(201);
+    const runId = (await run.json()).id;
+    const start = await agent.next((m) => m.type === "exec_start");
+    expect(start).not.toBeNull();
+    agent.send({
+      type: "exec_exit",
+      id: start?.id,
+      outcome: {
+        state: "failed",
+        exitCode: 1,
+        error: "boom\u001b]0;pwned\u0007\u202edone\u200b",
+      },
+    });
+    await expect
+      .poll(async () => (await getJson(`/api/runs/${runId}`)).targets[0].error)
+      .toBe("boom]0;pwneddone");
+  });
+
+  await test.step("a device that stops reading is disconnected", async () => {
+    agent.pause();
+    const terminal = await RawSocket.open(`/api/devices/${device}/terminal`, {
+      Cookie: cookie,
+      Origin: BASE,
+    });
+    expect(terminal.status).toBe(101);
+    const chunk = Buffer.alloc(32 * 1024, 0x61);
+    for (let i = 0; i < 1000 && !terminal.socket?.closed; i++) {
+      terminal.socket?.sendBinary(chunk);
+    }
+    await expect
+      .poll(async () => (await getJson(`/api/devices/${device}`)).online, {
+        timeout: 40_000,
+      })
+      .toBe(false);
+    terminal.socket?.close();
+    agent.close();
+  });
 });
 
 test("install commands only trust this server's key", async () => {

@@ -81,6 +81,11 @@ export const actionLabels: Record<string, string> = {
   updates_apply: "Install updates",
 };
 
+/** Caps device-supplied text shown in small spaces. */
+export function short(text: string, max = 40): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /** Things about a device worth an operator's attention. */
 export function attention(device: Device): string[] {
   const notes: string[] = [];
@@ -96,10 +101,12 @@ export function attention(device: Device): string[] {
     notes.push(
       `${status.failedUnits.length} failed service${status.failedUnits.length === 1 ? "" : "s"}`,
     );
-  for (const disk of status.disks) {
-    if (percent(disk.usedBytes, disk.totalBytes) >= 90)
-      notes.push(`${disk.mount} almost full`);
-  }
+  const full = status.disks.filter(
+    (disk) => percent(disk.usedBytes, disk.totalBytes) >= 90,
+  );
+  // One badge per disk would let a device flood the dashboard.
+  if (full.length > 2) notes.push(`${full.length} disks almost full`);
+  else for (const disk of full) notes.push(`${short(disk.mount)} almost full`);
   return notes;
 }
 

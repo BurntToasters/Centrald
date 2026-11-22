@@ -133,9 +133,10 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 #[cfg(unix)]
 fn restrict_directory(directory: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    // Only tighten directories we own outright; never chmod /etc itself.
+    // Never chmod /etc itself. /etc/centrald is shared with the server (user
+    // centrald reads server.toml), so it stays 0755; agent.toml is 0600.
     if directory.ends_with("centrald") {
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755))
             .with_context(|| format!("cannot restrict {}", directory.display()))?;
     }
     Ok(())

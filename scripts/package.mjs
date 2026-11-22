@@ -5,6 +5,7 @@
 // Writes dist/: .deb, .rpm, Linux tarballs, Windows agents, Arch PKGBUILD,
 // SHA256SUMS. Each agent's detached signature (<binary>.minisig, written by
 // the release workflow) ships next to it so agents can verify updates.
+// dist/ is flat: every file is uploaded under the name SHA256SUMS lists.
 // Fixed argument lists only; no shells.
 //
 // Usage: node scripts/package.mjs [--require-all] [--no-rpm]
@@ -25,6 +26,10 @@ import {
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
 import path from "node:path";
+import { thirdPartyNotices } from "./third-party.mjs";
+
+// Modes in the packages must not depend on the caller's umask.
+process.umask(0o022);
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DIST = path.join(ROOT, "dist");
@@ -32,6 +37,14 @@ const PACKAGING = path.join(ROOT, "packaging");
 const VERSION = JSON.parse(
   readFileSync(path.join(ROOT, "package.json"), "utf8"),
 ).version;
+const CARGO_VERSION = readFileSync(path.join(ROOT, "Cargo.toml"), "utf8").match(
+  /^\[workspace\.package\][^[]*?^version = "([^"]+)"/m,
+)?.[1];
+// "0.2.0-rc.1" must sort before "0.2.0": dpkg and rpm use "~", pacman
+// a letter straight after the digits. File names keep the plain version.
+const DEB_VERSION = VERSION.replace("-", "~");
+const RPM_VERSION = DEB_VERSION;
+const PACMAN_VERSION = VERSION.replace("-", "").replace(/-/g, ".");
 const REPO = "https://github.com/BurntToasters/centrald";
 const MAINTAINER = "CentralD contributors <noreply@centrald.dev>";
 const ARCHES = ["x86_64", "aarch64"];
@@ -57,7 +70,9 @@ function sourceDateEpoch() {
       encoding: "utf8",
     }).trim();
   } catch {
-    return "0";
+    throw new Error(
+      "no git history; set SOURCE_DATE_EPOCH to the release's commit time",
+    );
   }
 }
 const EPOCH = sourceDateEpoch();
@@ -114,6 +129,23 @@ function installAgent(file, dir, name) {
   }
 }
 
+/** A temporary directory removed after `body` returns or throws. */
+function withTemp(prefix, body) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  try {
+    return body(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+let notices = null;
+function installDocs(root, name) {
+  const doc = path.join(root, "usr/share/doc", name);
+  install(path.join(ROOT, "LICENSE"), path.join(doc, "copyright"), 0o644);
+  install(notices, path.join(doc, "THIRD-PARTY-NOTICES.txt"), 0o644);
+}
+
 /** Lays out the files of one package under `root` (a filesystem image). */
 function stageServer(root, agents, serverBin) {
   install(serverBin, path.join(root, "usr/bin/centrald-server"), 0o755);
@@ -140,11 +172,7 @@ function stageServer(root, agents, serverBin) {
   for (const [name, file] of Object.entries(agents)) {
     installAgent(file, path.join(root, "usr/share/centrald/agents"), name);
   }
-  install(
-    path.join(ROOT, "LICENSE"),
-    path.join(root, "usr/share/doc/centrald-server/copyright"),
-    0o644,
-  );
+  installDocs(root, "centrald-server");
 }
 
 function stageAgent(root, agentBin) {
@@ -159,11 +187,7 @@ function stageAgent(root, agentBin) {
     path.join(root, "usr/lib/centrald/agent-maint"),
     0o755,
   );
-  install(
-    path.join(ROOT, "LICENSE"),
-    path.join(root, "usr/share/doc/centrald-agent/copyright"),
-    0o644,
-  );
+  installDocs(root, "centrald-agent");
 }
 
 const DESCRIPTIONS = {
@@ -178,14 +202,17 @@ const DESCRIPTIONS = {
 };
 
 function buildDeb(name, arch, stage) {
-  const root = mkdtempSync(path.join(tmpdir(), `${name}-deb-`));
+  withTemp(`${name}-deb-`, (root) => buildDebIn(root, name, arch, stage));
+}
+
+function buildDebIn(root, name, arch, stage) {
   chmodSync(root, 0o755);
   stage(root);
   const debian = path.join(root, "DEBIAN");
   mkdirSync(debian);
   const control = [
     `Package: ${name}`,
-    `Version: ${VERSION}`,
+    `Version: ${DEB_VERSION}`,
     `Architecture: ${DEB_ARCH[arch]}`,
     `Maintainer: ${MAINTAINER}`,
     "Section: admin",
@@ -209,7 +236,6 @@ function buildDeb(name, arch, stage) {
   run("dpkg-deb", ["--root-owner-group", "-Zxz", "--build", root, output], {
     env: ENV,
   });
-  rmSync(root, { recursive: true, force: true });
 }
 
 function listFiles(root, dir = root) {
@@ -221,11 +247,28 @@ function listFiles(root, dir = root) {
   });
 }
 
+function listDirs(root, dir = root) {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = path.join(dir, entry);
+    return statSync(full).isDirectory()
+      ? [`/${path.relative(root, full)}`, ...listDirs(root, full)]
+      : [];
+  });
+}
+
 function buildRpm(name, arch, stage) {
-  const top = mkdtempSync(path.join(tmpdir(), `${name}-rpm-`));
+  withTemp(`${name}-rpm-`, (top) => buildRpmIn(top, name, arch, stage));
+}
+
+function buildRpmIn(top, name, arch, stage) {
   const image = path.join(top, "image");
   stage(image);
   const maint = name === "centrald-server" ? "server-maint" : "agent-maint";
+  // Own the package's directories so an erase removes them.
+  const dirs = listDirs(image)
+    .filter((dir) => dir.includes("centrald"))
+    .sort()
+    .map((dir) => `%dir ${dir}`);
   const files = listFiles(image)
     .sort()
     .map((file) =>
@@ -236,14 +279,15 @@ function buildRpm(name, arch, stage) {
           : file,
     );
   const [summary, ...body] = DESCRIPTIONS[name].split("\n");
+  // No BuildArch: `--target` sets it, and BuildArch for a foreign
+  // architecture makes rpmbuild refuse to build on this host.
   const spec = `
 Name: ${name}
-Version: ${VERSION.replace(/-/g, "~")}
+Version: ${RPM_VERSION}
 Release: 1
 Summary: ${summary}
 License: GPL-3.0-or-later
 URL: ${REPO}
-BuildArch: ${arch}
 AutoReqProv: no
 %global debug_package %{nil}
 %global __strip /bin/true
@@ -259,13 +303,17 @@ cp -a ${image}/. %{buildroot}/
 if [ "$1" -eq 1 ]; then /usr/lib/centrald/${maint} configure install; else /usr/lib/centrald/${maint} configure upgrade; fi
 
 %preun
-if [ "$1" -eq 0 ]; then /usr/lib/centrald/${maint} remove; fi
+if [ "$1" -eq 0 ]; then /usr/lib/centrald/${maint} remove; /usr/lib/centrald/${maint} disable; fi
+
+%postun
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
 
 %files
-${files.join("\n")}
+${[...dirs, ...files].join("\n")}
 `;
   const specFile = path.join(top, `${name}.spec`);
   writeFileSync(specFile, spec);
+  const rpmdir = path.join(top, "rpms");
   const result = spawnSync(
     "rpmbuild",
     [
@@ -275,9 +323,13 @@ ${files.join("\n")}
       "--define",
       `_topdir ${top}`,
       "--define",
-      `_rpmdir ${DIST}`,
+      `_rpmdir ${rpmdir}`,
       "--define",
-      "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm",
+      "_build_name_fmt %%{NAME}.rpm",
+      "--define",
+      "_buildhost centrald",
+      "--define",
+      "_binary_payload w19.zstdio",
       "--define",
       "use_source_date_epoch_as_buildtime 1",
       "--define",
@@ -290,15 +342,58 @@ ${files.join("\n")}
     process.stderr.write(result.stdout + result.stderr);
     throw new Error(`rpmbuild failed for ${name} ${arch}`);
   }
-  rmSync(top, { recursive: true, force: true });
+  // "~" in a file name is renamed by GitHub; the name keeps the plain version.
+  copyFileSync(
+    path.join(rpmdir, `${name}.rpm`),
+    path.join(DIST, `${name}-${VERSION}-1.${arch}.rpm`),
+  );
 }
 
-function buildTarball(arch, agents, serverBin, agentBin) {
-  const top = mkdtempSync(path.join(tmpdir(), "centrald-tar-"));
+const TARBALL_README = (arch) => `CentralD ${VERSION} for Linux ${arch}
+
+Static binaries for any Linux distribution with systemd. Packages for
+Debian/Ubuntu (.deb), Fedora (.rpm), and Arch (PKGBUILD) are easier and
+handle upgrades; see https://centrald.dev/docs/quickstart
+
+Agents: agents/ holds every agent build the server offers. To manage a
+machine (this one included), use the install command from the web app; it
+puts the agent in /usr/local/bin, where it can update itself.
+
+Install the server (as root, from this directory):
+  install -m 0755 centrald-server /usr/bin/
+  install -d /usr/share/centrald/agents
+  install -m 0755 agents/centrald-agent-* /usr/share/centrald/agents/
+  chmod 0644 /usr/share/centrald/agents/*.minisig
+  install -m 0644 centrald-server.service /usr/lib/systemd/system/
+  install -m 0644 centrald.sysusers /usr/lib/sysusers.d/centrald.conf
+  install -d -m 0755 /etc/centrald
+  [ -e /etc/centrald/server.toml ] || install -m 0644 server.toml /etc/centrald/
+  systemd-sysusers
+  systemctl daemon-reload
+  systemctl enable --now centrald-server
+  sleep 10; centrald-server status
+
+Upgrade: repeat the install lines except server.toml, then
+  systemctl daemon-reload && systemctl restart centrald-server
+
+Remove:
+  systemctl disable --now centrald-server
+  rm -f /usr/bin/centrald-server /usr/lib/systemd/system/centrald-server.service
+  rm -f /usr/lib/sysusers.d/centrald.conf
+  rm -rf /usr/share/centrald
+  rm -rf /var/lib/centrald /etc/centrald/server.toml   # deletes all data
+`;
+
+function buildTarball(arch, agents, serverBin) {
+  return withTemp("centrald-tar-", (top) =>
+    buildTarballIn(top, arch, agents, serverBin),
+  );
+}
+
+function buildTarballIn(top, arch, agents, serverBin) {
   const name = `centrald-${VERSION}-linux-${arch}`;
   const root = path.join(top, name);
   install(serverBin, path.join(root, "centrald-server"), 0o755);
-  install(agentBin, path.join(root, "centrald-agent"), 0o755);
   for (const file of [
     "systemd/centrald-server.service",
     "systemd/centrald-agent.service",
@@ -315,27 +410,9 @@ function buildTarball(arch, agents, serverBin, agentBin) {
     installAgent(file, path.join(root, "agents"), agent);
   }
   install(path.join(ROOT, "LICENSE"), path.join(root, "LICENSE"), 0o644);
-  writeFileSync(
-    path.join(root, "README.txt"),
-    `CentralD ${VERSION} for Linux ${arch}
-
-Static binaries for any Linux distribution. Packages for Debian/Ubuntu
-(.deb), Fedora (.rpm), and Arch (PKGBUILD) are easier; see
-https://centrald.dev/docs/quickstart
-
-Agent only: the install command from the web app downloads it for you.
-
-Server by hand (as root):
-  install -m 0755 centrald-server centrald-agent /usr/bin/
-  install -d /usr/share/centrald/agents
-  install -m 0755 agents/* /usr/share/centrald/agents/
-  install -m 0644 centrald-server.service centrald-agent.service /usr/lib/systemd/system/
-  install -m 0644 centrald.sysusers /usr/lib/sysusers.d/centrald.conf
-  systemd-sysusers
-  systemctl enable --now centrald-server
-  centrald-server status
-`,
-  );
+  install(notices, path.join(root, "THIRD-PARTY-NOTICES.txt"), 0o644);
+  writeFileSync(path.join(root, "README.txt"), TARBALL_README(arch));
+  chmodSync(path.join(root, "README.txt"), 0o644);
   const tarFile = path.join(top, `${name}.tar`);
   run("tar", [
     "--sort=name",
@@ -352,7 +429,6 @@ Server by hand (as root):
   // zlib writes no name or timestamp into the gzip header.
   const output = path.join(DIST, `${name}.tar.gz`);
   writeFileSync(output, gzipSync(readFileSync(tarFile), { level: 9 }));
-  rmSync(top, { recursive: true, force: true });
   return output;
 }
 
@@ -360,9 +436,11 @@ function buildPkgbuild(tarballs) {
   const arches = Object.keys(tarballs);
   const lines = [
     "# Maintainer: CentralD contributors",
+    "# Keep this file, centrald-server.install, and centrald-agent.install",
+    "# together; check all three against the signed SHA256SUMS first.",
     "pkgbase=centrald",
     "pkgname=(centrald-server centrald-agent)",
-    `pkgver=${VERSION.replace(/-/g, "_")}`,
+    `pkgver=${PACMAN_VERSION}`,
     "_version=" + VERSION,
     "pkgrel=1",
     'pkgdesc="Remote management for home labs"',
@@ -375,6 +453,11 @@ function buildPkgbuild(tarballs) {
       `sha256sums_${arch}=('${sha256(tarballs[arch])}')`,
     ]),
     "",
+    "_docs() {",
+    '  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$1/LICENSE"',
+    '  install -Dm644 THIRD-PARTY-NOTICES.txt "$pkgdir/usr/share/licenses/$1/THIRD-PARTY-NOTICES.txt"',
+    "}",
+    "",
     "package_centrald-server() {",
     '  pkgdesc="Remote management for home labs (server)"',
     "  backup=(etc/centrald/server.toml)",
@@ -385,27 +468,38 @@ function buildPkgbuild(tarballs) {
     '  install -Dm644 centrald.sysusers "$pkgdir/usr/lib/sysusers.d/centrald.conf"',
     '  install -Dm644 server.toml "$pkgdir/etc/centrald/server.toml"',
     '  install -d "$pkgdir/usr/share/centrald/agents"',
-    '  install -m755 agents/* "$pkgdir/usr/share/centrald/agents/"',
+    "  local file",
+    "  for file in agents/*; do",
+    '    case "$file" in',
+    '    *.minisig) install -m644 "$file" "$pkgdir/usr/share/centrald/agents/" ;;',
+    '    *) install -m755 "$file" "$pkgdir/usr/share/centrald/agents/" ;;',
+    "    esac",
+    "  done",
+    "  _docs centrald-server",
     "}",
     "",
     "package_centrald-agent() {",
     '  pkgdesc="Remote management for home labs (agent)"',
     "  install=centrald-agent.install",
     '  cd "centrald-$_version-linux-$CARCH"',
-    '  install -Dm755 centrald-agent "$pkgdir/usr/bin/centrald-agent"',
+    '  install -Dm755 "agents/centrald-agent-linux-$CARCH" "$pkgdir/usr/bin/centrald-agent"',
     '  install -Dm644 centrald-agent.service "$pkgdir/usr/lib/systemd/system/centrald-agent.service"',
+    "  _docs centrald-agent",
     "}",
     "",
   ];
-  const dir = path.join(DIST, "arch");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "PKGBUILD"), lines.join("\n"));
+  writeFileSync(path.join(DIST, "PKGBUILD"), lines.join("\n"));
   for (const file of ["centrald-server.install", "centrald-agent.install"]) {
-    copyFileSync(path.join(PACKAGING, "arch", file), path.join(dir, file));
+    install(path.join(PACKAGING, "arch", file), path.join(DIST, file), 0o644);
   }
 }
 
 function main() {
+  if (CARGO_VERSION !== VERSION) {
+    throw new Error(
+      `package.json is ${VERSION} but Cargo.toml is ${CARGO_VERSION}; bump both`,
+    );
+  }
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
   const agents = agentBuilds();
@@ -433,41 +527,50 @@ function main() {
     console.warn("warning: rpmbuild not found; skipping .rpm packages");
   }
 
-  const tarballs = {};
-  for (const arch of ARCHES) {
-    const serverBin = linuxBinary(arch, "centrald-server");
-    const agentBin = linuxBinary(arch, "centrald-agent");
-    if (!serverBin || !agentBin) continue;
-    console.log(`packaging linux ${arch}`);
-    const server = (root) => stageServer(root, agents, serverBin);
-    const agent = (root) => stageAgent(root, agentBin);
-    buildDeb("centrald-server", arch, server);
-    buildDeb("centrald-agent", arch, agent);
-    if (rpm) {
-      buildRpm("centrald-server", arch, server);
-      buildRpm("centrald-agent", arch, agent);
+  withTemp("centrald-notices-", (dir) => {
+    notices = path.join(dir, "THIRD-PARTY-NOTICES.txt");
+    writeFileSync(notices, thirdPartyNotices(ROOT));
+    const tarballs = {};
+    for (const arch of ARCHES) {
+      const serverBin = linuxBinary(arch, "centrald-server");
+      const agentBin = linuxBinary(arch, "centrald-agent");
+      if (!serverBin || !agentBin) continue;
+      console.log(`packaging linux ${arch}`);
+      const server = (root) => stageServer(root, agents, serverBin);
+      const agent = (root) => stageAgent(root, agentBin);
+      buildDeb("centrald-server", arch, server);
+      buildDeb("centrald-agent", arch, agent);
+      if (rpm) {
+        buildRpm("centrald-server", arch, server);
+        buildRpm("centrald-agent", arch, agent);
+      }
+      tarballs[arch] = buildTarball(arch, agents, serverBin);
     }
-    tarballs[arch] = buildTarball(arch, agents, serverBin, agentBin);
-  }
-  if (Object.keys(tarballs).length === 0) {
-    throw new Error(
-      "no Linux builds found; run cargo build --release --target <arch>-unknown-linux-musl first",
-    );
-  }
-  buildPkgbuild(tarballs);
+    if (Object.keys(tarballs).length === 0) {
+      throw new Error(
+        "no Linux builds found; run cargo build --release --target <arch>-unknown-linux-musl first",
+      );
+    }
+    buildPkgbuild(tarballs);
+  });
   for (const arch of ARCHES) {
     const windows = windowsAgent(arch);
     if (windows) {
-      copyFileSync(
+      install(
         windows,
         path.join(DIST, `centrald-agent-${VERSION}-windows-${arch}.exe`),
+        0o644,
       );
     }
   }
 
-  const files = listFiles(DIST)
-    .map((file) => file.slice(1))
-    .sort();
+  const files = readdirSync(DIST).sort();
+  // GitHub renames assets with other characters, which would break
+  // `sha256sum -c SHA256SUMS` on the downloaded files.
+  const unsafe = files.filter((file) => !/^[A-Za-z0-9._+-]+$/.test(file));
+  if (unsafe.length) {
+    throw new Error(`release asset names GitHub would rename: ${unsafe}`);
+  }
   writeFileSync(
     path.join(DIST, "SHA256SUMS"),
     files.map((file) => `${sha256(path.join(DIST, file))}  ${file}\n`).join(""),

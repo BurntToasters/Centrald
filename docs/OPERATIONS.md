@@ -47,6 +47,20 @@ agent_dir = "/usr/share/centrald/agents"
 
 Unknown keys are an error, so a typo stops the server instead of being ignored.
 
+The service's sandbox makes everything read-only except `/var/lib/centrald` and
+hides `/home` and `/root`. So:
+
+- Keep `tls_cert` and `tls_key` outside `/home` and `/root`, for example in
+  `/etc/centrald/tls/` (owner `root`, group `centrald`, key mode `0640`).
+- A different `data_dir` must also be made writable for the service. Create it
+  (`sudo install -d -m 0700 -o centrald -g centrald /srv/centrald`), then add it
+  with `sudo systemctl edit centrald-server`:
+
+  ```ini
+  [Service]
+  ReadWritePaths=/srv/centrald
+  ```
+
 Each setting also has an environment variable, which wins over the file:
 `CENTRALD_LISTEN`, `CENTRALD_HOSTNAMES` (comma-separated), `CENTRALD_TLS_CERT`,
 `CENTRALD_TLS_KEY`, `CENTRALD_DATA_DIR`, and `CENTRALD_AGENT_DIR`.
@@ -156,7 +170,9 @@ for a year, and join codes for 30 days after they expire.
 (`sudo apt install ./centrald-server_*.deb`,
 `sudo dnf upgrade ./centrald-server-*.rpm`, or `makepkg -si` with the new
 PKGBUILD). The service restarts by itself; the database is upgraded in place.
-The package also brings the new agent builds.
+The package also brings the new agent builds. A server you disabled
+(`systemctl disable`) stays disabled through upgrades, and one you removed with
+`apt remove` starts again when you reinstall it.
 
 **Agents** installed with the web app's command: run this from **Run command**
 on all of them at once (or locally with `sudo`):
@@ -174,8 +190,10 @@ old agent stays in place. It only moves to a newer version; add
 hand-built binaries have no signatures, so agents will not update from them.
 
 **Agents** installed from a package: upgrade the package with apt, dnf, or
-pacman. On Windows, run `centrald-agent update` in an Administrator PowerShell,
-then `Restart-Service CentralDAgent`.
+pacman. Installing the agent package on a machine that was enrolled with the web
+app's command replaces that agent (`/usr/local/bin/centrald-agent` and its unit)
+and keeps the enrollment. On Windows, run `centrald-agent update` in an
+Administrator PowerShell, then `Restart-Service CentralDAgent`.
 
 ## Forgotten password
 
@@ -207,8 +225,13 @@ Every agent must then be enrolled again (`sudo centrald-agent leave`, then
 ## Uninstalling
 
 - Server: `sudo apt purge centrald-server` removes the program and all data;
-  `apt remove` keeps `/var/lib/centrald`. On Fedora and Arch, remove the
-  package, then delete `/var/lib/centrald` yourself if you want the data gone.
+  `apt remove` stops the server and keeps `/var/lib/centrald`. On Fedora and
+  Arch, remove the package (this stops and disables the service), then delete
+  `/var/lib/centrald` yourself if you want the data gone. The `centrald` user
+  and group stay, as is usual for system users.
+- `apt purge centrald-agent` deletes the device credential
+  (`/etc/centrald/agent.toml`) unless an agent from the web app's command
+  (`/usr/local/bin/centrald-agent`) is still installed and using it.
 - Agents: see [Removing a device](GUIDE.md#removing-a-device).
 
 ## Without systemd
@@ -216,13 +239,17 @@ Every agent must then be enrolled again (`sudo centrald-agent leave`, then
 The packages work on systems without systemd (for example inside a container),
 but nothing starts automatically:
 
-- Server: run `centrald-server run` as the `centrald` user with
+- Server: run `centrald-server run` as the `centrald` user (for example
+  `sudo runuser -u centrald -- /usr/bin/centrald-server run`) with
   `/var/lib/centrald` owned by that user (mode 0700). The server never creates
   its data directory: create it once with
   `sudo install -d -m 0700 -o centrald -g centrald /var/lib/centrald` (the
   package does this when it finds no systemd). The `status` and `reset-password`
   commands, started as root, switch to the data directory's owner by themselves.
 - Agent: run `centrald-agent run` as root from your init system.
+- Removing or purging a package cannot stop a server or agent you started by
+  hand; stop it yourself first. The package prints a warning if it finds one
+  running.
 
 ## Troubleshooting
 
@@ -250,6 +277,12 @@ exists and is empty. Otherwise it stops and names the problem:
 `centrald-server status` and `reset-password` are safe to run while the server
 runs: they never create or upgrade the database. After a package upgrade,
 restart the server before using them if they report a schema mismatch.
+
+- "cannot read /etc/centrald/server.toml: Permission denied": the `centrald`
+  user cannot enter `/etc/centrald`. Older agents set it to mode 0700 when
+  enrolling the server's own machine. Reinstalling or upgrading the server
+  package repairs it, or run `sudo chmod 0755 /etc/centrald`. The agent's
+  credential inside stays private (mode 0600).
 
 **Logs**
 
@@ -299,3 +332,7 @@ certificate after checking the fingerprint in `sudo centrald-server status`.
   copied the command. Create a new join code.
 - "the server may not offer a … agent": the server package has no build for that
   architecture. **Settings** lists the builds it offers.
+- Windows, "Open Windows PowerShell (not PowerShell 7)": the command pins the
+  server's certificate in a way only Windows PowerShell 5.1 supports. Open
+  **Windows PowerShell** as Administrator (not **PowerShell 7** or a Terminal
+  profile that starts it) and paste the command again.

@@ -1,28 +1,70 @@
 #!/bin/sh
 # Package hooks for centrald-agent, shared by the .deb and .rpm.
-# Usage: agent-maint configure <install|upgrade> | remove
+# Usage: agent-maint configure <install|upgrade> | remove | disable
+# A service manager problem never fails the package transaction.
 set -e
 
+UNIT=centrald-agent.service
+LOCAL_UNIT=/etc/systemd/system/$UNIT
+LOCAL_BIN=/usr/local/bin/centrald-agent
 has_systemd() { [ -d /run/systemd/system ]; }
+warn() { echo "CentralD: $*" >&2; }
+
+# The package replaces an agent from the web app's install command: same
+# credential, packaged binary and unit. Leaving both would split updates.
+take_over() {
+	took_over=
+	if [ -f "$LOCAL_UNIT" ] && grep -q "^ExecStart=$LOCAL_BIN run" "$LOCAL_UNIT"; then
+		# Drop its enable link too, or enabling the packaged unit fails.
+		if has_systemd; then systemctl disable --now "$UNIT" || true; fi
+		rm -f "$LOCAL_UNIT" "/etc/systemd/system/multi-user.target.wants/$UNIT"
+		took_over=1
+	fi
+	if [ -e "$LOCAL_BIN" ]; then
+		rm -f "$LOCAL_BIN"
+		took_over=1
+	fi
+	if [ -n "$took_over" ]; then
+		echo "CentralD: replaced the agent from the install command with this package."
+	fi
+}
 
 case "$1" in
 configure)
-	has_systemd && systemctl daemon-reload
-	if [ -f /etc/centrald/agent.toml ]; then
-		if has_systemd; then
-			systemctl enable centrald-agent.service >/dev/null 2>&1
-			systemctl restart centrald-agent.service
-		fi
-	else
+	take_over
+	if [ ! -f /etc/centrald/agent.toml ]; then
+		if has_systemd; then systemctl daemon-reload || true; fi
 		echo
 		echo "CentralD agent installed. Connect this machine to your server:"
 		echo "  sudo centrald-agent enroll"
 		echo "and paste the join code from the web app (Add device > Manual)."
+		exit 0
+	fi
+	if ! has_systemd; then
+		echo "CentralD: no systemd. Start (or restart) 'centrald-agent run' as root."
+		exit 0
+	fi
+	systemctl daemon-reload || true
+	if [ "$2" = install ] || [ -n "$took_over" ]; then
+		systemctl enable "$UNIT" >/dev/null 2>&1 ||
+			warn "could not enable $UNIT (masked?)."
+		systemctl restart "$UNIT" || warn "could not start $UNIT; see: journalctl -u $UNIT"
+	elif systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+		systemctl restart "$UNIT" || warn "could not restart $UNIT; see: journalctl -u $UNIT"
+	else
+		systemctl try-restart "$UNIT" || true
 	fi
 	;;
 remove)
+	# Stop only; the enable link is kept so a reinstall starts again.
 	if has_systemd; then
-		systemctl disable --now centrald-agent.service >/dev/null 2>&1 || true
+		systemctl stop "$UNIT" || true
+	elif command -v pgrep >/dev/null 2>&1 && pgrep -x centrald-agent >/dev/null; then
+		warn "no systemd: a running centrald-agent process was not stopped."
 	fi
+	;;
+disable)
+	rm -f "/etc/systemd/system/multi-user.target.wants/$UNIT"
+	if has_systemd; then systemctl daemon-reload || true; fi
 	;;
 esac

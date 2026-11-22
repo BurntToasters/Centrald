@@ -1,0 +1,42 @@
+name: Advisories
+
+# Known vulnerabilities in the Rust and npm dependency locks. Runs on every
+# change and weekly, because advisories appear after code is merged.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.23.0
+      # Vulnerabilities fail by default; unsound and yanked crates fail too.
+      - run: cargo audit --deny unsound --deny yanked
+
+  npm:
+    name: npm audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install latest npm
+        run: |
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
+      - run: npm audit --package-lock-only --audit-level=moderate
+      - run: npm --prefix site audit --package-lock-only --audit-level=moderate

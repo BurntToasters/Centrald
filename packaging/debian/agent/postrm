@@ -1,9 +1,13 @@
 #!/bin/sh
 set -e
 if [ "$1" = purge ]; then
+	rm -f /etc/systemd/system/multi-user.target.wants/centrald-agent.service
 	# The device credential; the server keeps the device until removed there.
-	rm -f /etc/centrald/agent.toml
-	rmdir /etc/centrald 2>/dev/null || true
+	# Kept while another agent (from the install command) still uses it.
+	if [ ! -e /usr/local/bin/centrald-agent ]; then
+		rm -f /etc/centrald/agent.toml
+		rmdir /etc/centrald 2>/dev/null || true
+	fi
 fi
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true

@@ -1,8 +1,13 @@
 #!/bin/sh
 set -e
 if [ "$1" = purge ]; then
+	rm -f /etc/systemd/system/multi-user.target.wants/centrald-server.service
+	if command -v pgrep >/dev/null 2>&1 && pgrep -x centrald-server >/dev/null; then
+		echo "CentralD: centrald-server is still running; deleting its data anyway." >&2
+	fi
 	# Devices, accounts, history, and the certificate authority.
 	rm -rf /var/lib/centrald
+	rmdir /etc/centrald 2>/dev/null || true
 fi
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true

@@ -30,19 +30,27 @@ impl FromRequestParts<Shared> for CurrentUser {
 
     async fn from_request_parts(parts: &mut Parts, state: &Shared) -> Result<Self, ApiError> {
         let address = client_address(parts);
-        let token = session_cookie(&parts.headers)
-            .ok_or_else(|| ApiError::unauthorized("Sign in to continue."))?;
-        let hash = session_hash(&token);
-        let user = load_session(state, hash).await?;
-        let (id, username, totp_enabled) =
-            user.ok_or_else(|| ApiError::unauthorized("Your session has ended. Sign in again."))?;
-        Ok(Self {
-            id,
-            username,
-            totp_enabled,
-            session_hash: hash,
-            address,
-        })
+        let tokens = session_cookies(&parts.headers);
+        if tokens.is_empty() {
+            return Err(ApiError::unauthorized("Sign in to continue."));
+        }
+        // A cookie planted by another service on this host must not shadow
+        // the real one, so every value is tried.
+        for token in tokens {
+            let hash = session_hash(&token);
+            if let Some((id, username, totp_enabled)) = load_session(state, hash).await? {
+                return Ok(Self {
+                    id,
+                    username,
+                    totp_enabled,
+                    session_hash: hash,
+                    address,
+                });
+            }
+        }
+        Err(ApiError::unauthorized(
+            "Your session has ended. Sign in again.",
+        ))
     }
 }
 
@@ -151,6 +159,21 @@ pub fn session_cookie(headers: &HeaderMap) -> Option<String> {
             let (name, value) = pair.trim().split_once('=')?;
             (name == SESSION_COOKIE && !value.is_empty()).then(|| value.to_owned())
         })
+}
+
+/// Every non-empty session cookie value, at most four.
+pub fn session_cookies(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            (name == SESSION_COOKIE && !value.is_empty()).then(|| value.to_owned())
+        })
+        .take(4)
+        .collect()
 }
 
 /// `Host` for HTTP/1.1, or the URI authority HTTP/2 carries instead.

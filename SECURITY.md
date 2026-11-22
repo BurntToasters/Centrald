@@ -31,6 +31,10 @@ CentralD is pre-1.0. Only the latest release receives fixes.
 - Release packages and binaries are listed in a Minisign-signed `SHA256SUMS`.
 - Every external program the agent runs for actions uses a fixed path and fixed
   arguments.
+- The server never replaces its CA or database on its own; damaged or missing
+  state stops it with a message naming the file.
+- The server answers only to its own names and addresses, which blocks DNS
+  rebinding.
 
 See the [threat model](docs/THREAT_MODEL.md) for what CentralD defends against
 and its limits.

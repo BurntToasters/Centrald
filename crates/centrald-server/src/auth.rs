@@ -1,6 +1,7 @@
 //! Passwords, sessions, two-factor codes, and brute-force throttling.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Result, anyhow};
@@ -88,6 +89,12 @@ pub fn validate_password(password: &str, username: &str) -> Result<(), &'static 
     }
     if password.eq_ignore_ascii_case(username) {
         return Err("The password cannot be the same as the username.");
+    }
+    let mut chars = password.chars();
+    if let Some(first) = chars.next()
+        && chars.all(|c| c == first)
+    {
+        return Err("Use a password that is not one character repeated.");
     }
     Ok(())
 }
@@ -180,6 +187,11 @@ pub fn verify_totp(secret_base32: &str, code: &str, last_step: i64) -> Option<i6
 }
 
 /// Counts recent failures per key and locks a key out with growing delays.
+///
+/// Keys look like `kind:value`; an IP address value is grouped (IPv6 by
+/// /64) so one host cannot spread its attempts over many addresses. The map
+/// holds at most [`RateLimiter::MAX_ENTRIES`] keys; when full, the least
+/// useful entry (unlocked first, then oldest) is evicted.
 #[derive(Debug, Default)]
 pub struct RateLimiter {
     entries: Mutex<HashMap<String, Attempts>>,
@@ -197,23 +209,53 @@ impl RateLimiter {
     const BASE_LOCK_SECONDS: i64 = 30;
     const MAX_LOCK_SECONDS: i64 = 15 * 60;
     const FORGET_AFTER_SECONDS: i64 = 60 * 60;
+    pub const MAX_ENTRIES: usize = 4096;
 
     /// `Err(seconds)` while the key is locked out.
     pub fn check(&self, key: &str) -> Result<(), i64> {
+        let key = limiter_key(key);
+        let time = now();
         let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        match entries.get(key) {
-            Some(attempts) if attempts.locked_until > now() => Err(attempts.locked_until - now()),
+        match entries.get(&key) {
+            Some(attempts) if attempts.locked_until > time => Err(attempts.locked_until - time),
             _ => Ok(()),
         }
     }
 
-    pub fn record_failure(&self, key: &str) {
+    /// Checks the key and counts this attempt as a failure in one step, so
+    /// parallel attempts cannot all pass the check before any is counted.
+    /// Call [`RateLimiter::record_success`] when the attempt succeeds.
+    pub fn attempt(&self, key: &str) -> Result<(), i64> {
+        let key = limiter_key(key);
         let time = now();
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        if entries.len() > 10_000 {
-            entries.retain(|_, a| time - a.last_failure < Self::FORGET_AFTER_SECONDS);
+        if let Some(attempts) = entries.get(&key)
+            && attempts.locked_until > time
+        {
+            return Err(attempts.locked_until - time);
         }
-        let attempts = entries.entry(key.to_owned()).or_insert(Attempts {
+        Self::count(&mut entries, key, time);
+        Ok(())
+    }
+
+    pub fn record_failure(&self, key: &str) {
+        let key = limiter_key(key);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::count(&mut entries, key, now());
+    }
+
+    pub fn record_success(&self, key: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&limiter_key(key));
+    }
+
+    fn count(entries: &mut HashMap<String, Attempts>, key: String, time: i64) {
+        if !entries.contains_key(&key) && entries.len() >= Self::MAX_ENTRIES {
+            Self::evict(entries, time);
+        }
+        let attempts = entries.entry(key).or_insert(Attempts {
             failures: 0,
             last_failure: time,
             locked_until: 0,
@@ -221,7 +263,7 @@ impl RateLimiter {
         if time - attempts.last_failure > Self::FORGET_AFTER_SECONDS {
             attempts.failures = 0;
         }
-        attempts.failures += 1;
+        attempts.failures = attempts.failures.saturating_add(1);
         attempts.last_failure = time;
         if attempts.failures >= Self::FREE_FAILURES {
             let doublings = (attempts.failures - Self::FREE_FAILURES).min(10);
@@ -230,10 +272,42 @@ impl RateLimiter {
         }
     }
 
-    pub fn record_success(&self, key: &str) {
-        self.entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(key);
+    /// Runs only when the map is full: drops forgotten entries, else the
+    /// one that matters least.
+    fn evict(entries: &mut HashMap<String, Attempts>, time: i64) {
+        entries.retain(|_, a| {
+            a.locked_until > time || time - a.last_failure < Self::FORGET_AFTER_SECONDS
+        });
+        if entries.len() < Self::MAX_ENTRIES {
+            return;
+        }
+        let victim = entries
+            .iter()
+            .min_by_key(|(_, a)| (a.locked_until > time, a.locked_until, a.last_failure))
+            .map(|(key, _)| key.clone());
+        if let Some(victim) = victim {
+            entries.remove(&victim);
+        }
+    }
+}
+
+/// Groups the address part of a limiter key: IPv4 as is, IPv6 by /64.
+fn limiter_key(key: &str) -> String {
+    if let Some((kind, value)) = key.split_once(':')
+        && let Ok(ip) = value.parse::<IpAddr>()
+    {
+        return format!("{kind}:{}", source_group(ip));
+    }
+    key.to_owned()
+}
+
+/// The unit one host controls: an IPv4 address or an IPv6 /64.
+pub fn source_group(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let bits = u128::from(v6) & !((1_u128 << 64) - 1);
+            IpAddr::V6(Ipv6Addr::from(bits))
+        }
+        v4 @ IpAddr::V4(_) => v4,
     }
 }

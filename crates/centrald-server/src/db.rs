@@ -127,16 +127,87 @@ impl std::fmt::Debug for Db {
     }
 }
 
+/// How a process may open the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMode {
+    /// First start in an empty data directory: create and migrate.
+    Create,
+    /// The server on an existing install: must hold a schema; migrates
+    /// forward and checks integrity.
+    Server,
+    /// Local tools next to a running server: never create or migrate.
+    Tool,
+    /// Like `Tool`, but read-only.
+    ReadOnly,
+}
+
 impl Db {
-    /// Opens (creating if needed) and migrates the database.
-    pub fn open(path: &Path) -> Result<Self> {
-        let mut connection = Connection::open(path)
+    /// Opens the database as `mode` allows.
+    pub fn open(path: &Path, mode: OpenMode) -> Result<Self> {
+        use rusqlite::OpenFlags;
+        let exists = path.exists();
+        if mode == OpenMode::Create && exists {
+            bail!(
+                "{} already exists; refusing to create a new database",
+                path.display()
+            );
+        }
+        if mode != OpenMode::Create {
+            let size = std::fs::metadata(path)
+                .with_context(|| format!("the database {} is missing", path.display()))?
+                .len();
+            if size == 0 {
+                bail!(
+                    "the database {} is empty (damaged or truncated); restore it from backup",
+                    path.display()
+                );
+            }
+        }
+        let flags = match mode {
+            OpenMode::Create => OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+            OpenMode::Server | OpenMode::Tool => OpenFlags::SQLITE_OPEN_READ_WRITE,
+            OpenMode::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
+        } | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI;
+        let mut connection = Connection::open_with_flags(path, flags)
             .with_context(|| format!("cannot open database {}", path.display()))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.busy_timeout(std::time::Duration::from_secs(10))?;
-        migrate(&mut connection)?;
+        if mode != OpenMode::ReadOnly {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+            connection.pragma_update(None, "synchronous", "NORMAL")?;
+        }
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        let current: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        match mode {
+            OpenMode::Create => migrate(&mut connection)?,
+            OpenMode::Server => {
+                if current == 0 {
+                    bail!(
+                        "the database {} holds no CentralD data (damaged, or its WAL file was lost); restore it from backup",
+                        path.display()
+                    );
+                }
+                let check: String =
+                    connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+                if check != "ok" {
+                    bail!(
+                        "the database {} is damaged ({check}); restore it from backup",
+                        path.display()
+                    );
+                }
+                migrate(&mut connection)?;
+            }
+            OpenMode::Tool | OpenMode::ReadOnly => {
+                if current != SCHEMA_VERSION {
+                    bail!(
+                        "the database {} has schema {current} but this build uses {SCHEMA_VERSION}; restart the server (sudo systemctl restart centrald-server) so it can upgrade the database first",
+                        path.display()
+                    );
+                }
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })

@@ -36,6 +36,8 @@ export default async function globalSetup() {
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   copyFileSync(AGENT_BIN, path.join(agents, `centrald-agent-linux-${arch}`));
 
+  // The server never creates its data directory (systemd does).
+  mkdirSync(path.join(dir, "data"), { mode: 0o700 });
   const log = path.join(dir, "server.log");
   const server = spawn(
     "sh",

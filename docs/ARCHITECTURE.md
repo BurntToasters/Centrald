@@ -47,15 +47,24 @@ site/                    documentation website (synced from docs/)
 
 ### TLS
 
-On first start the server creates a private CA (ECDSA P-256, 20 years) and a
-server certificate (397 days) for its hostname, LAN addresses, `localhost`, and
-the fixed internal name `centrald-server.internal`. The certificate is reissued
-30 days before expiry or when addresses change, always with the same key.
+On first start (an empty data directory) the server creates a private CA (ECDSA
+P-256, 20 years) and a server certificate (397 days) for its hostname, LAN
+addresses, `localhost`, and the fixed internal name `centrald-server.internal`.
+The certificate is reissued 30 days before expiry or when addresses change,
+always with the same key.
 
 Agents connect with SNI `centrald-server.internal` and accept only a chain that
 ends in the CA whose SHA-256 fingerprint they were given in their join code.
 Browsers get either the same certificate or an operator-supplied one
-(`tls_cert`/`tls_key`); agents always get the internal chain.
+(`tls_cert`/`tls_key`); agents always get the internal chain. At start the
+server checks that each key matches its certificate and refuses to run
+otherwise.
+
+The listener caps connections (900 total, 128 per address or IPv6 /64), picks
+HTTP/2 or HTTP/1.1 by ALPN, and closes idle connections. Requests whose `Host`
+or `:authority` is not an IP address or one of the server's names get `421`;
+agent paths are exempt. The fallback serves the web app only for `GET`/`HEAD`
+outside `/api`.
 
 ### Browser API
 
@@ -65,9 +74,11 @@ JSON under `/api`, with a session cookie:
   7-day idle lifetime. Only a SHA-256 of the token is stored.
 - Every state-changing request and WebSocket upgrade must carry an `Origin`
   equal to the server's own origin.
-- Passwords use Argon2id (19 MiB, 2 passes), at most two hashes at once. Failed
-  sign-ins back off per address and per username. Optional TOTP with replay
-  protection.
+- Passwords use Argon2id (19 MiB, 2 passes), at most two hashes at once and 32
+  queued; each hash runs on its own task that outlives a hung-up client. Sign-in
+  attempts are counted per address and per username before hashing. Optional
+  TOTP with replay protection; turning it on or off needs the password.
+- Every API error, including malformed requests, is JSON `{ "error": "…" }`.
 - Responses carry a strict Content-Security-Policy, `X-Frame-Options: DENY`,
   `no-referrer`, and `Cache-Control: no-store` for the API.
 

@@ -7,6 +7,7 @@ const labels: Record<string, string> = {
   "setup.completed": "Set up the server",
   login: "Signed in",
   "login.failed": "Failed sign-in",
+  "login.second_factor": "Asked for two-factor code",
   "account.password_changed": "Changed password",
   "account.password_reset": "Password reset on the server",
   "account.totp_enabled": "Turned on two-factor sign-in",

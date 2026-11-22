@@ -90,15 +90,84 @@ fn init_logging() {
         .init();
 }
 
-fn prepare_data_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).with_context(|| format!("cannot create {}", path.display()))?;
+/// Name of the lock file the running server holds in the data directory.
+const LOCK_FILE: &str = "lock";
+
+/// Checks the data directory and reports whether it is brand new (empty
+/// apart from the lock file). It is never created here: a missing directory
+/// (say, an unmounted volume) must not turn into a first run. systemd's
+/// `StateDirectory=` creates it for the packaged service.
+fn prepare_data_dir(path: &Path) -> Result<bool> {
+    let metadata = std::fs::metadata(path).with_context(|| {
+        format!(
+            "the data directory {} does not exist; create it (owned by the service user, mode 0700) or fix CENTRALD_DATA_DIR",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!("{} is not a directory", path.display());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .with_context(|| format!("cannot restrict {}", path.display()))?;
     }
-    Ok(())
+    let mut entries =
+        std::fs::read_dir(path).with_context(|| format!("cannot read {}", path.display()))?;
+    Ok(!entries.any(|entry| entry.is_ok_and(|e| e.file_name() != LOCK_FILE)))
+}
+
+/// Holds an exclusive lock on `<data_dir>/lock` for the life of the server,
+/// so a second instance stops before it touches any state.
+#[cfg(unix)]
+fn lock_data_dir(data_dir: &Path) -> Result<nix::fcntl::Flock<std::fs::File>> {
+    use nix::errno::Errno;
+    use nix::fcntl::{Flock, FlockArg};
+    let path = data_dir.join(LOCK_FILE);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    // `status` takes a brief shared lock; retry so it never blocks a start.
+    for _ in 0..30 {
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => return Ok(lock),
+            Err((returned, Errno::EWOULDBLOCK)) => {
+                file = returned;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err((_, errno)) => {
+                return Err(anyhow::Error::from(errno))
+                    .with_context(|| format!("cannot lock {}", path.display()));
+            }
+        }
+    }
+    bail!(
+        "another CentralD server is already running with {}; stop it first (sudo systemctl stop centrald-server)",
+        data_dir.display()
+    )
+}
+
+/// Whether a server holds the data-directory lock right now.
+#[cfg(unix)]
+fn server_running(data_dir: &Path) -> Option<bool> {
+    use nix::errno::Errno;
+    use nix::fcntl::{Flock, FlockArg};
+    let file = std::fs::File::open(data_dir.join(LOCK_FILE)).ok()?;
+    match Flock::lock(file, FlockArg::LockSharedNonblock) {
+        Ok(_) => Some(false),
+        Err((_, Errno::EWOULDBLOCK)) => Some(true),
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(unix))]
+fn server_running(_data_dir: &Path) -> Option<bool> {
+    None
 }
 
 /// Local tools run as root but must not create root-owned files the
@@ -127,7 +196,13 @@ fn become_data_owner(_data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Opens the database for a local tool. Never creates or migrates it, so
+/// it is safe next to a running server.
 fn open_existing_db(config: &ServerConfig) -> Result<Db> {
+    open_tool_db(config, db::OpenMode::Tool)
+}
+
+fn open_tool_db(config: &ServerConfig, mode: db::OpenMode) -> Result<Db> {
     let path = config.database_path();
     if !path.exists() {
         bail!(
@@ -136,7 +211,7 @@ fn open_existing_db(config: &ServerConfig) -> Result<Db> {
         );
     }
     become_data_owner(&config.data_dir)?;
-    Db::open(&path)
+    Db::open(&path, mode)
 }
 
 /// Web addresses for this host, most useful first.
@@ -163,8 +238,25 @@ fn web_urls(listen: std::net::SocketAddr) -> Vec<String> {
 
 fn run(config: ServerConfig) -> Result<()> {
     init_logging();
-    prepare_data_dir(&config.data_dir)?;
-    let db = Db::open(&config.database_path())?;
+    // Order matters: lock, then bind, then read or write any state, so a
+    // second instance fails before it can disturb the first.
+    let fresh = prepare_data_dir(&config.data_dir)?;
+    #[cfg(unix)]
+    let _lock = lock_data_dir(&config.data_dir)?;
+    let listener = net::bind(config.listen)?;
+
+    if fresh {
+        tracing::info!(data = %config.data_dir.display(), "empty data directory: creating a new certificate authority and database");
+    }
+    // A brand-new directory gets its CA first and its database last; any
+    // other directory must already hold both.
+    let tls = tls::TlsState::load_or_create(&config, fresh)?;
+    let mode = if fresh {
+        db::OpenMode::Create
+    } else {
+        db::OpenMode::Server
+    };
+    let db = Db::open(&config.database_path(), mode)?;
     hub::Hub::recover_on_start(&db)?;
 
     let setup_code = db.call_blocking(|c| {
@@ -181,13 +273,13 @@ fn run(config: ServerConfig) -> Result<()> {
         Ok(Some(code))
     })?;
 
-    let tls = tls::TlsState::load_or_create(&config)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("start runtime")?;
     runtime.block_on(async move {
-        let listener = net::TlsListener::bind(config.listen, tls.config.clone()).await?;
+        let (hash_permits, hash_queue) = AppState::new_hash_limits();
+        let tls_config = tls.config.clone();
         let state = Arc::new(AppState {
             hub: hub::Hub::new(db.clone()),
             builds: downloads::AgentBuilds::new(config.agent_dir.clone()),
@@ -196,7 +288,8 @@ fn run(config: ServerConfig) -> Result<()> {
             tls,
             login_limiter: auth::RateLimiter::default(),
             agent_limiter: auth::RateLimiter::default(),
-            hash_permits: tokio::sync::Semaphore::new(2),
+            hash_permits,
+            hash_queue,
         });
 
         tracing::info!(version = centrald_proto::VERSION, listen = %state.config.listen, "CentralD server started");
@@ -212,9 +305,8 @@ fn run(config: ServerConfig) -> Result<()> {
         );
 
         tokio::spawn(maintenance(state.clone()));
-        let app = api::router(state).into_make_service_with_connect_info::<net::ClientAddr>();
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
+        let app = api::router(state);
+        net::serve(listener, tls_config, app, shutdown_signal())
             .await
             .context("server stopped")?;
         tracing::info!("CentralD server stopped");
@@ -279,7 +371,9 @@ async fn maintenance(state: state::Shared) {
 }
 
 fn status(config: &ServerConfig) -> Result<()> {
-    let db = open_existing_db(config)?;
+    use std::fmt::Write as _;
+    let db = open_tool_db(config, db::OpenMode::ReadOnly)?;
+    let running = server_running(&config.data_dir);
     let (users, setup_code, devices, online_recent) = db.call_blocking(|c| {
         let users: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
         let code = db::get_setting(c, api::SETUP_CODE_KEY)?;
@@ -300,35 +394,66 @@ fn status(config: &ServerConfig) -> Result<()> {
             .map(|der| centrald_proto::format_fingerprint(&centrald_proto::sha256(der.as_ref())))
     });
 
-    println!("CentralD server {}", centrald_proto::VERSION);
-    println!();
-    println!("Open the web app at:");
-    for url in web_urls(config.listen) {
-        println!("  {url}");
+    let mut out = String::new();
+    writeln!(out, "CentralD server {}", centrald_proto::VERSION)?;
+    match running {
+        Some(true) => writeln!(out, "Server: running")?,
+        Some(false) => writeln!(out, "Server: not running")?,
+        None => {}
     }
-    println!();
+    out.push('\n');
+    writeln!(out, "Open the web app at:")?;
+    for url in web_urls(config.listen) {
+        writeln!(out, "  {url}")?;
+    }
+    out.push('\n');
     if users == 0 {
         match setup_code {
             Some(code) => {
-                println!("Setup code: {code}");
-                println!("Enter it in the web app to create the first account.");
+                writeln!(out, "Setup code: {code}")?;
+                writeln!(out, "Enter it in the web app to create the first account.")?;
             }
-            None => println!("Setup code: not created yet (start the server first)."),
+            None => writeln!(out, "Setup code: not created yet (start the server first).")?,
         }
     } else {
-        println!("Accounts: {users}");
+        writeln!(out, "Accounts: {users}")?;
     }
-    println!("Devices: {devices} enrolled, {online_recent} seen in the last two minutes");
+    writeln!(
+        out,
+        "Devices: {devices} enrolled, {online_recent} seen in the last two minutes"
+    )?;
     if let Some(fingerprint) = fingerprint {
-        println!();
-        println!("Certificate authority fingerprint (SHA-256):");
-        println!("  {fingerprint}");
-        println!("Your browser will warn about the certificate on first visit; compare");
-        println!("this fingerprint, or install the CA from Settings in the web app.");
+        out.push('\n');
+        writeln!(out, "Certificate authority fingerprint (SHA-256):")?;
+        writeln!(out, "  {fingerprint}")?;
+        writeln!(
+            out,
+            "Your browser will warn about the certificate on first visit; compare"
+        )?;
+        writeln!(
+            out,
+            "this fingerprint, or install the CA from Settings in the web app."
+        )?;
     }
-    println!();
-    println!("Data: {}", config.data_dir.display());
-    Ok(())
+    out.push('\n');
+    writeln!(out, "Data: {}", config.data_dir.display())?;
+    print_all(&out)
+}
+
+/// Prints to stdout; a reader that went away (`status | head -1`) is not
+/// an error.
+fn print_all(text: &str) -> Result<()> {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(error).context("write status")
+        }
+        _ => Ok(()),
+    }
 }
 
 fn reset_password(config: &ServerConfig, username: &str, from_stdin: bool) -> Result<()> {

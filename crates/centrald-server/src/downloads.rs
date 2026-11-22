@@ -78,11 +78,11 @@ impl AgentBuilds {
         {
             return Some(hit.clone());
         }
-        let bytes = std::fs::read(path).ok()?;
+        let sha256 = hash_file(path)?;
         let build = AgentBuild {
             os,
             arch,
-            sha256: hex::encode(centrald_proto::sha256(&bytes)),
+            sha256,
             size,
             path: path.to_owned(),
             modified,
@@ -91,6 +91,39 @@ impl AgentBuilds {
         cache.push(build.clone());
         Some(build)
     }
+}
+
+/// SHA-256 of a file, read in chunks rather than all at once.
+fn hash_file(path: &Path) -> Option<String> {
+    use sha2::Digest;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher).ok()?;
+    Some(hex::encode(hasher.finalize()))
+}
+
+/// Streams a file as the response body, so a download costs a small buffer
+/// instead of the whole binary in memory.
+pub async fn stream_file(path: &Path) -> anyhow::Result<(u64, axum::body::Body)> {
+    use anyhow::Context;
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("open {}", path.display()))?;
+    let length = file.metadata().await?.len();
+    let chunks = futures_util::stream::unfold(Some(file), |file| async move {
+        let mut file = file?;
+        let mut chunk = vec![0_u8; 64 * 1024];
+        match file.read(&mut chunk).await {
+            Ok(0) => None,
+            Ok(count) => {
+                chunk.truncate(count);
+                Some((Ok(axum::body::Bytes::from(chunk)), Some(file)))
+            }
+            Err(error) => Some((Err(error), None)),
+        }
+    });
+    Ok((length, axum::body::Body::from_stream(chunks)))
 }
 
 const INSTALL_SH: &str = include_str!("../assets/install.sh");
@@ -130,7 +163,7 @@ pub fn install_commands(
         ("", "")
     };
     let linux = format!(
-        "curl -fsSk --pinnedpubkey '{pin}' https://{server}/install.sh | CENTRALD_JOIN='{code}'{sh_flag} sh"
+        "curl -fsSk --pinnedpubkey '{pin}' 'https://{server}/install.sh' | CENTRALD_JOIN='{code}'{sh_flag} sh"
     );
     let windows = format!(
         "$env:CENTRALD_JOIN='{code}'; {ps_flag}[Net.ServicePointManager]::SecurityProtocol='Tls12'; \

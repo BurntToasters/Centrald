@@ -31,8 +31,9 @@ Every setting is optional. Edit `/etc/centrald/server.toml`, then
 # Address and port of the web app and agent connections.
 listen = "0.0.0.0:7443"
 
-# Extra DNS names or IPs for the server certificate. The machine's hostname
-# and LAN addresses are always included.
+# Extra DNS names or IPs for the server certificate, and the names the
+# server answers to. The machine's hostname (also with .local), localhost,
+# and its addresses are always included.
 hostnames = ["nas.home.arpa", "100.64.0.10"]
 
 # Your own certificate for browsers (readable by the centrald user).
@@ -59,6 +60,25 @@ Environment=CENTRALD_LOG=debug
 
 Keep the port between 1024 and 65535; the service has no privilege to bind lower
 ports. Plain `http://` requests to the port are redirected to `https://`.
+
+The server answers only to names it knows: `localhost`, the machine's hostname
+(and `hostname.local`), the names in `hostnames`, and names your own certificate
+covers. Any IP address works. A request for another name gets
+`421 Misdirected Request`, which blocks DNS rebinding attacks. If you reach the
+server by a DNS name that is not listed, add it to `hostnames`.
+
+### Limits
+
+- At most 900 open connections in total and 128 from one address (an IPv6
+  address counts by its /64). Extra connections are closed at once.
+- An HTTP/1.1 connection must send its request headers within 20 seconds and is
+  closed after 20 seconds idle; an HTTP/2 connection is closed after 2 minutes
+  with no request in progress.
+- At most two password checks run at once and 32 may wait; beyond that, sign-in
+  answers `503` and asks to try again.
+- Sign-in failures are counted before the password is checked, so parallel
+  guesses get no extra tries. Lockouts are kept in memory only: a restart (which
+  needs root on the server) clears them.
 
 ## Network and firewall
 
@@ -193,11 +213,39 @@ The packages work on systems without systemd (for example inside a container),
 but nothing starts automatically:
 
 - Server: run `centrald-server run` as the `centrald` user with
-  `/var/lib/centrald` owned by that user. Started as root, it switches to the
-  data directory's owner by itself.
+  `/var/lib/centrald` owned by that user (mode 0700). The server never creates
+  its data directory: create it once with
+  `sudo install -d -m 0700 -o centrald -g centrald /var/lib/centrald` (the
+  package does this when it finds no systemd). The `status` and `reset-password`
+  commands, started as root, switch to the data directory's owner by themselves.
 - Agent: run `centrald-agent run` as root from your init system.
 
 ## Troubleshooting
+
+**The server refuses to start**
+
+The server never replaces its CA, keys, or database on its own, because a new CA
+would make every agent refuse it. It creates them only when its data directory
+exists and is empty. Otherwise it stops and names the problem:
+
+- "the data directory … does not exist": the directory is missing, for example
+  an unmounted disk. Mount it or fix `data_dir`. It is never treated as a fresh
+  install.
+- "… ca.crt is missing", "ca.key is missing", "server.key is missing", "… does
+  not belong to …", or "the database … is missing / empty / damaged": restore
+  `/var/lib/centrald` from backup. To start over on purpose, see
+  [Starting over](#starting-over).
+- "server.key does not match the certificate": restore `server.key`, or delete
+  `server.crt` and `server.json` so the server issues a new certificate for its
+  key. Install commands copied earlier then fail their key pin; create new ones.
+- "another CentralD server is already running": only one server may use a data
+  directory. It holds a lock on `/var/lib/centrald/lock`, and a second
+  `centrald-server run` stops before touching anything. `centrald-server status`
+  shows `Server: running` or `Server: not running`.
+
+`centrald-server status` and `reset-password` are safe to run while the server
+runs: they never create or upgrade the database. After a package upgrade,
+restart the server before using them if they report a schema mismatch.
 
 **Logs**
 

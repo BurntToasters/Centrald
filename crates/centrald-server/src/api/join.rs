@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use centrald_proto::join::{JoinCode, validate_server_address};
@@ -255,9 +255,7 @@ pub async fn agent_binary(
     if checksum {
         return Ok(text("text/plain; charset=utf-8", build.sha256));
     }
-    let bytes = tokio::fs::read(&build.path)
-        .await
-        .map_err(|e| anyhow::anyhow!("read {}: {e}", build.path.display()))?;
+    let (length, body) = downloads::stream_file(&build.path).await?;
     let disposition = format!(
         "attachment; filename=\"{}\"",
         if os == "windows" {
@@ -271,8 +269,9 @@ pub async fn agent_binary(
             (CONTENT_TYPE, "application/octet-stream".to_owned()),
             (CONTENT_DISPOSITION, disposition),
             (CACHE_CONTROL, "no-store".to_owned()),
+            (CONTENT_LENGTH, length.to_string()),
         ],
-        bytes,
+        body,
     )
         .into_response())
 }

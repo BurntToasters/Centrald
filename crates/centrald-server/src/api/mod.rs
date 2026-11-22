@@ -10,12 +10,12 @@ mod runs;
 pub use account::SETUP_CODE_KEY;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
-    X_FRAME_OPTIONS,
+    ALLOW, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, REFERRER_POLICY,
+    RETRY_AFTER, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
-use axum::http::{HeaderName, HeaderValue};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -80,6 +80,7 @@ pub fn router(state: Shared) -> Router {
         .merge(browser)
         .nest("/agent", agents)
         .fallback(|| async { ApiError::not_found("No such API endpoint.") })
+        .layer(middleware::from_fn(json_errors))
         .layer(middleware::from_fn(no_store));
 
     Router::new()
@@ -89,8 +90,68 @@ pub fn router(state: Shared) -> Router {
         .route("/download/agent/{os}/{arch}", get(join::agent_binary))
         .fallback(crate::ui::serve)
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// Answers 421 to a `Host` or `:authority` that does not name this server,
+/// which defeats DNS rebinding. Agent paths are exempt: agents pin the CA
+/// and dial whatever address their join code holds.
+async fn host_guard(State(state): State<Shared>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let exempt = path.starts_with("/api/agent/") || path.starts_with("/download/agent/");
+    let header = request
+        .headers()
+        .get(HOST)
+        .map(|v| v.to_str().ok().is_some_and(|h| state.tls.allows_host(h)));
+    let authority = request
+        .uri()
+        .authority()
+        .map(|a| state.tls.allows_host(a.as_str()));
+    if exempt || (header != Some(false) && authority != Some(false)) {
+        return next.run(request).await;
+    }
+    ApiError::new(
+        StatusCode::MISDIRECTED_REQUEST,
+        "This server does not answer to that name. Use its IP address, or add the name to CENTRALD_HOSTNAMES on the server.",
+    )
+    .into_response()
+}
+
+/// Gives every API error a JSON body, including axum's own rejections
+/// (bad JSON, wrong method), which are plain text by default.
+async fn json_errors(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let status = response.status();
+    let is_json = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if !(status.is_client_error() || status.is_server_error()) || is_json {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let text = axum::body::to_bytes(body, 4096)
+        .await
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+        .unwrap_or_default();
+    let message = if text.is_empty() {
+        status
+            .canonical_reason()
+            .unwrap_or("Request failed")
+            .to_owned()
+    } else {
+        text
+    };
+    let mut fixed = ApiError::new(status, message).into_response();
+    for name in [ALLOW, RETRY_AFTER] {
+        if let Some(value) = parts.headers.get(&name) {
+            fixed.headers_mut().insert(name, value.clone());
+        }
+    }
+    fixed
 }
 
 async fn no_store(request: Request, next: Next) -> Response {

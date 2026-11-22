@@ -13,6 +13,9 @@ configure)
 				--shell /usr/sbin/nologin centrald
 	fi
 	has_systemd || {
+		# The server never creates its data directory; systemd's
+		# StateDirectory does that when systemd is present.
+		install -d -m 0700 -o centrald -g centrald /var/lib/centrald
 		echo "CentralD: no systemd; start 'centrald-server run' as the centrald user."
 		exit 0
 	}

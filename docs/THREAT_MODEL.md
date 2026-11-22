@@ -32,7 +32,16 @@ it protects, against whom, and where its limits are.
   besides the sign-in page, the installer scripts, and agent downloads (which
   are public builds).
 - Sign-in and first-run setup back off after five failures per address and per
-  username, up to 15 minutes. Unknown usernames take as long as known ones.
+  username, up to 15 minutes. Each attempt is counted before its password is
+  checked, so parallel guesses gain nothing, and a client that hangs up still
+  leaves its audit record. Unknown usernames take as long as known ones. IPv6
+  addresses are grouped by /64, and the failure table has a fixed size.
+- Unauthenticated load is bounded: at most two password hashes run at once (32
+  may queue), connections are capped per address and in total, idle connections
+  are closed, and agent downloads stream from disk.
+- The server answers only to its own names and IP addresses (`421` otherwise),
+  so a DNS rebinding page cannot read it or fetch an installer with its own name
+  inside.
 - First-run setup needs a setup code printed only on the server, so the first
   account cannot be claimed by whoever finds the page first.
 - Join codes are single-use, expire within 7 days, can be revoked, and are
@@ -49,7 +58,10 @@ it protects, against whom, and where its limits are.
 ### A stolen operator password
 
 - Two-factor sign-in (TOTP) stops password-only attacks. Codes cannot be
-  replayed.
+  replayed, even by two sign-ins racing with the same code. Turning two-factor
+  sign-in on or off needs the current password, so a borrowed session cannot
+  lock the owner out.
+- A right password with a missing or wrong code is recorded in **Activity**.
 - Changing a password ends that operator's other sessions; removing an operator
   ends all of theirs, including open terminals within 30 seconds.
 - **Activity** records sign-ins, failures, commands, terminals, and device
@@ -67,6 +79,9 @@ the core trade-off of a remote management tool. Mitigations:
   usable form (token hashes only), and does not keep terminal transcripts.
 - Keep the server on a trusted, patched machine, and back up its data directory
   securely (it contains the CA key).
+- A missing or mismatched CA, key, or database stops the server with a clear
+  message; it never silently mints a new CA or starts as a fresh install. A lock
+  on the data directory keeps a second server from touching its state.
 
 ### A compromised managed machine
 
@@ -85,6 +100,8 @@ the core trade-off of a remote management tool. Mitigations:
 - **Not for the public Internet.** CentralD is built for a LAN or VPN. Put a VPN
   in front of it rather than forwarding its port.
 - **All operators are equal.** There are no roles or per-device permissions yet.
+- **Lockouts are in memory.** Restarting the server (root on the server) clears
+  sign-in lockouts.
 - **No HSTS.** Browsers would refuse to let you past the warning for the
   built-in CA. Install the CA or use your own certificate instead.
 - **Command output is stored** (up to 1 MiB per device per run, 90 days). Do not

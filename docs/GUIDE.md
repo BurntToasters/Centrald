@@ -116,7 +116,7 @@ password and two-factor sign-in.
 
 - **Two-factor sign-in**: **Settings > Set up two-factor sign-in**. Scan the QR
   code with an authenticator app (Aegis, 2FAS, Google Authenticator, 1Password,
-  and others) and enter the code it shows.
+  and others), then enter the code it shows and your current password.
 - **Changing your password** signs you out everywhere else.
 - After five wrong passwords, sign-in pauses for 30 seconds, then for longer
   each time.

@@ -154,7 +154,11 @@ pub struct LoginRequest {
     totp_code: Option<String>,
 }
 
-#[allow(clippy::too_many_lines)] // One linear sign-in flow reads best in one place.
+/// Signs an operator in.
+///
+/// Both limiter keys count this attempt before any hashing, so parallel
+/// guesses cannot all be verified. The rest runs on its own task: a client
+/// that hangs up mid-hash still leaves its audit row and limiter count.
 pub async fn login(
     State(state): State<Shared>,
     Peer(address): Peer,
@@ -169,18 +173,143 @@ pub async fn login(
     let user_key = format!("user:{}", username.to_ascii_lowercase());
     state
         .login_limiter
-        .check(&address_key)
-        .and_then(|()| state.login_limiter.check(&user_key))
+        .attempt(&address_key)
+        .and_then(|()| state.login_limiter.attempt(&user_key))
         .map_err(ApiError::too_many)?;
+    let attempt = LoginAttempt {
+        username,
+        password: body.password,
+        totp_code: body.totp_code,
+        address,
+        address_key,
+        user_key,
+    };
+    let cookie = tokio::spawn(finish_login(state, attempt, headers))
+        .await
+        .map_err(anyhow::Error::from)??;
+    Ok(([(SET_COOKIE, cookie)], Json(json!({ "ok": true }))))
+}
 
-    let lookup = username.clone();
+struct LoginAttempt {
+    username: String,
+    password: String,
+    totp_code: Option<String>,
+    address: String,
+    address_key: String,
+    user_key: String,
+}
+
+async fn login_audit(
+    state: &Shared,
+    actor: &str,
+    action: &'static str,
+    detail: &'static str,
+    address: &str,
+) -> ApiResult<()> {
+    let (actor, address) = (actor.to_owned(), address.to_owned());
+    state
+        .db
+        .call(move |c| db::audit(c, &actor, action, &actor, detail, &address))
+        .await?;
+    Ok(())
+}
+
+struct SecondFactor<'a> {
+    user_id: &'a str,
+    canonical: &'a str,
+    secret: String,
+    last_step: i64,
+    address: &'a str,
+}
+
+/// Checks the two-factor code after a correct password and audits the
+/// outcome either way.
+async fn second_factor(
+    state: &Shared,
+    factor: SecondFactor<'_>,
+    code: Option<String>,
+) -> ApiResult<()> {
+    let SecondFactor {
+        user_id,
+        canonical,
+        secret,
+        last_step,
+        address,
+    } = factor;
+    let Some(code) = code.filter(|c| !c.trim().is_empty()) else {
+        login_audit(
+            state,
+            canonical,
+            "login.second_factor",
+            "right password; asked for the two-factor code",
+            address,
+        )
+        .await?;
+        return Err(
+            ApiError::unauthorized("Enter the 6-digit code from your authenticator app.")
+                .with("totpRequired", json!(true)),
+        );
+    };
+    let bad_code = || {
+        ApiError::unauthorized("That code is not right. Codes change every 30 seconds.")
+            .with("totpRequired", json!(true))
+    };
+    let Some(step) = auth::verify_totp(&secret, &code, last_step) else {
+        login_audit(
+            state,
+            canonical,
+            "login.failed",
+            "right password, wrong two-factor code",
+            address,
+        )
+        .await?;
+        return Err(bad_code());
+    };
+    // Only one sign-in may consume a given code, even when two race.
+    let id = user_id.to_owned();
+    let claimed = state
+        .db
+        .call(move |c| {
+            Ok(c.execute(
+                "UPDATE users SET totp_last_step = ?2 WHERE id = ?1 AND totp_last_step < ?2",
+                rusqlite::params![id, step],
+            )? == 1)
+        })
+        .await?;
+    if !claimed {
+        login_audit(
+            state,
+            canonical,
+            "login.failed",
+            "right password, reused two-factor code",
+            address,
+        )
+        .await?;
+        return Err(bad_code());
+    }
+    Ok(())
+}
+
+async fn finish_login(
+    state: Shared,
+    attempt: LoginAttempt,
+    headers: HeaderMap,
+) -> ApiResult<axum::http::HeaderValue> {
+    let LoginAttempt {
+        username,
+        password,
+        totp_code,
+        address,
+        address_key,
+        user_key,
+    } = attempt;
     let user = state
         .db
         .call(move |c| {
             Ok(c.query_row(
                 "SELECT id, username, password_hash, totp_secret, totp_enabled, totp_last_step
                  FROM users WHERE username = ?1",
-                [lookup],
+                [username],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
@@ -196,79 +325,45 @@ pub async fn login(
         })
         .await?;
 
-    let hash = user
-        .as_ref()
-        .map_or_else(|| auth::dummy_hash().to_owned(), |u| u.2.clone());
-    let password = body.password;
+    // Unknown users cost the same Argon2 work as real ones.
+    let hash = user.as_ref().map(|u| u.2.clone());
     let password_ok = state
-        .hashing(move || auth::verify_password(&password, &hash))
+        .hashing(move || match &hash {
+            Some(hash) => auth::verify_password(&password, hash),
+            None => auth::verify_password(&password, auth::dummy_hash()),
+        })
         .await?;
-    let fail = |state: &Shared| {
-        state.login_limiter.record_failure(&address_key);
-        state.login_limiter.record_failure(&user_key);
-        ApiError::unauthorized("Wrong username or password.")
-    };
+    let wrong = || ApiError::unauthorized("Wrong username or password.");
     let Some((user_id, canonical, _, totp_secret, totp_enabled, last_step)) = user else {
-        return Err(fail(&state));
+        return Err(wrong());
     };
     if !password_ok {
-        let actor = canonical.clone();
-        let audit_address = address.clone();
-        state
-            .db
-            .call(move |c| {
-                db::audit(
-                    c,
-                    &actor,
-                    "login.failed",
-                    &actor,
-                    "wrong password",
-                    &audit_address,
-                )
-            })
-            .await?;
-        return Err(fail(&state));
+        login_audit(
+            &state,
+            &canonical,
+            "login.failed",
+            "wrong password",
+            &address,
+        )
+        .await?;
+        return Err(wrong());
     }
 
     if totp_enabled {
-        let secret = totp_secret.unwrap_or_default();
-        let Some(code) = body.totp_code.filter(|c| !c.trim().is_empty()) else {
-            return Err(ApiError::unauthorized(
-                "Enter the 6-digit code from your authenticator app.",
-            )
-            .with("totpRequired", json!(true)));
+        let factor = SecondFactor {
+            user_id: &user_id,
+            canonical: &canonical,
+            secret: totp_secret.unwrap_or_default(),
+            last_step,
+            address: &address,
         };
-        let Some(step) = auth::verify_totp(&secret, &code, last_step) else {
-            state.login_limiter.record_failure(&address_key);
-            state.login_limiter.record_failure(&user_key);
-            return Err(ApiError::unauthorized(
-                "That code is not right. Codes change every 30 seconds.",
-            )
-            .with("totpRequired", json!(true)));
-        };
-        let id = user_id.clone();
-        state
-            .db
-            .call(move |c| {
-                c.execute(
-                    "UPDATE users SET totp_last_step = ?2 WHERE id = ?1",
-                    rusqlite::params![id, step],
-                )?;
-                Ok(())
-            })
-            .await?;
+        second_factor(&state, factor, totp_code).await?;
     }
 
     state.login_limiter.record_success(&address_key);
     state.login_limiter.record_success(&user_key);
-    let actor = canonical.clone();
-    let audit_address = address.clone();
-    state
-        .db
-        .call(move |c| db::audit(c, &actor, "login", &actor, "", &audit_address))
-        .await?;
-    let cookie = session::start_session(&state, user_id, &headers, address).await?;
-    Ok(([(SET_COOKIE, cookie)], Json(json!({ "ok": true }))))
+    login_audit(&state, &canonical, "login", "", &address).await?;
+    session::start_session(&state, user_id, &headers, address).await
 }
 
 pub async fn logout(
@@ -297,10 +392,14 @@ pub struct PasswordRequest {
 
 async fn check_password(state: &Shared, user: &CurrentUser, password: String) -> ApiResult<()> {
     let key = format!("user:{}", user.username.to_ascii_lowercase());
+    // Counted before hashing, like sign-in.
     state
         .login_limiter
-        .check(&key)
+        .attempt(&key)
         .map_err(ApiError::too_many)?;
+    if password.len() > auth::MAX_PASSWORD_BYTES {
+        return Err(ApiError::forbidden("Your current password is not right."));
+    }
     let id = user.id.clone();
     let hash: String = state
         .db
@@ -312,14 +411,13 @@ async fn check_password(state: &Shared, user: &CurrentUser, password: String) ->
             )
         })
         .await?;
-    if password.len() > auth::MAX_PASSWORD_BYTES
-        || !state
-            .hashing(move || auth::verify_password(&password, &hash))
-            .await?
+    if !state
+        .hashing(move || auth::verify_password(&password, &hash))
+        .await?
     {
-        state.login_limiter.record_failure(&key);
         return Err(ApiError::forbidden("Your current password is not right."));
     }
+    state.login_limiter.record_success(&key);
     Ok(())
 }
 
@@ -419,6 +517,9 @@ pub async fn totp_setup(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TotpEnableRequest {
     code: String,
+    /// Current password: a borrowed session alone must not be able to lock
+    /// the owner out with a second factor.
+    password: String,
 }
 
 pub async fn totp_enable(
@@ -426,6 +527,7 @@ pub async fn totp_enable(
     user: CurrentUser,
     Json(body): Json<TotpEnableRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    check_password(&state, &user, body.password).await?;
     let id = user.id.clone();
     let secret: Option<String> = state
         .db

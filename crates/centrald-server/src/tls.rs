@@ -76,32 +76,51 @@ impl ResolvesServerCert for Resolver {
 }
 
 impl TlsState {
-    /// Loads existing material or creates the CA and leaf on first start.
-    pub fn load_or_create(config: &ServerConfig) -> Result<Self> {
+    /// Loads the CA and server key, creating them only when `fresh` (a
+    /// brand-new data directory). An existing install with a missing or
+    /// mismatched file refuses to start instead of minting a new CA.
+    pub fn load_or_create(config: &ServerConfig, fresh: bool) -> Result<Self> {
         let directory = config.tls_dir();
-        create_private_dir(&directory)?;
-
         let ca_cert_path = directory.join("ca.crt");
         let ca_key_path = directory.join("ca.key");
-        if !ca_cert_path.exists() || !ca_key_path.exists() {
-            if ca_cert_path.exists() != ca_key_path.exists() {
-                bail!(
-                    "{} holds only half of the certificate authority; restore both ca.crt and ca.key from backup",
-                    directory.display()
-                );
-            }
+        let leaf_key_path = directory.join("server.key");
+        if fresh {
+            create_private_dir(&directory)?;
             create_authority(&ca_cert_path, &ca_key_path)?;
+            let key = KeyPair::generate().context("generate server key")?;
+            write_private(&leaf_key_path, key.serialize_pem().as_bytes())?;
+        } else {
+            for path in [&ca_cert_path, &ca_key_path, &leaf_key_path] {
+                if !path.is_file() {
+                    bail!(
+                        "{} is missing, so devices could no longer trust this server; restore it from backup (CentralD never replaces its certificate authority on its own)",
+                        path.display()
+                    );
+                }
+            }
         }
         let ca_pem = std::fs::read_to_string(&ca_cert_path)
             .with_context(|| format!("cannot read {}", ca_cert_path.display()))?;
-        let ca_der = CertificateDer::from_pem_slice(ca_pem.as_bytes())
-            .map_err(|error| anyhow!("invalid CA certificate: {error}"))?;
+        let ca_der = CertificateDer::from_pem_slice(ca_pem.as_bytes()).map_err(|error| {
+            anyhow!(
+                "invalid CA certificate in {}: {error}",
+                ca_cert_path.display()
+            )
+        })?;
         let ca_fingerprint = sha256(ca_der.as_ref());
-
-        let leaf_key_path = directory.join("server.key");
-        if !leaf_key_path.exists() {
-            let key = KeyPair::generate().context("generate server key")?;
-            write_private(&leaf_key_path, key.serialize_pem().as_bytes())?;
+        let ca_key = PrivateKeyDer::from_pem_file(&ca_key_path)
+            .map_err(|error| anyhow!("invalid CA key in {}: {error}", ca_key_path.display()))?;
+        let ca_signer = any_supported_type(&ca_key)
+            .with_context(|| format!("unsupported CA key in {}", ca_key_path.display()))?;
+        if CertifiedKey::new(vec![ca_der.clone()], ca_signer)
+            .keys_match()
+            .is_err()
+        {
+            bail!(
+                "{} does not belong to {}; restore the matching pair from backup",
+                ca_key_path.display(),
+                ca_cert_path.display()
+            );
         }
         load_key(&leaf_key_path)?;
 
@@ -113,6 +132,13 @@ impl TlsState {
         let extra_names = config.hostnames.clone();
         ensure_leaf(&directory, &extra_names)?;
         let internal = load_internal(&directory, &ca_der)?;
+        if internal.keys_match().is_err() {
+            bail!(
+                "{} does not match the certificate in {}; restore server.key from backup, or delete server.crt and server.json to issue a new certificate for this key (install commands then pin the new key)",
+                leaf_key_path.display(),
+                directory.join("server.crt").display()
+            );
+        }
         let resolver = Arc::new(Resolver {
             internal: RwLock::new(Arc::new(internal)),
             custom,
@@ -208,6 +234,64 @@ impl TlsState {
     pub fn has_custom_certificate(&self) -> bool {
         self.resolver.custom.is_some()
     }
+
+    /// Whether a `Host` (or `:authority`) value names this server.
+    ///
+    /// IP literals always pass: DNS rebinding needs a name. Names must be
+    /// `localhost`, the agent name, this host's name (also with `.local`),
+    /// a configured hostname, or a name the custom certificate covers.
+    pub fn allows_host(&self, host: &str) -> bool {
+        let Some(name) = host_name_part(host) else {
+            return false;
+        };
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        if name.parse::<IpAddr>().is_ok() {
+            return true;
+        }
+        if name == "localhost"
+            || name == AGENT_TLS_NAME
+            || self.extra_names.iter().any(|extra| {
+                extra
+                    .trim()
+                    .trim_end_matches('.')
+                    .eq_ignore_ascii_case(&name)
+            })
+        {
+            return true;
+        }
+        if let Some(local) = sysinfo::System::host_name().map(|h| h.to_ascii_lowercase())
+            && (name == local || name.strip_suffix(".local") == Some(local.as_str()))
+        {
+            return true;
+        }
+        self.resolver.custom.as_ref().is_some_and(|custom| {
+            let Ok(server_name) = rustls::pki_types::ServerName::try_from(name.as_str()) else {
+                return false;
+            };
+            custom.end_entity_cert().is_ok_and(|leaf| {
+                webpki::EndEntityCert::try_from(leaf)
+                    .is_ok_and(|cert| cert.verify_is_valid_for_subject_name(&server_name).is_ok())
+            })
+        })
+    }
+}
+
+/// The host part of `host`, `host:port`, `[v6]` or `[v6]:port`.
+fn host_name_part(value: &str) -> Option<&str> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let (inside, after) = rest.split_once(']')?;
+        let port_ok = after.is_empty()
+            || after
+                .strip_prefix(':')
+                .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        return (port_ok && inside.parse::<std::net::Ipv6Addr>().is_ok()).then_some(inside);
+    }
+    let name = match value.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        Some(_) => return None,
+        None => value,
+    };
+    (!name.is_empty() && !name.contains(':')).then_some(name)
 }
 
 fn create_authority(cert_path: &Path, key_path: &Path) -> Result<()> {
@@ -341,7 +425,15 @@ fn load_custom(cert_path: &Path, key_path: &Path) -> Result<CertifiedKey> {
         .map_err(|error| anyhow!("cannot read {}: {error}", key_path.display()))?;
     let signing_key = any_supported_type(&key)
         .with_context(|| format!("unsupported private key in {}", key_path.display()))?;
-    Ok(CertifiedKey::new(chain, signing_key))
+    let certified = CertifiedKey::new(chain, signing_key);
+    if certified.keys_match().is_err() {
+        bail!(
+            "{} does not belong to the certificate in {}",
+            key_path.display(),
+            cert_path.display()
+        );
+    }
+    Ok(certified)
 }
 
 fn load_key(path: &Path) -> Result<KeyPair> {

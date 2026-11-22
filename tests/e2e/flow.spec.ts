@@ -227,6 +227,7 @@ test("two-factor sign-in can be turned on and is enforced", async () => {
     (await page.getByLabel("Two-factor secret").textContent()) ?? "";
   expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
   await page.getByLabel(/^Code from the app/).fill(totp(secret));
+  await page.getByLabel(/^Your current password/).fill(ADMIN.password);
   await page.getByRole("button", { name: "Turn on" }).click();
   await expect(page.getByText("Signing in asks for a code")).toBeVisible();
   await shot("settings");

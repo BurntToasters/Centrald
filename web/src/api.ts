@@ -231,7 +231,8 @@ export const api = {
   changePassword: (currentPassword: string, newPassword: string) =>
     post("/account/password", { currentPassword, newPassword }),
   totpSetup: () => post<TotpSetup>("/account/totp/setup"),
-  totpEnable: (code: string) => post("/account/totp/enable", { code }),
+  totpEnable: (code: string, password: string) =>
+    post("/account/totp/enable", { code, password }),
   totpDisable: (password: string) =>
     post("/account/totp/disable", { password }),
 

@@ -138,9 +138,10 @@ function TwoFactorCard({
             setBusy(true);
             setError("");
             try {
-              await api.totpEnable(code);
+              await api.totpEnable(code, password);
               setSetup(null);
               setCode("");
+              setPassword("");
               onChange();
             } catch (e) {
               setError(errorText(e));
@@ -174,12 +175,27 @@ function TwoFactorCard({
               required
             />
           </Field>
+          <Field label="Your current password">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </Field>
           {error && <Notice tone="bad">{error}</Notice>}
           <div className="row">
             <Button type="submit" variant="primary" busy={busy}>
               Turn on
             </Button>
-            <Button variant="ghost" onClick={() => setSetup(null)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSetup(null);
+                setPassword("");
+              }}
+            >
               Cancel
             </Button>
           </div>

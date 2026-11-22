@@ -103,32 +103,65 @@ and a full-debug agent (~107 MB) breaks the E2E update test.
 ## Server map (`crates/centrald-server/src/`)
 
 - `main.rs` — CLI: `run` (default), `status`, `reset-password <user>
-  [--password-stdin]`. Global `--config`.
+  [--password-stdin]`. Global `--config`. `run` order is fixed: check data
+  dir (never created; missing = refuse) -> exclusive flock on
+  `<data_dir>/lock` (refuse "already running") -> bind -> TLS -> DB ->
+  `Hub::recover_on_start`. Data dir empty (ignoring `lock`) = first run;
+  anything else must already hold `centrald.db`, `tls/ca.{crt,key}`,
+  `tls/server.key` or the server refuses. `status` opens the DB read-only,
+  prints `Server: running|not running` (brief shared flock), and ignores
+  EPIPE (`status | head` must exit 0).
 - `config.rs` — `/etc/centrald/server.toml` (optional) plus env overrides:
   `CENTRALD_LISTEN`, `CENTRALD_DATA_DIR`, `CENTRALD_HOSTNAMES`,
   `CENTRALD_TLS_CERT` + `CENTRALD_TLS_KEY` (together),
   `CENTRALD_AGENT_DIR`. Port 0 is refused.
-- `net.rs` — TLS listener; sniffs first byte, 301s plain HTTP; bounded
-  handshakes. Serves HTTP/1.1 and HTTP/2.
+- `net.rs` — own accept/serve loop (not `axum::serve`): sniffs first byte,
+  301s plain HTTP, bounded handshakes, ALPN picks hyper http2 (extended
+  CONNECT on, pings) or http1 (`header_read_timeout` 20 s, upgrades). Caps
+  900 connections total and 128 per source (IPv6 /64); slots live with the
+  socket, also after a WebSocket upgrade. Idle (no request in flight) 120 s
+  -> graceful close. Inserts `ConnectInfo<ClientAddr>` per request.
 - `tls.rs` — private CA (P-256, 20 years) and 397-day leaf, renewed 30 days
   before expiry or when addresses change, same key. Agents use SNI
-  `centrald-server.internal` and always get the internal chain.
+  `centrald-server.internal` and always get the internal chain. Creates the
+  CA and server key only when `fresh`; checks `ca.key`/`ca.crt`,
+  `server.key`/`server.crt` and custom key/cert pairs with `keys_match`.
+  `allows_host` is the Host allow-list (any IP literal, `localhost`, agent
+  name, hostname and `hostname.local`, `CENTRALD_HOSTNAMES`, names the
+  custom cert covers via `rustls-webpki`).
 - `db.rs` — SQLite WAL, `foreign_keys=ON`, strict tables, forward-only
-  in-code migrations. Blocking work off async workers.
+  in-code migrations. Blocking work off async workers. `OpenMode`: `Create`
+  (first run only), `Server` (must exist, non-empty, schema >= 1,
+  `quick_check`, migrates), `Tool`/`ReadOnly` (CLI; never create or
+  migrate, refuse a schema mismatch).
 - `auth.rs`, `session.rs` — Argon2id (max 2 concurrent), `__Host-centrald`
   cookie (`Secure`, `HttpOnly`, `SameSite=Strict`), Origin check on every
   write and WebSocket upgrade, TOTP with replay guard, rate limiter (5 free
-  failures, then 30 s doubling to 15 min).
+  failures, then 30 s doubling to 15 min). Use `RateLimiter::attempt` (check
+  and count in one step) BEFORE hashing, then `record_success`; keys
+  `kind:<ip>` group IPv6 by /64; map capped at 4096 with eviction.
+  Lockouts are in memory by design. Session cookie: every
+  `__Host-centrald` value is tried (`session_cookies`).
+- `state.rs` — `AppState::hashing` runs Argon2 on a spawned task that holds
+  its permits until the hash ends (2 running, 32 running+queued, else 503).
+  Login (`api/account.rs`) runs on a spawned task so audit + limiter are
+  recorded even if the client hangs up. TOTP enable/disable need the
+  current password.
 - `hub.rs` — in-memory live state: agents, runs, terminals, browser event
   broadcast.
 - `api/` — `account`, `devices`, `join`, `runs`, `agent`, `misc`. WebSocket
   routes are registered with `.get(...).connect(...)`; Chromium uses HTTP/2
-  extended CONNECT, so dropping `.connect()` gives 405.
+  extended CONNECT, so dropping `.connect()` gives 405. `api/mod.rs`
+  `host_guard` answers 421 to unknown Host/`:authority` (exempt:
+  `/api/agent/`, `/download/agent/`); `json_errors` turns non-JSON API
+  errors (axum rejections, 405) into `{ "error" }`.
 - `downloads.rs` — `/install.sh`, `/install.ps1`, `/download/agent/{os}/
   {arch}` and `.sha256`. Builds the copy-paste install commands from the
-  address the operator typed.
+  address the operator typed (URL single-quoted for IPv6/zsh). Downloads
+  stream from disk (`stream_file`); never buffer whole binaries.
 - `ui.rs` — rust-embed of `web/dist`. `CENTRALD_REQUIRE_UI=1` makes the build
   fail if the UI is missing (used by `npm run e2e` and release builds).
+  Fallback: `/api*` -> 404 JSON, non-GET/HEAD -> 405, else the SPA.
 
 ## Agent map (`crates/centrald-agent/src/`)
 
@@ -262,3 +295,10 @@ the E2E selectors together. Prettier uses `proseWrap: always` on markdown.
 - Use `nowSeconds()` from `web/src/format.ts`, not `Date.now()` in render.
 - Match arms with block bodies need trailing semicolons for clippy pedantic.
 - Tracing uses ANSI only when stdout is a terminal; keep logs grep-able.
+- The server never creates its data directory. The E2E global setup and
+  `packaging/server-maint` (no-systemd branch) create it; systemd's
+  `StateDirectory=` does on packaged installs. Scratch servers in tests
+  must `mkdir` their data dir first.
+- E2E tests that lock out sign-in use their own source address
+  (`curl --interface 127.0.0.N`); the final throttle test needs
+  `127.0.0.1` and user `admin` unlocked.

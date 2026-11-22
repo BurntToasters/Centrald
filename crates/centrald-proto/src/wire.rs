@@ -3,11 +3,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{
-    MAX_ADDRESSES, MAX_CONCURRENT_EXECS, MAX_DISKS, MAX_FAILED_UNITS, MAX_TEXT_BYTES,
+    MAX_ADDRESSES, MAX_CONCURRENT_EXECS, MAX_DISKS, MAX_FAILED_UNITS, MAX_PENDING_UPDATES,
+    MAX_TEXT_BYTES,
 };
+use crate::text::is_hidden;
 
 /// Longest exec or terminal id either side accepts (ids are UUIDs).
-pub const MAX_ID_BYTES: usize = 64;
+pub use crate::limits::MAX_ID_BYTES;
 
 /// Agent to server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,10 +261,16 @@ impl Status {
                 }
             }
         }
+        // About a century; keeps JSON numbers exact in browsers.
+        self.uptime_seconds = self.uptime_seconds.min(3_200_000_000);
+        self.cpu_count = self.cpu_count.min(65_536);
+        self.memory.clamp();
+        self.swap.clamp();
         self.disks.truncate(MAX_DISKS);
         for disk in &mut self.disks {
             clamp(&mut disk.mount);
             clamp(&mut disk.filesystem);
+            disk.used_bytes = disk.used_bytes.min(disk.total_bytes);
         }
         self.addresses.truncate(MAX_ADDRESSES);
         for address in &mut self.addresses {
@@ -270,6 +278,7 @@ impl Status {
         }
         if let Some(updates) = &mut self.updates {
             clamp(&mut updates.manager);
+            updates.pending = updates.pending.min(MAX_PENDING_UPDATES);
         }
         if let Some(units) = &mut self.failed_units {
             units.truncate(MAX_FAILED_UNITS);
@@ -280,10 +289,17 @@ impl Status {
     }
 }
 
-/// Truncates to the shared text bound and drops control characters.
+impl Usage {
+    fn clamp(&mut self) {
+        self.used_bytes = self.used_bytes.min(self.total_bytes);
+    }
+}
+
+/// Truncates to the shared text bound and drops hidden characters
+/// (controls, bidi overrides, zero-width).
 fn clamp(value: &mut String) {
-    if value.chars().any(char::is_control) {
-        *value = value.chars().filter(|c| !c.is_control()).collect();
+    if value.chars().any(is_hidden) {
+        *value = value.chars().filter(|c| !is_hidden(*c)).collect();
     }
     if value.len() > MAX_TEXT_BYTES {
         let mut end = MAX_TEXT_BYTES;

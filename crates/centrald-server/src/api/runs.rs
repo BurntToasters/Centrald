@@ -231,6 +231,7 @@ pub async fn get(
         .call(move |c| model::get_run(c, &id, true))
         .await?
         .ok_or_else(|| ApiError::not_found("That run no longer exists."))?;
+    state.hub.overlay_unsaved(&mut run);
     for target in &mut run.targets {
         if target.state == "running"
             && let Some((output, truncated)) = state.hub.live_output(&run.id, &target.device_id)
@@ -248,7 +249,7 @@ pub async fn cancel(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let sent = state.hub.cancel_run(&id);
+    let sent = state.hub.cancel_run(&id).await?;
     if sent > 0 {
         state
             .db

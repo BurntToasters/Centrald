@@ -46,6 +46,9 @@ it protects, against whom, and where its limits are.
   account cannot be claimed by whoever finds the page first.
 - Join codes are single-use, expire within 7 days, can be revoked, and are
   stored as hashes. Agent enrollment is rate-limited per address.
+- Failed agent connections are throttled per address and device, and a valid
+  device credential is always let through, so someone sharing a device's address
+  (a NAT gateway, another user on that machine) cannot lock it out.
 - An attacker who answers on the server's address cannot fool an agent or an
   install command: both pin the server's key or CA.
 
@@ -62,8 +65,11 @@ it protects, against whom, and where its limits are.
   sign-in on or off needs the current password, so a borrowed session cannot
   lock the owner out.
 - A right password with a missing or wrong code is recorded in **Activity**.
-- Changing a password ends that operator's other sessions; removing an operator
-  ends all of theirs, including open terminals within 30 seconds.
+- Signing out, changing a password (other sessions), a console `reset-password`,
+  removing an operator, and session expiry all close that session's open
+  terminals and live updates within about a second.
+- Two operators cannot remove each other at the same time, and the last account
+  cannot be removed.
 - **Activity** records sign-ins, failures, commands, terminals, and device
   changes with the source address.
 
@@ -88,7 +94,14 @@ the core trade-off of a remote management tool. Mitigations:
 - Its token is only good for that one device. It can send false status or output
   for itself, and cannot see or affect other devices: the server accepts output
   and terminal data only for sessions it started on that device.
-- Removing the device on the server revokes the token immediately.
+- Text it reports (names, status, error messages) is stripped of control,
+  escape, bidi, and zero-width characters and capped in length and count. Status
+  faster than every 5 seconds is ignored.
+- A device that stops reading is disconnected after 10 seconds instead of
+  holding server memory or an operator's terminal.
+- Removing the device on the server revokes the token immediately: its
+  connection closes, its open terminals end, its running commands are marked
+  interrupted, and the agent is asked to stop them.
 
 ### Network attackers between agent and server
 

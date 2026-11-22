@@ -203,9 +203,11 @@ function DeviceRow({
       <td>
         <Link to={`/devices/${device.id}`} className="device-name">
           <StatusDot online={device.online} />
-          {device.name}
+          <span className="truncate" title={device.name}>
+            {device.name}
+          </span>
         </Link>
-        <div className="device-sub">
+        <div className="device-sub truncate">
           {osLabel(device)}
           {status?.addresses[0] ? ` · ${status.addresses[0]}` : ""}
         </div>

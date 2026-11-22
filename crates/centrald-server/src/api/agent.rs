@@ -10,7 +10,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use centrald_proto::limits::{MAX_MESSAGE_BYTES, STATUS_INTERVAL_SECONDS};
+use centrald_proto::limits::{MAX_ID_BYTES, MAX_MESSAGE_BYTES, STATUS_INTERVAL_SECONDS};
 use centrald_proto::wire::{
     AgentMessage, EnrollRequest, EnrollResponse, Hello, ServerMessage, Status, Welcome,
 };
@@ -21,7 +21,7 @@ use rusqlite::OptionalExtension;
 use crate::auth::constant_time_eq;
 use crate::db::{self, now};
 use crate::error::{ApiError, ApiResult};
-use crate::hub::Event;
+use crate::hub::{AgentLink, Event, SOCKET_SEND_TIMEOUT};
 use crate::session::Peer;
 use crate::state::Shared;
 
@@ -29,6 +29,8 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// An agent that sends nothing (not even a pong) for this long is gone.
 const SILENCE_LIMIT: Duration = Duration::from_secs(90);
+/// Time allowed to deliver queued messages to a connection being closed.
+const CLOSE_FLUSH: Duration = Duration::from_secs(2);
 
 /// Exchanges a one-time join secret for a device credential.
 #[allow(clippy::too_many_lines)]
@@ -170,27 +172,33 @@ pub async fn enroll(
 }
 
 /// Authenticates an agent by its bearer credential, then upgrades.
+///
+/// A credential that verifies always gets through: failures are counted per
+/// address and device id, so nobody sharing the agent's address can lock it
+/// out. Malformed requests are counted per address.
 pub async fn connect(
     State(state): State<Shared>,
     Peer(address): Peer,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> ApiResult<Response> {
-    let key = format!("agent:{address}");
-    state
-        .agent_limiter
-        .check(&key)
-        .map_err(ApiError::too_many)?;
     let credential = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(|v| v.split_once('.'))
+        .filter(|(id, token)| id.len() <= MAX_ID_BYTES && token.len() <= 128)
         .map(|(id, token)| (id.to_owned(), token.to_owned()));
     let Some((device_id, token)) = credential else {
+        let key = format!("agent:{address}");
+        state
+            .agent_limiter
+            .check(&key)
+            .map_err(ApiError::too_many)?;
         state.agent_limiter.record_failure(&key);
         return Err(ApiError::unauthorized("Missing device credential."));
     };
+    let key = format!("agent:{address}:{device_id}");
     let lookup = device_id.clone();
     let stored: Option<(Vec<u8>, bool)> = state
         .db
@@ -205,6 +213,10 @@ pub async fn connect(
         .await?;
     let presented = sha256(token.as_bytes());
     let Some((hash, _)) = stored.filter(|(hash, _)| constant_time_eq(hash, &presented)) else {
+        state
+            .agent_limiter
+            .check(&key)
+            .map_err(ApiError::too_many)?;
         state.agent_limiter.record_failure(&key);
         // Agents stop retrying quickly on this exact status.
         return Err(ApiError::unauthorized(
@@ -219,11 +231,15 @@ pub async fn connect(
         .on_upgrade(move |socket| agent_session(state, device_id, socket, address)))
 }
 
+/// Sends one message; a device that does not take it in time is dropped.
 async fn send(socket: &mut WebSocket, message: &ServerMessage) -> bool {
-    match serde_json::to_string(message) {
-        Ok(text) => socket.send(Message::Text(text.into())).await.is_ok(),
-        Err(_) => false,
-    }
+    let Ok(text) = serde_json::to_string(message) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(SOCKET_SEND_TIMEOUT, socket.send(Message::Text(text.into()))).await,
+        Ok(Ok(()))
+    )
 }
 
 async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, address: String) {
@@ -269,7 +285,8 @@ async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, 
         return;
     }
 
-    let (connection, mut outgoing) = state.hub.register_agent(&device_id, allow_commands);
+    let mut link = state.hub.register_agent(&device_id, allow_commands);
+    let connection = link.connection;
     tracing::info!(device = %device_id, %address, "agent connected");
     let welcome = ServerMessage::Welcome(Welcome {
         server_version: centrald_proto::VERSION.to_owned(),
@@ -279,7 +296,7 @@ async fn agent_session(state: Shared, device_id: String, mut socket: WebSocket, 
         && cancel_forgotten(&state, &device_id, &mut socket, reported).await
     {
         state.hub.emit_device(&device_id).await;
-        run_session(&state, &device_id, &mut socket, &mut outgoing).await;
+        run_session(&state, &device_id, &mut socket, &mut link).await;
     }
     state.hub.unregister_agent(&device_id, connection).await;
     let id = device_id.clone();
@@ -320,28 +337,32 @@ async fn run_session(
     state: &Shared,
     device_id: &str,
     socket: &mut WebSocket,
-    outgoing: &mut tokio::sync::mpsc::Receiver<ServerMessage>,
+    link: &mut AgentLink,
 ) {
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.tick().await;
     let mut last_heard = tokio::time::Instant::now();
     loop {
         tokio::select! {
-            message = outgoing.recv() => match message {
+            message = link.outgoing.recv() => match message {
                 Some(message) => {
                     if !send(socket, &message).await {
                         return;
                     }
                 }
-                // Replaced by a newer connection or the device was removed.
-                None => return,
+                // Removed or replaced; no sender is left.
+                None => return close_gracefully(socket, &mut link.outgoing).await,
+            },
+            // Removed or replaced: deliver what was queued (cancels), then close.
+            () = closed(&mut link.closed) => {
+                return close_gracefully(socket, &mut link.outgoing).await;
             },
             incoming = socket.recv() => {
                 last_heard = tokio::time::Instant::now();
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<AgentMessage>(&text) {
-                            Ok(message) => handle(state, device_id, message).await,
+                            Ok(message) => handle(state, device_id, link.connection, message).await,
                             Err(error) => {
                                 tracing::warn!(device = %device_id, %error, "bad agent message");
                                 return;
@@ -356,7 +377,8 @@ async fn run_session(
                 if last_heard.elapsed() > SILENCE_LIMIT {
                     return;
                 }
-                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                let ping = socket.send(Message::Ping(Vec::new().into()));
+                if !matches!(tokio::time::timeout(SOCKET_SEND_TIMEOUT, ping).await, Ok(Ok(()))) {
                     return;
                 }
             }
@@ -364,57 +386,78 @@ async fn run_session(
     }
 }
 
-async fn handle(state: &Shared, device_id: &str, message: AgentMessage) {
+/// Sends what is still queued, then closes and waits for the agent's
+/// answer. Dropping a socket with unread input resets the connection, and
+/// the agent would lose the queued cancels.
+async fn close_gracefully(
+    socket: &mut WebSocket,
+    outgoing: &mut tokio::sync::mpsc::Receiver<ServerMessage>,
+) {
+    let deadline = tokio::time::Instant::now() + CLOSE_FLUSH;
+    while let Ok(message) = outgoing.try_recv() {
+        if tokio::time::Instant::now() > deadline || !send(socket, &message).await {
+            break;
+        }
+    }
+    let _ = tokio::time::timeout(CLOSE_FLUSH, socket.send(Message::Close(None))).await;
+    let _ = tokio::time::timeout(CLOSE_FLUSH, async {
+        while let Some(Ok(message)) = socket.recv().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
+/// Resolves once the hub drops this connection.
+async fn closed(receiver: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = receiver.wait_for(|closed| *closed).await;
+}
+
+async fn handle(state: &Shared, device_id: &str, connection: u64, message: AgentMessage) {
+    let id_too_long = match &message {
+        AgentMessage::ExecOutput { id, .. }
+        | AgentMessage::ExecExit { id, .. }
+        | AgentMessage::TermOutput { id, .. }
+        | AgentMessage::TermExit { id, .. } => id.len() > MAX_ID_BYTES,
+        AgentMessage::Hello(_) | AgentMessage::Status(_) => false,
+    };
+    if id_too_long {
+        tracing::warn!(device = %device_id, "ignoring a message with an oversized id");
+        return;
+    }
     match message {
         AgentMessage::Hello(_) => {}
-        AgentMessage::Status(status) => record_status(state, device_id, *status).await,
+        AgentMessage::Status(status) => record_status(state, device_id, connection, *status).await,
         AgentMessage::ExecOutput { id, data } => state.hub.exec_output(device_id, &id, &data),
         AgentMessage::ExecExit { id, outcome } => {
             state.hub.exec_exit(device_id, &id, outcome).await;
         }
-        AgentMessage::TermOutput { id, data } => state.hub.term_output(device_id, &id, data).await,
+        AgentMessage::TermOutput { id, data } => {
+            state
+                .hub
+                .term_output(device_id, connection, &id, data)
+                .await;
+        }
         AgentMessage::TermExit { id, message } => {
-            let message: String = message.chars().take(256).collect();
+            let message = centrald_proto::text::clean(&message, 256);
             state.hub.term_exit(device_id, &id, message).await;
         }
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
-async fn record_status(state: &Shared, device_id: &str, mut status: Status) {
+/// Keeps the newest status in memory; writes it to disk only now and then.
+async fn record_status(state: &Shared, device_id: &str, connection: u64, mut status: Status) {
     status.sanitize();
-    let Ok(json) = serde_json::to_string(&status) else {
+    let Some(due) = state
+        .hub
+        .accept_status(device_id, connection, status.clone())
+    else {
         return;
     };
-    let memory = if status.memory.total_bytes > 0 {
-        status.memory.used_bytes as f64 * 100.0 / status.memory.total_bytes as f64
-    } else {
-        0.0
-    };
-    let cpu = f64::from(status.cpu_percent);
-    let load = status.load.map(|l| f64::from(l[0]));
-    let id = device_id.to_owned();
-    let result = state
-        .db
-        .call(move |c| {
-            let time = now();
-            c.execute(
-                "UPDATE devices SET status_json = ?2, status_at = ?3, last_seen_at = ?3 WHERE id = ?1",
-                rusqlite::params![id, json, time],
-            )?;
-            // One sample per minute keeps a week of history small.
-            c.execute(
-                "INSERT INTO metrics (device_id, at, cpu, memory, load) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (device_id, at) DO UPDATE
-                 SET cpu = excluded.cpu, memory = excluded.memory, load = excluded.load",
-                rusqlite::params![id, time - time % 60, cpu, memory.clamp(0.0, 100.0), load],
-            )?;
-            Ok(())
-        })
-        .await;
-    if let Err(error) = result {
-        tracing::error!(%error, "cannot store status");
-        return;
+    if due {
+        state.hub.persist_status(device_id, &status, now()).await;
     }
     state.hub.emit_device(device_id).await;
 }

@@ -26,7 +26,11 @@ pub const MAX_TERMINAL_ROWS: u16 = 200;
 pub const MAX_TEXT_BYTES: usize = 256;
 pub const MAX_DISKS: usize = 64;
 pub const MAX_ADDRESSES: usize = 32;
-pub const MAX_FAILED_UNITS: usize = 64;
+pub const MAX_FAILED_UNITS: usize = 32;
+/// Pending update counts above this are stored as this.
+pub const MAX_PENDING_UPDATES: u32 = 100_000;
+/// Longest exec or terminal id the server accepts from an agent.
+pub const MAX_ID_BYTES: usize = 64;
 
 /// Seconds between agent status reports.
 pub const STATUS_INTERVAL_SECONDS: u32 = 15;

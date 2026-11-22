@@ -1,7 +1,5 @@
 //! Live events, the activity log, and server details.
 
-use std::time::Duration;
-
 use axum::Json;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -13,8 +11,9 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::downloads::AgentBuild;
 use crate::error::ApiResult;
+use crate::hub::SOCKET_SEND_TIMEOUT;
 use crate::model::{self, AuditView};
-use crate::session::{CurrentUser, load_session};
+use crate::session::CurrentUser;
 use crate::state::Shared;
 
 /// Pushes [`crate::hub::Event`]s to the browser. A slow client that falls
@@ -31,8 +30,7 @@ pub async fn events(
 
 async fn stream_events(state: Shared, user: CurrentUser, mut socket: WebSocket) {
     let mut events = state.hub.subscribe();
-    let mut recheck = tokio::time::interval(Duration::from_secs(60));
-    recheck.tick().await;
+    let mut session = state.hub.watch_session(user.session_hash, &user.id);
     loop {
         tokio::select! {
             event = events.recv() => {
@@ -41,7 +39,13 @@ async fn stream_events(state: Shared, user: CurrentUser, mut socket: WebSocket) 
                     Err(RecvError::Lagged(_)) => json!({ "type": "resync" }).to_string(),
                     Err(RecvError::Closed) => return,
                 };
-                if socket.send(Message::Text(text.into())).await.is_err() {
+                // A tab that stops reading is dropped rather than parked.
+                let sent = tokio::time::timeout(
+                    SOCKET_SEND_TIMEOUT,
+                    socket.send(Message::Text(text.into())),
+                )
+                .await;
+                if !matches!(sent, Ok(Ok(()))) {
                     return;
                 }
             }
@@ -49,11 +53,9 @@ async fn stream_events(state: Shared, user: CurrentUser, mut socket: WebSocket) 
                 Some(Ok(Message::Close(_)) | Err(_)) | None => return,
                 Some(Ok(_)) => {}
             },
-            _ = recheck.tick() => {
-                if !matches!(load_session(&state, user.session_hash).await, Ok(Some(_))) {
-                    let _ = socket.send(Message::Close(None)).await;
-                    return;
-                }
+            () = session.ended() => {
+                let _ = tokio::time::timeout(SOCKET_SEND_TIMEOUT, socket.send(Message::Close(None))).await;
+                return;
             }
         }
     }

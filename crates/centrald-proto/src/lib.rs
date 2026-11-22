@@ -6,6 +6,7 @@
 pub mod join;
 pub mod limits;
 pub mod pin;
+pub mod text;
 pub mod wire;
 
 /// Version of the agent/server message protocol.

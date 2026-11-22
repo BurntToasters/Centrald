@@ -350,6 +350,15 @@ async fn maintenance(state: state::Shared) {
             .call(|c| {
                 let time = db::now();
                 c.execute("DELETE FROM metrics WHERE at < ?1", [time - 8 * 86_400])?;
+                // Past timeout plus an hour nothing can still report (a
+                // failed final write); end it so pruning does not skip it.
+                c.execute(
+                    "UPDATE run_targets SET state = 'lost', finished_at = ?1,
+                         error = 'No result was recorded for this command.'
+                     WHERE state = 'running' AND started_at + 3600 + (SELECT timeout_seconds
+                         FROM runs WHERE runs.id = run_targets.run_id) < ?1",
+                    [time],
+                )?;
                 c.execute(
                     "DELETE FROM runs WHERE created_at < ?1
                      AND id NOT IN (SELECT run_id FROM run_targets WHERE state = 'running')",
@@ -408,12 +417,22 @@ fn status(config: &ServerConfig) -> Result<()> {
     }
     out.push('\n');
     if users == 0 {
-        match setup_code {
-            Some(code) => {
-                writeln!(out, "Setup code: {code}")?;
-                writeln!(out, "Enter it in the web app to create the first account.")?;
-            }
-            None => writeln!(out, "Setup code: not created yet (start the server first).")?,
+        if let Some(code) = setup_code {
+            writeln!(out, "Setup code: {code}")?;
+            writeln!(out, "Enter it in the web app to create the first account.")?;
+        } else {
+            writeln!(
+                out,
+                "No operator accounts exist and no setup code is waiting."
+            )?;
+            writeln!(
+                out,
+                "Restart the server (sudo systemctl restart centrald-server) to"
+            )?;
+            writeln!(
+                out,
+                "print a new setup code, then create the first account with it."
+            )?;
         }
     } else {
         writeln!(out, "Accounts: {users}")?;

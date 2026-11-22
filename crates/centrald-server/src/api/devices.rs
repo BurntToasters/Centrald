@@ -7,22 +7,21 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use centrald_proto::limits::{MAX_CHUNK_BYTES, MAX_TERMINAL_COLUMNS, MAX_TERMINAL_ROWS};
-use centrald_proto::wire::ServerMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::db::{self, now};
 use crate::error::{ApiError, ApiResult};
-use crate::hub::{Event, TermEvent};
+use crate::hub::{Event, SOCKET_SEND_TIMEOUT, TermEvent};
 use crate::model::{self, DeviceView};
-use crate::session::{CurrentUser, load_session};
+use crate::session::CurrentUser;
 use crate::state::Shared;
 
 const MAX_NAME_CHARS: usize = 64;
 /// Terminals close after this long without keyboard input.
 const TERMINAL_IDLE: Duration = Duration::from_secs(30 * 60);
-/// How often an open terminal re-checks that its session is still valid.
-const TERMINAL_RECHECK: Duration = Duration::from_secs(30);
+/// How often an open terminal checks for idleness.
+const IDLE_CHECK: Duration = Duration::from_secs(30);
 
 pub async fn list(
     State(state): State<Shared>,
@@ -56,7 +55,12 @@ pub struct UpdateRequest {
 }
 
 pub fn clean_name(name: &str) -> Result<String, ApiError> {
-    let name: String = name.trim().chars().filter(|c| !c.is_control()).collect();
+    let name: String = name
+        .trim()
+        .chars()
+        .filter(|c| !centrald_proto::text::is_hidden(*c))
+        .collect();
+    let name = name.trim().to_owned();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
         return Err(ApiError::bad_request(
             "Use a name between 1 and 64 characters.",
@@ -137,7 +141,7 @@ pub async fn remove(
     if !removed {
         return Err(ApiError::not_found("That device no longer exists."));
     }
-    state.hub.disconnect(&id);
+    state.hub.disconnect(&id).await;
     state.hub.emit(&Event::DeviceRemoved { id });
     Ok(Json(json!({ "ok": true })))
 }
@@ -223,25 +227,25 @@ pub async fn terminal(
         .ok_or_else(|| ApiError::not_found("That device no longer exists."))?;
     let columns = query.columns.unwrap_or(80).clamp(10, MAX_TERMINAL_COLUMNS);
     let rows = query.rows.unwrap_or(24).clamp(4, MAX_TERMINAL_ROWS);
-    let (terminal_id, events, agent) = state
+    let (guard, events) = state
         .hub
         .open_terminal(&id, columns, rows)
         .map_err(ApiError::conflict)?;
 
-    let actor = user.username.clone();
-    let address = user.address.clone();
-    let audit_name = name.clone();
-    state
-        .db
-        .call(move |c| db::audit(c, &actor, "terminal.opened", &audit_name, "", &address))
-        .await?;
-
     Ok(upgrade
         .max_message_size(MAX_CHUNK_BYTES * 2)
         .on_upgrade(move |socket| async move {
+            // Logged only once the socket exists, so every "opened" has a "closed".
+            let actor = user.username.clone();
+            let address = user.address.clone();
+            let audit_name = name.clone();
+            let _ = state
+                .db
+                .call(move |c| db::audit(c, &actor, "terminal.opened", &audit_name, "", &address))
+                .await;
             let started = std::time::Instant::now();
-            relay(&state, &user, socket, &terminal_id, events, agent).await;
-            state.hub.close_terminal(&terminal_id);
+            relay(&state, &user, socket, &guard.id, events).await;
+            drop(guard);
             let detail = format!("{} seconds", started.elapsed().as_secs());
             let CurrentUser {
                 username, address, ..
@@ -253,58 +257,70 @@ pub async fn terminal(
         }))
 }
 
+/// Sends one frame to the browser; false if it fails or takes too long.
+async fn send_frame(socket: &mut WebSocket, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(SOCKET_SEND_TIMEOUT, socket.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
 async fn relay(
     state: &Shared,
     user: &CurrentUser,
     mut socket: WebSocket,
     id: &str,
     mut events: tokio::sync::mpsc::Receiver<TermEvent>,
-    agent: tokio::sync::mpsc::Sender<ServerMessage>,
 ) {
-    let mut recheck = tokio::time::interval(TERMINAL_RECHECK);
-    recheck.tick().await;
+    let mut session = state.hub.watch_session(user.session_hash, &user.id);
+    let mut idle_check = tokio::time::interval(IDLE_CHECK);
+    idle_check.tick().await;
     let mut last_input = tokio::time::Instant::now();
     let reason = loop {
         tokio::select! {
             event = events.recv() => match event {
                 Some(TermEvent::Output(data)) => {
-                    if socket.send(Message::Binary(data.into())).await.is_err() {
+                    if !send_frame(&mut socket, Message::Binary(data.into())).await {
                         break None;
                     }
                 }
                 Some(TermEvent::Exit(message)) => {
                     let text = json!({ "type": "exit", "message": message }).to_string();
-                    let _ = socket.send(Message::Text(text.into())).await;
+                    let _ = send_frame(&mut socket, Message::Text(text.into())).await;
                     break Some("closed");
                 }
                 None => break Some("closed"),
             },
+            () = session.ended() => {
+                break Some("Your session ended, so the terminal was closed.");
+            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(data))) => {
                     last_input = tokio::time::Instant::now();
+                    let mut delivered = true;
                     for chunk in data.chunks(MAX_CHUNK_BYTES) {
-                        let message = ServerMessage::TermInput { id: id.to_owned(), data: chunk.to_vec() };
-                        if agent.send(message).await.is_err() {
+                        if !state.hub.term_input(id, chunk.to_vec()).await {
+                            delivered = false;
                             break;
                         }
+                    }
+                    if !delivered {
+                        break Some("The device stopped responding, so the terminal was closed.");
                     }
                 }
                 Some(Ok(Message::Text(text))) => {
                     if let Ok(TerminalControl::Resize { columns, rows }) = serde_json::from_str(&text) {
-                        let _ = agent.try_send(ServerMessage::TermResize {
-                            id: id.to_owned(),
-                            columns: columns.clamp(10, MAX_TERMINAL_COLUMNS),
-                            rows: rows.clamp(4, MAX_TERMINAL_ROWS),
-                        });
+                        state.hub.term_resize(
+                            id,
+                            columns.clamp(10, MAX_TERMINAL_COLUMNS),
+                            rows.clamp(4, MAX_TERMINAL_ROWS),
+                        );
                     }
                 }
                 Some(Ok(Message::Close(_)) | Err(_)) | None => break None,
                 Some(Ok(_)) => {}
             },
-            _ = recheck.tick() => {
-                if !matches!(load_session(state, user.session_hash).await, Ok(Some(_))) {
-                    break Some("Your session ended, so the terminal was closed.");
-                }
+            _ = idle_check.tick() => {
                 if last_input.elapsed() > TERMINAL_IDLE {
                     break Some("The terminal closed after 30 minutes without input.");
                 }
@@ -313,12 +329,14 @@ async fn relay(
     };
     if let Some(reason) = reason.filter(|r| *r != "closed") {
         let text = json!({ "type": "error", "message": reason }).to_string();
-        let _ = socket.send(Message::Text(text.into())).await;
+        let _ = send_frame(&mut socket, Message::Text(text.into())).await;
     }
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    let _ = send_frame(
+        &mut socket,
+        Message::Close(Some(CloseFrame {
             code: 1000,
             reason: "".into(),
-        })))
-        .await;
+        })),
+    )
+    .await;
 }

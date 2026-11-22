@@ -39,11 +39,22 @@ site/                    documentation website (synced from docs/)
 - Storage is one SQLite database in WAL mode with strict tables and forward-only
   migrations. Blocking database work runs off the async workers.
 - The **hub** keeps live state in memory: connected agents, running commands and
-  their output, open terminals, and a broadcast channel of events for browsers.
-  Command results are written to the database when they finish.
+  their output, open terminals, browser sockets tied to their sessions, and a
+  broadcast channel of events for browsers. Command results are written to the
+  database when they finish; a failed write (disk full) is kept in memory and
+  retried every 5 seconds.
+- The newest status of each device is kept in memory and written to the database
+  at most once a minute, with one metrics sample per minute.
+- Every send to an agent or browser socket has a 10 second deadline. A peer that
+  stops reading is disconnected; per-connection queues are bounded.
+- Open WebSockets are checked against the `sessions` table every second, so a
+  session ended anywhere (sign-out, password change, console reset, operator
+  removal, expiry) closes its sockets at once. The check does not count as
+  activity for the idle timeout.
 - Hourly maintenance renews the certificate when needed and prunes old metrics
   (8 days), runs (90 days), activity (365 days), expired join codes, and expired
-  sessions.
+  sessions. A target still "running" an hour past its time limit is marked lost
+  first, so it cannot block pruning.
 
 ### TLS
 
@@ -174,8 +185,10 @@ WebSocket libraries (which print request headers) are dropped whatever
 openpty, PowerShell via ConPTY on Windows). Keystrokes and output are relayed as
 binary WebSocket frames between browser and server and base64 in agent messages.
 At most 4 terminals per device. The server closes a terminal after 30 minutes
-without input, when the operator's session ends, or when the agent stops reading
-for 5 seconds.
+without input, when the operator's session ends, when the device is removed or
+reconnects, or when the agent or browser stops reading. Input is routed by
+terminal id to the device's current connection, so a removed or replaced
+connection gets nothing more.
 
 ### Self-update
 

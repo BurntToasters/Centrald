@@ -15,7 +15,18 @@
 // - a monitor-only device accepts commands or offers a terminal
 // - two-factor setup does not persist, or sign-in skips the code
 // - a removed device's agent can still connect
-import { expect, test, type Page } from "@playwright/test";
+// - removing a device leaves its open terminal, its agent link, or its
+//   running commands alive (the run stays "running", the process keeps going)
+// - signing out, a password change, a console password reset, or removing
+//   an operator leaves that session's terminal or live events open
+// - two operators removing each other at once leave no account behind
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type WebSocket,
+} from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
@@ -23,6 +34,7 @@ import {
   ADMIN,
   BASE,
   REPORT_DIR,
+  SERVER_BIN,
   agentEnv,
   enroll,
   readLog,
@@ -335,7 +347,177 @@ test("two-factor sign-in can be turned on and is enforced", async () => {
     .storageState({ path: path.join(runDir(), "operator.json") });
 });
 
-test("removing a device revokes its agent", async () => {
+/** Signs `context` in through the API; its pages share the cookie. */
+async function signIn(
+  context: BrowserContext,
+  username: string,
+  password: string,
+) {
+  const response = await context.request.post("/api/login", {
+    headers: { Origin: BASE },
+    data: { username, password },
+  });
+  expect(response.status(), `sign in as ${username}`).toBe(200);
+}
+
+/** Opens the terminal page and waits for a working shell. */
+async function openTerminal(target: Page, url: string) {
+  const sockets: WebSocket[] = [];
+  target.on("websocket", (socket) => sockets.push(socket));
+  await target.goto(`${url}/terminal`);
+  await expect(target.getByText("Connected as root")).toBeVisible();
+  const terminal = target.getByTestId("terminal");
+  await terminal.click();
+  await target.keyboard.type("echo alive-$((40+2))\n");
+  await expect(terminal).toContainText("alive-42");
+  // The newest open socket of each kind belongs to this page load.
+  const find = (part: string) => {
+    const socket = sockets
+      .filter((s) => s.url().includes(part) && !s.isClosed())
+      .at(-1);
+    if (!socket) throw new Error(`no open ${part} socket`);
+    return socket;
+  };
+  return { terminal: find("/terminal"), events: find("/api/events") };
+}
+
+/** Both sockets must close within a few seconds of the session ending. */
+async function expectClosed(
+  target: Page,
+  sockets: { terminal: WebSocket; events: WebSocket },
+) {
+  const closed = (socket: WebSocket) =>
+    socket.isClosed()
+      ? Promise.resolve()
+      : socket.waitForEvent("close", { timeout: 5_000 });
+  await Promise.all([closed(sockets.terminal), closed(sockets.events)]);
+  await expect(target.getByText("Your session ended")).toBeVisible({
+    timeout: 2_000,
+  });
+}
+
+test("ending a session closes its terminal and live events", async ({
+  browser,
+}) => {
+  const ops = { username: "ops2", password: "second operator pass" };
+  const created = await page.request.post("/api/users", {
+    headers: { Origin: BASE },
+    data: ops,
+  });
+  expect(created.status()).toBe(201);
+  const { id: opsId } = await created.json();
+  const context = await browser.newContext();
+  const other = await context.newPage();
+
+  await test.step("a console password reset closes them", async () => {
+    await signIn(context, ops.username, ops.password);
+    const sockets = await openTerminal(other, deviceUrl);
+    ops.password = "reset from the console";
+    const reset = spawnSync(
+      SERVER_BIN,
+      ["reset-password", ops.username, "--password-stdin"],
+      {
+        input: `${ops.password}\n`,
+        env: { ...process.env, CENTRALD_DATA_DIR: path.join(runDir(), "data") },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    expect(reset.stderr + reset.stdout).toContain("Password updated");
+    await expectClosed(other, sockets);
+  });
+
+  await test.step("signing out closes them", async () => {
+    await signIn(context, ops.username, ops.password);
+    const sockets = await openTerminal(other, deviceUrl);
+    const out = await context.request.post("/api/logout", {
+      headers: { Origin: BASE },
+    });
+    expect(out.ok()).toBe(true);
+    await expectClosed(other, sockets);
+  });
+
+  await test.step("a password change elsewhere closes them", async () => {
+    await signIn(context, ops.username, ops.password);
+    const sockets = await openTerminal(other, deviceUrl);
+    const elsewhere = await browser.newContext();
+    await signIn(elsewhere, ops.username, ops.password);
+    const changed = await elsewhere.request.post("/api/account/password", {
+      headers: { Origin: BASE },
+      data: {
+        currentPassword: ops.password,
+        newPassword: "changed elsewhere ok",
+      },
+    });
+    expect(changed.status()).toBe(200);
+    ops.password = "changed elsewhere ok";
+    await expectClosed(other, sockets);
+    await elsewhere.close();
+  });
+
+  await test.step("removing the operator closes them", async () => {
+    await signIn(context, ops.username, ops.password);
+    const sockets = await openTerminal(other, deviceUrl);
+    const removed = await page.request.delete(`/api/users/${opsId}`, {
+      headers: { Origin: BASE },
+    });
+    expect(removed.status()).toBe(200);
+    await expectClosed(other, sockets);
+  });
+  await context.close();
+
+  await test.step("two operators removing each other leave one behind", async () => {
+    const pair = [
+      { username: "ops3", password: "third operator pass" },
+      { username: "ops4", password: "fourth operator pass" },
+    ];
+    const ids: string[] = [];
+    const contexts: BrowserContext[] = [];
+    for (const user of pair) {
+      const made = await page.request.post("/api/users", {
+        headers: { Origin: BASE },
+        data: user,
+      });
+      ids.push((await made.json()).id);
+      const ctx = await browser.newContext();
+      await signIn(ctx, user.username, user.password);
+      contexts.push(ctx);
+    }
+    const results = await Promise.all([
+      contexts[0].request.delete(`/api/users/${ids[1]}`, {
+        headers: { Origin: BASE },
+      }),
+      contexts[1].request.delete(`/api/users/${ids[0]}`, {
+        headers: { Origin: BASE },
+      }),
+    ]);
+    expect(results.filter((r) => r.status() === 200)).toHaveLength(1);
+    const users: { id: string }[] = await (
+      await page.request.get("/api/users")
+    ).json();
+    expect(users.filter((u) => ids.includes(u.id))).toHaveLength(1);
+    for (const ctx of contexts) await ctx.close();
+  });
+});
+
+test("removing a device revokes its agent", async ({ browser }) => {
+  const deviceId = deviceUrl.split("/").pop();
+  // Unique per run, so a leftover from an earlier run cannot match.
+  const sleeper = 3000 + Math.floor(Math.random() * 6000);
+  const started = await page.request.post("/api/runs", {
+    headers: { Origin: BASE },
+    data: { deviceIds: [deviceId], command: `sleep ${sleeper}` },
+  });
+  expect(started.status()).toBe(201);
+  const runId = (await started.json()).id;
+  const pgrep = () => spawnSync("pgrep", ["-f", `sleep ${sleeper}`]).status;
+  await expect.poll(pgrep).toBe(0);
+  const viewer = await browser.newContext({
+    storageState: path.join(runDir(), "operator.json"),
+  });
+  const terminalPage = await viewer.newPage();
+  const sockets = await openTerminal(terminalPage, deviceUrl);
+
   await page.goto(deviceUrl);
   await page.getByRole("button", { name: "Remove device" }).click();
   await page
@@ -343,6 +525,31 @@ test("removing a device revokes its agent", async () => {
     .getByRole("button", { name: "Remove device" })
     .click();
   await expect(page.getByText(/of 1 online/)).toBeVisible();
+
+  await test.step("its open terminal closes at once", async () => {
+    if (!sockets.terminal.isClosed())
+      await sockets.terminal.waitForEvent("close", { timeout: 5_000 });
+    await expect(
+      terminalPage.getByText("The device was removed"),
+    ).toBeVisible();
+    await viewer.close();
+  });
+
+  await test.step("its running command ends and is stopped on the device", async () => {
+    await expect
+      .poll(
+        async () => {
+          const run = await (
+            await page.request.get(`/api/runs/${runId}`)
+          ).json();
+          return run.targets[0].state;
+        },
+        { timeout: 5_000 },
+      )
+      .toBe("lost");
+    await expect.poll(pgrep, { timeout: 15_000 }).toBe(1);
+  });
+
   await expect
     .poll(() => readLog(fullAgentLog), { timeout: 30_000 })
     .toContain("rejected this device's credential");

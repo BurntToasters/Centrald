@@ -186,8 +186,9 @@ sudo centrald-server reset-password admin
 ```
 
 This sets a new password, turns off two-factor sign-in for that account, and
-signs it out everywhere. For scripts, pass the password on standard input with
-`--password-stdin`.
+signs it out everywhere; a running server closes that account's open terminals
+and live updates within about a second. For scripts, pass the password on
+standard input with `--password-stdin`.
 
 ## Starting over
 

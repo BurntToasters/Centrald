@@ -89,8 +89,9 @@ your distribution's equivalent) on all of them from **Run command**.
 Linux, PowerShell on Windows) as root. Everything a normal terminal does works:
 `htop`, `vim`, `tmux`, colors, and resizing.
 
-- The terminal closes after 30 minutes without input, when you sign out, or when
-  your operator account is removed.
+- The terminal closes after 30 minutes without input, when your session ends
+  (sign-out, a password change elsewhere, a password reset, or your operator
+  account is removed), or when the device is removed.
 - What you type and see is not recorded. **Activity** records that a terminal
   was opened and for how long.
 - If the connection drops, select **Reconnect**. Each connection is a new shell;
@@ -136,8 +137,9 @@ Sessions last up to 30 days and end after 7 days without use.
 ## Removing a device
 
 On the device page, select **Remove device**. Its credential stops working at
-once and the agent disconnects; history is kept. To uninstall the agent from the
-machine as well:
+once, the agent disconnects, open terminals close, and commands still running on
+it are stopped and shown as interrupted; history is kept. To uninstall the agent
+from the machine as well:
 
 - Package install: `sudo apt purge centrald-agent` (or `dnf remove`,
   `pacman -R`).

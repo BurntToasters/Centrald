@@ -172,8 +172,11 @@ pub fn install_commands(
     let linux = format!(
         "curl -fsSk --pinnedpubkey '{pin}' 'https://{server}/install.sh' | CENTRALD_JOIN='{code}'{sh_flag} sh"
     );
+    // PowerShell 7 runs the script-block certificate callback on a thread with
+    // no runspace, so the pin fails closed there; say so instead.
     let windows = format!(
-        "$env:CENTRALD_JOIN='{code}'; {ps_flag}[Net.ServicePointManager]::SecurityProtocol='Tls12'; \
+        "if ($PSVersionTable.PSEdition -eq 'Core') {{ throw 'Open Windows PowerShell (not PowerShell 7) as Administrator and paste this again.' }}; \
+         $env:CENTRALD_JOIN='{code}'; {ps_flag}[Net.ServicePointManager]::SecurityProtocol='Tls12'; \
          [Net.ServicePointManager]::ServerCertificateValidationCallback={{param($s,$c) \
          ([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())) -replace '-') -eq '{leaf_sha256}'}}; \
          iex (New-Object Net.WebClient).DownloadString('https://{server}/install.ps1')"

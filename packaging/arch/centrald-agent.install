@@ -4,5 +4,11 @@ post_install() {
 }
 
 post_upgrade() {
+  # pacman's own daemon-reload hook runs after this function.
+  systemctl daemon-reload 2>/dev/null || true
   systemctl try-restart centrald-agent.service 2>/dev/null || true
+}
+
+pre_remove() {
+  systemctl disable --now centrald-agent.service 2>/dev/null || true
 }

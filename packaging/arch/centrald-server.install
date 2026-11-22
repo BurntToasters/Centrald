@@ -1,9 +1,27 @@
+_repair_config_dir() {
+  # The server (user centrald) reads /etc/centrald/server.toml. Older agents
+  # set the shared directory to 0700 when enrolling this machine.
+  [ -d /etc/centrald ] || return 0
+  case "$(stat -c %a /etc/centrald)" in
+    *[1357]) ;;
+    *) [ "$(stat -c %G /etc/centrald)" = centrald ] || chmod 0755 /etc/centrald ;;
+  esac
+}
+
 post_install() {
+  _repair_config_dir
   echo "Start CentralD and show the web address and setup code:"
   echo "  sudo systemctl enable --now centrald-server"
   echo "  sudo centrald-server status"
 }
 
 post_upgrade() {
+  _repair_config_dir
+  # pacman's own daemon-reload hook runs after this function.
+  systemctl daemon-reload 2>/dev/null || true
   systemctl try-restart centrald-server.service 2>/dev/null || true
+}
+
+pre_remove() {
+  systemctl disable --now centrald-server.service 2>/dev/null || true
 }

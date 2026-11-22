@@ -2,10 +2,12 @@ name: Release
 
 # Push a tag that matches package.json (for example v0.1.0) to build every
 # platform, sign each agent build and SHA256SUMS with Minisign, and open a
-# draft GitHub release.
+# draft GitHub release. Run it by hand (workflow_dispatch) for a dry run:
+# everything is built and signed with a throwaway key, nothing is published.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,8 +16,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check:
+    name: Versions match the tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: package.json, Cargo.toml, Cargo.lock, and the tag agree
+        run: |
+          version=$(jq -r .version package.json)
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "$cargo_version" = "$version" ||
+            { echo "Cargo.toml is $cargo_version, package.json is $version"; exit 1; }
+          cargo metadata --locked --format-version 1 >/dev/null
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test "$GITHUB_REF_NAME" = "v$version" ||
+              { echo "tag $GITHUB_REF_NAME does not match v$version"; exit 1; }
+          fi
+
   linux:
     name: Linux ${{ matrix.arch }}
+    needs: check
     strategy:
       matrix:
         include:
@@ -57,6 +77,7 @@ jobs:
 
   windows:
     name: Windows ${{ matrix.arch }}
+    needs: check
     strategy:
       matrix:
         include:
@@ -88,10 +109,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Check the tag matches package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install latest npm
         run: |
-          version=$(jq -r .version package.json)
-          test "$GITHUB_REF_NAME" = "v$version"
+          npm install -g --prefix "$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/bin" >> "$GITHUB_PATH"
+      # node_modules supplies the licence texts of the bundled web packages.
+      - run: npm ci
       - name: Install packaging tools
         run: |
           sudo apt-get update
@@ -112,21 +139,30 @@ jobs:
         with:
           name: bin-aarch64-pc-windows-msvc
           path: target/aarch64-pc-windows-msvc/release
+      - name: Signing key
+        env:
+          MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
+        run: |
+          key="$RUNNER_TEMP/minisign.key"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            # Dry run: a throwaway key; nothing is published.
+            minisign -G -W -p "$RUNNER_TEMP/minisign.pub" -s "$key"
+            sed -n 2p "$RUNNER_TEMP/minisign.pub" > "$RUNNER_TEMP/pubkey"
+          else
+            printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$key"
+            jq -r .publicKey packaging/minisign.json > "$RUNNER_TEMP/pubkey"
+          fi
+          chmod 0600 "$key"
       # Agents refuse an update unless its signature names their platform
       # and a newer version. package.mjs ships each .minisig next to its
       # agent in the server packages.
       - name: Sign agent builds
         env:
-          MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          test "$version" = "$(jq -r .version package.json)"
+          version=$(jq -r .version package.json)
           key="$RUNNER_TEMP/minisign.key"
-          trap 'rm -f "$key"' EXIT
-          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$key"
-          chmod 0600 "$key"
-          pub=$(jq -r .publicKey packaging/minisign.json)
+          pub=$(cat "$RUNNER_TEMP/pubkey")
           for arch in x86_64 aarch64; do
             for build in "linux target/$arch-unknown-linux-musl/release/centrald-agent" \
               "windows target/$arch-pc-windows-msvc/release/centrald-agent.exe"; do
@@ -141,23 +177,42 @@ jobs:
       - run: node scripts/package.mjs --require-all
       - name: Sign SHA256SUMS
         env:
-          MINISIGN_SECRET_KEY_B64: ${{ secrets.MINISIGN_SECRET_KEY_B64 }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
-          key="$RUNNER_TEMP/minisign.key"
-          trap 'rm -f "$key"' EXIT
-          printf '%s' "$MINISIGN_SECRET_KEY_B64" | base64 -d > "$key"
-          chmod 0600 "$key"
           printf '%s\n' "$MINISIGN_PASSWORD" |
-            minisign -S -s "$key" -m dist/SHA256SUMS -t "CentralD $GITHUB_REF_NAME"
-          minisign -V -P "$(jq -r .publicKey packaging/minisign.json)" -m dist/SHA256SUMS
-      - name: Create the draft release
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -m dist/SHA256SUMS \
+              -t "CentralD v$(jq -r .version package.json)"
+          minisign -V -P "$(cat "$RUNNER_TEMP/pubkey")" -m dist/SHA256SUMS
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+      # dist/ is flat and SHA256SUMS lists every file in it, so the upload
+      # is exactly the listed files plus the checksums and their signature.
+      - name: Every listed file is uploaded under its listed name
+        run: |
+          cd dist
+          sha256sum --strict -c SHA256SUMS
+          test "$(ls | grep -vx 'SHA256SUMS\|SHA256SUMS.minisig' | sort)" = \
+            "$(cut -d' ' -f3- SHA256SUMS | sort)"
+      - name: Keep the dry run's packages
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dry-run
+          path: dist/
+      - name: Create or update the draft release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          flags=(--draft --verify-tag --title "CentralD $GITHUB_REF_NAME" --generate-notes)
-          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
-            dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.exe \
-            dist/arch/PKGBUILD dist/arch/*.install \
-            dist/SHA256SUMS dist/SHA256SUMS.minisig
+          cd dist
+          mapfile -t assets < <(cut -d' ' -f3- SHA256SUMS)
+          assets+=(SHA256SUMS SHA256SUMS.minisig)
+          if gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft | grep -qx true; then
+            # A re-run after a failed upload: replace the draft's files.
+            gh release upload "$GITHUB_REF_NAME" --clobber "${assets[@]}"
+          else
+            flags=(--draft --verify-tag --title "CentralD $GITHUB_REF_NAME" --generate-notes)
+            case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+            gh release create "$GITHUB_REF_NAME" "${flags[@]}" "${assets[@]}"
+          fi

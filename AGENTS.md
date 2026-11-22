@@ -78,8 +78,10 @@ migration code for them.
 - Do not edit `site/src/content/docs/` (gitignored, generated). Edit `docs/`
   and `SECURITY.md`.
 - Do not call `cargo update` directly. Use `npm run deps:rust:update`
-  (72-hour minimum crate age). `npm run check:cargo-update-policy` enforces
-  it.
+  (72-hour minimum crate age; `-p <crate>` for a partial update). CI runs
+  `scripts/check-cargo-update-policy.mjs --base <commit>`, which diffs
+  `Cargo.lock` against the base and fails on any new crate version younger
+  than 72 h or any new git source, whatever produced it.
 - Do not pin a specific npm version. `.npmrc` keeps `min-release-age=3`.
 
 ## Workspace layout
@@ -99,7 +101,10 @@ docs/                    canonical operator documentation
 ```
 
 Node: `.node-version` (`26.13.0`); `engines.node` is
-`^24.22.1 || >=26.13.0`. Rust edition 2024, `rust-toolchain.toml` pins
+`^24.22.1 || >=26.13.0`; `.npmrc` sets `engine-strict=true` (old npm
+ignores `min-release-age`). Rust edition 2024, resolver 3,
+`rust-version = "1.89"` (CI `msrv` job checks with exactly that toolchain;
+raise it when a dependency needs more), `rust-toolchain.toml` pins
 `stable`. Workspace lints: `unsafe_code = "forbid"`, clippy `all` +
 `pedantic` warn, `unwrap_used` / `expect_used` deny.
 
@@ -167,7 +172,11 @@ and a full-debug agent (~107 MB) breaks the E2E update test.
   `<agent>.minisig` next to the build; 404 if absent). Builds the copy-paste
   install commands from the address the operator typed (URL single-quoted
   for IPv6/zsh). Downloads stream from disk (`stream_file`); never buffer
-  whole binaries.
+  whole binaries. The Windows command needs Windows PowerShell 5.1 (its
+  script-block pin callback has no runspace on PowerShell 7, so the command
+  throws a clear message there first). `assets/install.ps1` reads the
+  machine architecture from the registry, uses `%ProgramW6432%`, and resets
+  the pin callback and TLS setting in `finally`.
 - `ui.rs` — rust-embed of `web/dist`. `CENTRALD_REQUIRE_UI=1` makes the build
   fail if the UI is missing (used by `npm run e2e` and release builds).
   Fallback: `/api*` -> 404 JSON, non-GET/HEAD -> 405, else the SPA.
@@ -178,7 +187,9 @@ Public commands: `enroll [--key-stdin|--key-file] [--server] [--monitor-only]`,
 `status`, `leave`, `update [--allow-downgrade]`. Hidden: `run` (the service),
 `service` (Windows SCM entry). All but `status` require root/Administrator.
 
-- `config.rs` — `/etc/centrald/agent.toml` (root 0600) or
+- `config.rs` — `/etc/centrald/agent.toml` (root 0600; the directory is
+  set to 0755 because the server, user `centrald`, reads `server.toml` from
+  it; never 0700) or
   `%ProgramData%\CentralD\agent.toml` (Administrators/SYSTEM ACL).
   `deny_unknown_fields`. `CENTRALD_AGENT_CONFIG` overrides (tests).
 - `connection.rs` — `wss://…/api/agent/connect`; TCP + TLS + upgrade +
@@ -237,25 +248,51 @@ and 32-byte token; the server stores only its SHA-256. Agents send
 - `npm run package` (`scripts/package.mjs`) packages whatever exists in
   `target/<arch>-unknown-linux-musl/release` and
   `target/<arch>-pc-windows-{msvc,gnu,gnullvm}/release` into `dist/`: debs,
-  rpms, tarballs, `dist/arch/PKGBUILD`, Windows exes, `SHA256SUMS`.
-  `--require-all` insists on every platform; `--no-rpm` skips rpm.
-  Reproducible via `SOURCE_DATE_EPOCH` from the last commit.
+  rpms, tarballs, `PKGBUILD` + `centrald-{server,agent}.install`, Windows
+  exes, `SHA256SUMS`. `dist/` is flat: every file name is the release asset
+  name and is listed in `SHA256SUMS` (names limited to `[A-Za-z0-9._+-]`, so
+  GitHub never renames one). `--require-all` insists on every platform and
+  `.minisig`; `--no-rpm` skips rpm. Fails if `package.json` and `Cargo.toml`
+  versions differ or no `SOURCE_DATE_EPOCH`/git history. Prerelease `X-rc.N`:
+  deb/rpm version `X~rc.N`, pacman `Xrc.N`, file names keep `X-rc.N`.
+  Reproducibility: `SOURCE_DATE_EPOCH`, `process.umask(0o022)`, rpm
+  `_buildhost centrald`, rust-embed `deterministic-timestamps`; same rustc
+  and `CARGO_HOME` path still needed. No `BuildArch` in the spec (`--target`
+  sets it; `BuildArch: aarch64` fails on the x86_64 runner).
+- `scripts/third-party.mjs` writes `THIRD-PARTY-NOTICES.txt` (all crates in
+  `Cargo.lock` plus non-dev npm packages, licence files from the cargo
+  registry and `node_modules`) into every package; needs `npm ci` first.
 - The deb `Maintainer` is a placeholder
   (`CentralD contributors <noreply@centrald.dev>`) until the owner picks one.
 - Server packages ship every agent build; the install commands download from
   the server, never from GitHub.
 - Hooks: `packaging/server-maint` and `packaging/agent-maint` (POSIX sh,
-  `configure` / `remove`), wrapped by `packaging/debian/*` and
-  `packaging/arch/*.install`. Server hook creates the user, enables the unit,
-  prints `centrald-server status`, and prints firewall hints (never changes
-  the firewall).
-- `.github/workflows/release.yml` (tag `v*`): musl Linux on x86_64/ARM64,
+  `configure <install|upgrade>` / `remove` / `disable`), wrapped by
+  `packaging/debian/*` and the rpm scriptlets; Arch has its own
+  `packaging/arch/*.install` (not the maint scripts). Rules: a systemctl
+  failure never fails the transaction (warn instead); `enable` only on first
+  install; upgrade restarts only an enabled unit (`try-restart` otherwise);
+  deb `remove` only stops (the enable link survives so remove + reinstall
+  starts again), deb purge / rpm erase drop the link. Server configure
+  repairs a `/etc/centrald` the `centrald` user cannot enter. Agent
+  configure takes over an install-command agent (`/usr/local/bin` binary
+  and `/etc/systemd/system` unit); agent purge keeps `agent.toml` while
+  `/usr/local/bin/centrald-agent` exists. Server hook prints
+  `centrald-server status` and firewall hints (never changes the firewall).
+- `.github/workflows/release.yml` (tag `v*`, or `workflow_dispatch` for a
+  dry run with a throwaway key that uploads `release-dry-run` and publishes
+  nothing). A first `check` job compares tag, `package.json`, `Cargo.toml`,
+  `Cargo.lock`. Then musl Linux on x86_64/ARM64,
   MSVC Windows on x86_64/ARM64, then signs each agent build (trusted comment
   `centrald-agent <version> <os>-<arch>`, `<bin>.minisig`), packages, signs
   `SHA256SUMS` with Minisign (secrets `MINISIGN_SECRET_KEY_B64`,
   `MINISIGN_PASSWORD`) and opens a draft release. Public key in
   `packaging/minisign.json`. `package.mjs` ships each `.minisig` next to its
-  agent (0644); `--require-all` fails on an unsigned agent.
+  agent (0644; PKGBUILD installs them 0644 too); `--require-all` fails on an
+  unsigned agent. The upload is exactly the files in `SHA256SUMS` plus
+  `SHA256SUMS{,.minisig}`; a re-run updates an existing draft.
+- `.github/workflows/audit.yml`: `cargo audit --deny unsound --deny yanked`
+  and `npm audit` (root + site) on every change and weekly.
 - Actions in workflows are pinned by commit SHA.
 
 ## Testing
@@ -284,8 +321,11 @@ security with curl. Two Playwright projects: `flow` (`flow.spec.ts`) and
 - `CENTRALD_E2E_PORT` (default 17443) and `CENTRALD_E2E_BIN_DIR` (default
   `target/debug`) override the harness.
 - `scripts/package-smoke.sh` (CI) installs the debs on a systemd runner and
-  walks setup, install command, a command run, and purge.
-- The only node unit tests are the inherited cargo policy tests
+  walks setup, install command on the server host, a command run, a server
+  restart, agent package takeover, `/etc/centrald` repair, remove/reinstall,
+  disabled-across-upgrade, and purge. Its header lists the failure modes;
+  it needs systemd and sudo, so it only runs in CI.
+- The only node unit tests are the inherited `cargo-safe-update` tests
   (`npm test`). Do not add more unit tests after writing code.
 
 ## Quality gates
@@ -297,6 +337,7 @@ npm run typecheck
 npm test
 npm run test:rust
 npm run e2e
+npm run site:install   # once; the site has its own lock file
 npm run site:check && npm run site:build
 ```
 
@@ -304,7 +345,9 @@ Also run `cargo clippy -p centrald-agent --target x86_64-pc-windows-gnu
 --locked -- -D warnings` when touching agent code (needs mingw). If a gate
 cannot run locally, say so and leave it to CI; never claim it passed.
 
-CI (`.github/workflows/ci.yml`): `checks`, `windows`, `e2e`, `package`.
+CI (`.github/workflows/ci.yml`): `checks` (also the Cargo lock-age check
+and the site gates), `msrv`, `windows`, `e2e`, `package`; plus
+`audit.yml`.
 
 ## Docs map
 

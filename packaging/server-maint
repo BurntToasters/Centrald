@@ -1,31 +1,31 @@
 #!/bin/sh
 # Package hooks for centrald-server, shared by the .deb and .rpm.
-# Usage: server-maint configure <install|upgrade> | remove
+# Usage: server-maint configure <install|upgrade> | remove | disable
+# A service manager problem never fails the package transaction.
 set -e
 
+UNIT=centrald-server.service
 has_systemd() { [ -d /run/systemd/system ]; }
+warn() { echo "CentralD: $*" >&2; }
 
-case "$1" in
-configure)
-	if ! getent passwd centrald >/dev/null; then
-		systemd-sysusers centrald.conf 2>/dev/null ||
-			useradd --system --home-dir /var/lib/centrald --no-create-home \
-				--shell /usr/sbin/nologin centrald
-	fi
-	has_systemd || {
-		# The server never creates its data directory; systemd's
-		# StateDirectory does that when systemd is present.
-		install -d -m 0700 -o centrald -g centrald /var/lib/centrald
-		echo "CentralD: no systemd; start 'centrald-server run' as the centrald user."
-		exit 0
-	}
-	systemctl daemon-reload
-	systemctl enable centrald-server.service >/dev/null 2>&1
-	if [ "$2" = upgrade ]; then
-		systemctl try-restart centrald-server.service
-		exit 0
-	fi
-	systemctl start centrald-server.service
+# The server (user centrald) reads /etc/centrald/server.toml. Older agents
+# set the shared directory to 0700 when enrolling this machine.
+repair_config_dir() {
+	[ -d /etc/centrald ] || return 0
+	mode=$(stat -c %a /etc/centrald)
+	group=$(stat -c %G /etc/centrald)
+	case "$mode" in
+	*[1357]) ;;
+	*)
+		if [ "$group" != centrald ]; then
+			chmod 0755 /etc/centrald
+			warn "made /etc/centrald readable by the server again (was $mode)."
+		fi
+		;;
+	esac
+}
+
+show_status() {
 	# Wait briefly for the first-run setup code, then show where to go.
 	i=0
 	while [ $i -lt 20 ] && ! centrald-server status 2>/dev/null | grep -q 'Setup code: [A-Z0-9]'; do
@@ -43,10 +43,63 @@ configure)
 		echo "firewalld is active. Let devices and browsers reach CentralD with:"
 		echo "  sudo firewall-cmd --permanent --add-port=7443/tcp && sudo firewall-cmd --reload"
 	fi
+}
+
+start() {
+	if systemctl start "$UNIT"; then
+		show_status
+	else
+		warn "could not start $UNIT; see: journalctl -u $UNIT"
+	fi
+}
+
+case "$1" in
+configure)
+	if ! getent passwd centrald >/dev/null; then
+		systemd-sysusers centrald.conf 2>/dev/null ||
+			useradd --system --home-dir /var/lib/centrald --no-create-home \
+				--shell /usr/sbin/nologin centrald
+	fi
+	repair_config_dir
+	if ! has_systemd; then
+		# The server never creates its data directory; systemd's
+		# StateDirectory does that when systemd is present.
+		install -d -m 0700 -o centrald -g centrald /var/lib/centrald
+		echo "CentralD: no systemd. Start the server as the centrald user, for example:"
+		echo "  runuser -u centrald -- /usr/bin/centrald-server run"
+		exit 0
+	fi
+	systemctl daemon-reload || true
+	if [ "$2" = install ]; then
+		# First install: enable and start. A masked unit stays off.
+		if systemctl enable "$UNIT" >/dev/null 2>&1; then
+			start
+		else
+			warn "could not enable $UNIT (masked?); start it yourself when ready."
+		fi
+	elif systemctl is-enabled --quiet "$UNIT" 2>/dev/null; then
+		# Upgrade, or reinstall after remove: keep the admin's choice.
+		if systemctl is-active --quiet "$UNIT"; then
+			systemctl restart "$UNIT" || warn "could not restart $UNIT; see: journalctl -u $UNIT"
+		else
+			start
+		fi
+	else
+		# Disabled or masked by the admin: only restart a running server.
+		systemctl try-restart "$UNIT" || true
+	fi
 	;;
 remove)
+	# Stop only; the enable link is kept so a reinstall starts again.
 	if has_systemd; then
-		systemctl disable --now centrald-server.service >/dev/null 2>&1 || true
+		systemctl stop "$UNIT" || true
+	elif command -v pgrep >/dev/null 2>&1 && pgrep -x centrald-server >/dev/null; then
+		warn "no systemd: a running centrald-server process was not stopped."
 	fi
+	;;
+disable)
+	# Purge (deb) or erase (rpm): forget the enable link.
+	rm -f "/etc/systemd/system/multi-user.target.wants/$UNIT"
+	if has_systemd; then systemctl daemon-reload || true; fi
 	;;
 esac
